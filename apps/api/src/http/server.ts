@@ -1656,6 +1656,68 @@ app.get("/me/needs-attention", auth, requireRole(Role.STAFF), async (req, res) =
   }
 });
 
+// Recent activity feed (lightweight: docs, cases, records requests)
+app.get("/me/recent-activity", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const limit = 5;
+
+    const [docs, cases, records] = await Promise.all([
+      prisma.document.findMany({
+        where: { firmId },
+        select: { id: true, originalName: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      }),
+      prisma.legalCase.findMany({
+        where: { firmId },
+        select: { id: true, title: true, caseNumber: true, clientName: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      }),
+      prisma.recordsRequest.findMany({
+        where: { firmId },
+        select: { id: true, providerName: true, caseId: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      }),
+    ]);
+
+    type ActivityItem = { type: string; id: string; label: string; href: string; createdAt: string };
+    const items: ActivityItem[] = [
+      ...docs.map((d) => ({
+        type: "document_uploaded",
+        id: d.id,
+        label: d.originalName,
+        href: `/documents/${d.id}`,
+        createdAt: d.createdAt.toISOString(),
+      })),
+      ...cases.map((c) => ({
+        type: "case_created",
+        id: c.id,
+        label: c.title || c.caseNumber || c.clientName || "Case",
+        href: `/cases/${c.id}`,
+        createdAt: c.createdAt.toISOString(),
+      })),
+      ...records.map((r) => ({
+        type: "records_request_created",
+        id: r.id,
+        label: r.providerName,
+        href: `/records-requests/${r.id}`,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    ];
+
+    items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const top = items.slice(0, 10);
+
+    res.json({ ok: true, items: top });
+  } catch (e: any) {
+    console.error("Failed to get recent activity", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // Overdue tasks (for dashboard overdue-tasks page)
 app.get("/me/overdue-tasks", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
@@ -1932,6 +1994,7 @@ app.get("/me/documents", auth, requireRole(Role.STAFF), async (req, res) => {
       duplicateMatchCount: true,
       duplicateOfId: true,
       processingStage: true,
+      fileSizeBytes: true,
     },
   });
 
@@ -2034,6 +2097,7 @@ app.get("/me/documents", auth, requireRole(Role.STAFF), async (req, res) => {
     processingStage: d.processingStage ?? "uploaded",
     insuranceFields: insuranceByDoc.get(d.id) ?? null,
     recognition: recognitionByDoc.get(d.id) ?? null,
+    fileSizeBytes: d.fileSizeBytes ?? null,
   }));
 
   res.json({ items, nextCursor });
@@ -2069,6 +2133,7 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
         routedCaseId: true,
         routingStatus: true,
         duplicateOfId: true,
+        fileSizeBytes: true,
       },
     });
 
@@ -2175,6 +2240,7 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
         summary: summaryPayload,
         insuranceFields: rec?.insurance_fields ?? null,
         duplicateOfId: d.duplicateOfId ?? null,
+        fileSizeBytes: d.fileSizeBytes ?? null,
       };
     });
     res.json({ items, nextCursor });
@@ -4124,7 +4190,7 @@ app.get("/cases/:id", auth, requireRole(Role.STAFF), async (req, res) => {
     const caseId = String(req.params.id ?? "");
     const c = await prisma.legalCase.findFirst({
       where: { id: caseId, firmId },
-      select: { id: true, title: true, caseNumber: true, clientName: true, createdAt: true },
+      select: { id: true, title: true, caseNumber: true, clientName: true, status: true, createdAt: true, updatedAt: true },
     });
     if (!c) return res.status(404).json({ error: "Case not found" });
     res.json({ ok: true, item: c });
@@ -4781,6 +4847,7 @@ app.get("/cases/:id/documents", auth, requireRole(Role.STAFF), async (req, res) 
         pageCount: true,
         ingestedAt: true,
         extractedFields: true,
+        fileSizeBytes: true,
       },
       orderBy: { createdAt: "desc" },
     });
@@ -4804,6 +4871,7 @@ app.get("/cases/:id/documents", auth, requireRole(Role.STAFF), async (req, res) 
       ingestedAt: d.ingestedAt?.toISOString() ?? null,
       extractedFields: d.extractedFields,
       docType: recByDoc.get(d.id)?.doc_type ?? null,
+      fileSizeBytes: d.fileSizeBytes ?? null,
     }));
 
     res.json({ ok: true, items });
@@ -5109,6 +5177,41 @@ app.post("/cases/:id/tasks", auth, requireRole(Role.STAFF), async (req, res) => 
   } catch (e: any) {
     console.error("Failed to create case task", e);
     logSystemError("api", e).catch(() => {});
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// GET /records-requests: list all records requests (lightweight, for table view)
+app.get("/records-requests", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const items = await prisma.recordsRequest.findMany({
+      where: { firmId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        caseId: true,
+        providerName: true,
+        status: true,
+        requestDate: true,
+        responseDate: true,
+        case: { select: { id: true, caseNumber: true, clientName: true, title: true } },
+      },
+    });
+    const out = items.map((r) => ({
+      id: r.id,
+      caseId: r.caseId,
+      caseNumber: r.case?.caseNumber ?? null,
+      clientName: r.case?.clientName ?? null,
+      caseTitle: r.case?.title ?? null,
+      providerName: r.providerName,
+      status: r.status,
+      requestDate: r.requestDate?.toISOString() ?? null,
+      responseDate: r.responseDate?.toISOString() ?? null,
+    }));
+    res.json({ ok: true, items: out });
+  } catch (e: any) {
+    console.error("Failed to list records requests", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
