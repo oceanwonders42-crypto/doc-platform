@@ -1,0 +1,462 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  PLATFORM_ADMIN
+  FIRM_ADMIN
+  STAFF
+}
+
+enum DocumentStatus {
+  RECEIVED
+  PROCESSING
+  NEEDS_REVIEW
+  UPLOADED
+  FAILED
+  UNMATCHED
+}
+
+enum ProcessingStage {
+  uploaded
+  ocr
+  classification
+  extraction
+  case_match
+  complete
+}
+
+model Firm {
+  id                   String    @id @default(cuid())
+  name                 String
+  plan                 String    @default("starter")
+  pageLimitMonthly     Int       @default(5000)
+  retentionDays        Int       @default(7)
+  status               String    @default("active")
+  billingCustomerId    String?
+  billingStatus        String    @default("trial")
+  trialEndsAt          DateTime?
+  features             Json?
+  settings             Json?
+  createdAt            DateTime  @default(now())
+
+  users          User[]
+  apiKeys        ApiKey[]
+  documents      Document[]
+  usageMonthly   UsageMonthly[]
+  routingRule    RoutingRule?
+  providers      Provider[]
+  cases          LegalCase[]
+  caseProviders  CaseProvider[]
+  crmPushLogs    CrmPushLog[]
+  crmCaseMappings CrmCaseMapping[]
+  notifications  Notification[]
+  jobs           Job[]
+  webhookEndpoints WebhookEndpoint[]
+}
+
+enum JobStatus {
+  queued
+  running
+  failed
+  done
+}
+
+model Job {
+  id        String    @id @default(cuid())
+  firmId    String
+  type      String
+  payload   Json?
+  status    JobStatus @default(queued)
+  attempts  Int       @default(0)
+  lastError String?   @db.Text
+  runAt     DateTime  @default(now())
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  firm Firm @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@index([firmId])
+  @@index([status])
+  @@index([status, runAt])
+}
+
+model User {
+  id        String   @id @default(cuid())
+  firmId    String
+  email     String   @unique
+  role      Role     @default(STAFF)
+  createdAt DateTime @default(now())
+
+  firm Firm @relation(fields: [firmId], references: [id])
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  firmId     String
+  userId     String?
+  name       String
+  keyPrefix  String
+  keyHash    String
+  scopes     String    @default("ingest")
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  firm Firm @relation(fields: [firmId], references: [id])
+
+  @@index([firmId])
+}
+
+model Document {
+  id           String         @id @default(cuid())
+  firmId       String
+  source       String
+  spacesKey    String
+  originalName String
+  mimeType     String
+  pageCount    Int            @default(0)
+  status       DocumentStatus @default(RECEIVED)
+  processingStage ProcessingStage @default(uploaded)
+  external_id  String?
+  file_sha256  String?
+  fileSizeBytes Int?
+  duplicateMatchCount Int @default(0)
+  duplicateOfId String?
+  ingestedAt   DateTime @default(now())
+
+  extractedFields Json?
+  confidence      Float?
+  routedSystem    String?
+  routedCaseId    String?
+  routingStatus   String?
+
+  createdAt   DateTime @default(now())
+  processedAt DateTime?
+
+  duplicateOf   Document?  @relation("DocumentDuplicate", fields: [duplicateOfId], references: [id])
+  duplicates    Document[] @relation("DocumentDuplicate")
+
+  firm Firm @relation(fields: [firmId], references: [id])
+
+  auditEvents DocumentAuditEvent[]
+
+  @@index([firmId])
+  @@index([status])
+  @@index([firmId, file_sha256])
+}
+
+model RoutingRule {
+  id                    String   @id @default(cuid())
+  firmId                String   @unique
+  minAutoRouteConfidence Float    @default(0.9)
+  autoRouteEnabled       Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  firm Firm @relation(fields: [firmId], references: [id])
+}
+
+model DocumentAuditEvent {
+  id         String   @id @default(cuid())
+  documentId String
+  firmId     String
+  actor      String
+  action     String
+  fromCaseId String?
+  toCaseId   String?
+  metaJson   Json?
+  createdAt  DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id])
+
+  @@index([documentId])
+  @@index([firmId])
+  @@index([action])
+}
+
+model UsageMonthly {
+  id                     String   @id @default(cuid())
+  firmId                 String
+  yearMonth              String
+  pagesProcessed         Int      @default(0)
+  docsProcessed          Int      @default(0)
+  insuranceDocsExtracted Int      @default(0)
+  courtDocsExtracted     Int      @default(0)
+  narrativeGenerated     Int      @default(0)
+  duplicateDetected      Int      @default(0)
+  updatedAt              DateTime @updatedAt
+
+  firm Firm @relation(fields: [firmId], references: [id])
+
+  @@unique([firmId, yearMonth])
+  @@index([firmId])
+}
+
+model Provider {
+  id               String    @id @default(cuid())
+  firmId           String
+  name             String
+  address          String
+  city             String
+  state            String
+  phone            String?
+  fax              String?
+  email            String?
+  specialty        String?
+  specialtiesJson  Json?
+  verified         Boolean   @default(false)
+  subscriptionTier String    @default("free")
+  listingActive    Boolean   @default(true)
+  expiresAt        DateTime?
+  lat              Float?
+  lng              Float?
+  createdAt        DateTime  @default(now())
+
+  firm              Firm              @relation(fields: [firmId], references: [id])
+  caseProviders     CaseProvider[]
+  providerAccounts  ProviderAccount[]
+  providerInvites   ProviderInvite[]
+
+  @@index([firmId])
+}
+
+model ProviderAccount {
+  id          String   @id @default(cuid())
+  providerId  String
+  email       String   @unique
+  passwordHash String
+  role        String   @default("PROVIDER_ADMIN")
+  createdAt   DateTime @default(now())
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId])
+}
+
+model ProviderInvite {
+  id          String    @id @default(cuid())
+  providerId  String
+  email       String
+  tokenHash   String
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId])
+  @@index([email])
+}
+
+model CaseProvider {
+  id           String   @id @default(cuid())
+  firmId       String
+  caseId       String
+  providerId   String
+  relationship String   @default("treating") // treating | referral | lien | records_only
+  createdAt    DateTime @default(now())
+
+  firm     Firm     @relation(fields: [firmId], references: [id])
+  case    LegalCase @relation(fields: [caseId], references: [id])
+  provider Provider @relation(fields: [providerId], references: [id])
+
+  @@unique([firmId, caseId, providerId])
+  @@index([firmId, providerId])
+}
+
+model RecordsRequest {
+  id                 String    @id @default(cuid())
+  firmId             String
+  caseId             String
+  providerId         String?
+  providerName       String
+  providerContact   String?
+  dateFrom          DateTime?
+  dateTo            DateTime?
+  notes             String?
+  letterBody        String?   // AI-generated request letter text (fax/email ready)
+  status            String    @default("Draft")
+  generatedDocumentId String? // Document created by Generate PDF
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  attempts RecordsRequestAttempt[]
+
+  @@index([firmId, caseId])
+}
+
+model RecordsRequestAttempt {
+  id                 String   @id @default(cuid())
+  firmId             String
+  recordsRequestId   String
+  channel           String   // email | fax
+  destination       String
+  ok                Boolean
+  error             String?  @db.Text
+  externalId        String?
+  createdAt         DateTime @default(now())
+
+  recordsRequest RecordsRequest @relation(fields: [recordsRequestId], references: [id], onDelete: Cascade)
+
+  @@index([firmId, recordsRequestId])
+  @@index([recordsRequestId])
+}
+
+model LegalCase {
+  id          String   @id @default(cuid())
+  firmId      String
+  title       String?
+  caseNumber  String?
+  clientName  String?
+  createdAt   DateTime @default(now())
+
+  firm          Firm          @relation(fields: [firmId], references: [id])
+  caseProviders CaseProvider[]
+  caseNotes     CaseNote[]
+  caseTasks     CaseTask[]
+
+  @@index([firmId])
+  @@map("Case")
+}
+
+model CaseNote {
+  id            String   @id @default(cuid())
+  firmId        String
+  caseId        String
+  authorUserId  String?
+  body          String   @db.Text
+  createdAt     DateTime @default(now())
+
+  case LegalCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([firmId, caseId])
+  @@index([caseId])
+}
+
+model CaseTask {
+  id          String    @id @default(cuid())
+  firmId      String
+  caseId      String
+  title       String
+  dueDate     DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  case LegalCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([firmId, caseId])
+  @@index([caseId])
+  @@index([firmId, completedAt])
+}
+
+model CaseTimelineEvent {
+  id          String    @id @default(cuid())
+  caseId      String
+  firmId      String
+  eventDate   DateTime?
+  eventType   String?
+  track       String    @default("medical")
+  facilityId  String?
+  provider    String?
+  diagnosis   String?
+  procedure   String?
+  amount      String?
+  documentId  String
+  metadataJson Json?
+  createdAt   DateTime  @default(now())
+
+  @@index([caseId, firmId])
+  @@index([documentId])
+  @@index([caseId, firmId, track])
+}
+
+model CaseTimelineRebuild {
+  id        String   @id @default(cuid())
+  caseId    String
+  firmId    String
+  rebuiltAt DateTime @default(now())
+
+  @@unique([caseId, firmId])
+  @@index([caseId])
+}
+
+model CrmPushLog {
+  id          String   @id @default(cuid())
+  firmId      String
+  caseId      String
+  documentId  String?
+  actionType  String
+  provider    String
+  ok          Boolean
+  externalId  String?
+  error       String?
+  createdAt   DateTime @default(now())
+
+  firm Firm @relation(fields: [firmId], references: [id])
+
+  @@index([firmId])
+  @@index([caseId])
+  @@index([createdAt])
+}
+
+model CrmCaseMapping {
+  id                String   @id @default(cuid())
+  firmId            String
+  caseId            String   // internal LegalCase id
+  externalMatterId  String   // CRM matter/m case id
+  createdAt         DateTime @default(now())
+
+  firm Firm @relation(fields: [firmId], references: [id])
+
+  @@unique([firmId, caseId])
+  @@index([firmId])
+  @@index([externalMatterId])
+}
+
+model SystemErrorLog {
+  id        String   @id @default(cuid())
+  service   String
+  message   String   @db.Text
+  stack     String?  @db.Text
+  createdAt DateTime @default(now())
+
+  @@index([service])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  firmId    String
+  type      String   // settlement_offer_detected | timeline_updated | narrative_generated
+  title     String
+  message   String?  @db.Text
+  meta      Json?    // e.g. { caseId, documentId, amount }
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  firm Firm @relation(fields: [firmId], references: [id])
+
+  @@index([firmId])
+  @@index([firmId, read])
+  @@index([createdAt])
+}
+
+model WebhookEndpoint {
+  id         String   @id @default(cuid())
+  firmId     String
+  url        String   @db.Text
+  secret     String   @db.Text
+  eventsJson Json?    // JSON array of event names e.g. ["document.processed", "document.routed"]
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  firm Firm @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@index([firmId])
+}
