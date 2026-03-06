@@ -278,9 +278,11 @@ model RecordsRequest {
   providerContact   String?
   dateFrom          DateTime?
   dateTo            DateTime?
+  requestDate       DateTime?
+  responseDate      DateTime?
   notes             String?
   letterBody        String?   // AI-generated request letter text (fax/email ready)
-  status            String    @default("Draft")
+  status            String    @default("drafted")
   generatedDocumentId String? // Document created by Generate PDF
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt

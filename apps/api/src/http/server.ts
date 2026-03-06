@@ -1460,6 +1460,59 @@ app.get("/me/metrics-summary", auth, requireRole(Role.STAFF), async (req, res) =
   }
 });
 
+// Quality analytics: firm-scoped metrics (same structure as admin quality analytics)
+app.get("/me/quality-analytics", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+
+    const [totalDocs, processedDocs, autoRoutedCount, unmatchedCount, duplicateCount, latencyRow, usageAgg] =
+      await Promise.all([
+        prisma.document.count({ where: { firmId } }),
+        prisma.document.count({
+          where: { firmId, status: { in: ["UPLOADED", "NEEDS_REVIEW", "UNMATCHED"] } },
+        }),
+        prisma.document.count({ where: { firmId, status: "UPLOADED" } }),
+        prisma.document.count({ where: { firmId, status: "UNMATCHED" } }),
+        prisma.document.count({
+          where: { firmId, duplicateOfId: { not: null } },
+        }),
+        pgPool.query<{ avg_ms: number | null }>(
+          `SELECT AVG(EXTRACT(EPOCH FROM ("processedAt" - "ingestedAt")) * 1000)::float AS avg_ms
+           FROM "Document"
+           WHERE "firmId" = $1 AND "processedAt" IS NOT NULL AND "ingestedAt" IS NOT NULL`,
+          [firmId]
+        ),
+        prisma.usageMonthly.aggregate({
+          where: { firmId },
+          _sum: { docsProcessed: true, duplicateDetected: true },
+        }),
+      ]);
+
+    const avgLatencyMs = latencyRow.rows?.[0]?.avg_ms ?? null;
+    const docsProcessedUsage = Number(usageAgg._sum.docsProcessed ?? 0) || 1;
+    const duplicateFromUsage = Number(usageAgg._sum.duplicateDetected ?? 0);
+    const duplicateRateFromUsage = docsProcessedUsage > 0 ? duplicateFromUsage / docsProcessedUsage : 0;
+
+    const autoRouteRate = processedDocs > 0 ? (autoRoutedCount / processedDocs) * 100 : 0;
+    const unmatchedRate = processedDocs > 0 ? (unmatchedCount / processedDocs) * 100 : 0;
+    const duplicateRate =
+      totalDocs > 0 ? (duplicateCount / totalDocs) * 100 : duplicateRateFromUsage * 100;
+
+    res.json({
+      ok: true,
+      totalDocs,
+      processedDocs,
+      autoRouteRate: Math.round(autoRouteRate * 100) / 100,
+      unmatchedRate: Math.round(unmatchedRate * 100) / 100,
+      duplicateRate: Math.round(duplicateRate * 100) / 100,
+      avgProcessingLatencyMs: avgLatencyMs != null ? Math.round(avgLatencyMs) : null,
+    });
+  } catch (e: any) {
+    console.error("Failed to get quality analytics", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // Overdue tasks (for dedicated overdue-tasks page)
 app.get("/me/overdue-tasks", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
@@ -2677,8 +2730,15 @@ app.get("/providers", auth, requireRole(Role.STAFF), async (req, res) => {
     const providers = await prisma.provider.findMany({
       where,
       orderBy: { name: "asc" },
+      include: {
+        _count: { select: { caseProviders: true } },
+      },
     });
-    res.json({ items: providers });
+    const items = providers.map((p) => ({
+      ...p,
+      caseCount: (p as any)._count?.caseProviders ?? 0,
+    }));
+    res.json({ items });
   } catch (err) {
     console.error("Failed to list providers", err);
     res.status(500).json({ error: "Failed to list providers" });
@@ -2774,11 +2834,44 @@ app.get("/providers/:id/summary", auth, requireRole(Role.STAFF), async (req, res
           caseId: true,
         },
         orderBy: [{ eventDate: "desc" }, { createdAt: "desc" }],
-        take: 20,
+        take: 50,
       }),
     ]);
 
     const cases = caseLinks.map((l) => ({ ...l.case, relationship: l.relationship }));
+
+    // Recent documents: dedupe by documentId from timeline events, preserve order (most recent first)
+    const docIdToCaseId = new Map<string, string>();
+    const seenDocIds = new Set<string>();
+    const orderedDocIds: string[] = [];
+    for (const ev of timelineEvents) {
+      if (ev.documentId && !seenDocIds.has(ev.documentId)) {
+        seenDocIds.add(ev.documentId);
+        orderedDocIds.push(ev.documentId);
+        if (ev.caseId) docIdToCaseId.set(ev.documentId, ev.caseId);
+      }
+    }
+    const recentDocs = orderedDocIds.length > 0
+      ? await prisma.document.findMany({
+          where: { id: { in: orderedDocIds }, firmId },
+          select: { id: true, originalName: true, ingestedAt: true, extractedFields: true },
+        })
+      : [];
+    let docTypeByDoc = new Map<string, string | null>();
+    if (recentDocs.length > 0) {
+      const { rows } = await pgPool.query<{ document_id: string; doc_type: string | null }>(
+        `select document_id, doc_type from document_recognition where document_id = any($1)`,
+        [recentDocs.map((d) => d.id)]
+      );
+      docTypeByDoc = new Map(rows.map((r) => [r.document_id, r.doc_type]));
+    }
+    const recentDocuments = recentDocs.map((d) => ({
+      id: d.id,
+      originalName: d.originalName,
+      ingestedAt: d.ingestedAt,
+      docType: docTypeByDoc.get(d.id) ?? (d.extractedFields as any)?.docType ?? null,
+      caseId: docIdToCaseId.get(d.id) ?? null,
+    }));
 
     res.json({
       ok: true,
@@ -2802,6 +2895,7 @@ app.get("/providers/:id/summary", auth, requireRole(Role.STAFF), async (req, res
       cases,
       recordsRequests,
       timelineEvents,
+      recentDocuments,
     });
   } catch (err) {
     console.error("Failed to get provider summary", err);
@@ -4190,7 +4284,23 @@ app.get("/cases/:id/timeline", auth, requireRole(Role.STAFF), async (req, res) =
         createdAt: true,
       },
     });
-    res.json({ ok: true, items: events });
+    const items = events.map((e) => {
+      const meta = (e.metadataJson as Record<string, unknown>) || {};
+      return {
+        id: e.id,
+        eventDate: e.eventDate?.toISOString() ?? null,
+        eventType: e.eventType,
+        facility: (meta.facility as string) ?? null,
+        provider: e.provider,
+        diagnosis: e.diagnosis,
+        procedure: e.procedure,
+        amount: e.amount,
+        documentId: e.documentId,
+        track: e.track,
+        createdAt: e.createdAt.toISOString(),
+      };
+    });
+    res.json({ ok: true, items });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
@@ -4661,7 +4771,7 @@ app.get("/cases/:id/documents", auth, requireRole(Role.STAFF), async (req, res) 
     const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
     if (!c) return res.status(404).json({ error: "Case not found" });
 
-    const items = await prisma.document.findMany({
+    const docs = await prisma.document.findMany({
       where: { firmId, routedCaseId: caseId },
       select: {
         id: true,
@@ -4669,9 +4779,32 @@ app.get("/cases/:id/documents", auth, requireRole(Role.STAFF), async (req, res) 
         status: true,
         createdAt: true,
         pageCount: true,
+        ingestedAt: true,
+        extractedFields: true,
       },
       orderBy: { createdAt: "desc" },
     });
+
+    let recByDoc = new Map<string, { doc_type: string | null }>();
+    if (docs.length > 0) {
+      const docIds = docs.map((d) => d.id);
+      const { rows } = await pgPool.query<{ document_id: string; doc_type: string | null }>(
+        `select document_id, doc_type from document_recognition where document_id = any($1)`,
+        [docIds]
+      );
+      for (const r of rows) recByDoc.set(r.document_id, { doc_type: r.doc_type });
+    }
+
+    const items = docs.map((d) => ({
+      id: d.id,
+      originalName: d.originalName,
+      status: d.status,
+      createdAt: d.createdAt,
+      pageCount: d.pageCount,
+      ingestedAt: d.ingestedAt?.toISOString() ?? null,
+      extractedFields: d.extractedFields,
+      docType: recByDoc.get(d.id)?.doc_type ?? null,
+    }));
 
     res.json({ ok: true, items });
   } catch (e: any) {
@@ -4980,6 +5113,69 @@ app.post("/cases/:id/tasks", auth, requireRole(Role.STAFF), async (req, res) => 
   }
 });
 
+// POST /records-requests: create records request (workflow fields: caseId, providerId, status, requestDate, responseDate)
+const RECORDS_REQUEST_STATUSES = ["drafted", "sent", "received", "overdue"] as const;
+app.post("/records-requests", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body ?? {}) as any;
+    const { caseId, providerId, status, requestDate, responseDate } = body;
+
+    if (!caseId || typeof caseId !== "string") {
+      return res.status(400).json({ ok: false, error: "caseId is required" });
+    }
+
+    const caseRow = await prisma.legalCase.findFirst({
+      where: { id: String(caseId), firmId },
+    });
+    if (!caseRow) {
+      return res.status(404).json({ ok: false, error: "Case not found" });
+    }
+
+    let providerName = "Unknown Provider";
+    let providerContact: string | null = null;
+    if (providerId) {
+      const provider = await prisma.provider.findFirst({
+        where: { id: String(providerId), firmId },
+      });
+      if (provider) {
+        providerName = provider.name;
+        const parts = [provider.address, `${provider.city}, ${provider.state}`];
+        if (provider.phone) parts.push(`Phone: ${provider.phone}`);
+        if (provider.fax) parts.push(`Fax: ${provider.fax}`);
+        if (provider.email) parts.push(`Email: ${provider.email}`);
+        providerContact = parts.join("\n");
+      }
+    }
+
+    const statusVal = status && typeof status === "string" ? String(status).toLowerCase() : "drafted";
+    if (!RECORDS_REQUEST_STATUSES.includes(statusVal as any)) {
+      return res.status(400).json({
+        ok: false,
+        error: `status must be one of: ${RECORDS_REQUEST_STATUSES.join(", ")}`,
+      });
+    }
+
+    const created = await prisma.recordsRequest.create({
+      data: {
+        firmId,
+        caseId: String(caseId),
+        providerId: providerId ? String(providerId) : null,
+        providerName,
+        providerContact,
+        status: statusVal,
+        requestDate: requestDate ? new Date(requestDate) : null,
+        responseDate: responseDate ? new Date(responseDate) : null,
+      },
+    });
+
+    res.status(201).json({ ok: true, item: created });
+  } catch (e: any) {
+    console.error("Failed to create records request", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.get("/records-requests/:id", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -5028,10 +5224,15 @@ app.patch("/records-requests/:id", auth, requireRole(Role.STAFF), async (req, re
     }
 
     const data: any = {};
-    if (body.status) data.status = String(body.status);
+    if (body.status) {
+      const s = String(body.status).toLowerCase();
+      if (RECORDS_REQUEST_STATUSES.includes(s as any)) data.status = s;
+    }
     if (body.notes !== undefined) data.notes = body.notes === null ? null : String(body.notes);
     if (body.dateFrom !== undefined) data.dateFrom = body.dateFrom ? new Date(body.dateFrom) : null;
     if (body.dateTo !== undefined) data.dateTo = body.dateTo ? new Date(body.dateTo) : null;
+    if (body.requestDate !== undefined) data.requestDate = body.requestDate ? new Date(body.requestDate) : null;
+    if (body.responseDate !== undefined) data.responseDate = body.responseDate ? new Date(body.responseDate) : null;
     if (body.letterBody !== undefined) data.letterBody = body.letterBody === null ? null : String(body.letterBody);
 
     const updated = await prisma.recordsRequest.update({

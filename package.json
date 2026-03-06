@@ -4,6 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "dev:watch": "bash watch-dev.sh",
+    "task": "tsx run-task-loop.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "snapshot": "bash scripts/snapshot.sh",
     "smoke": "bash scripts/smoke_test.sh",
@@ -12,5 +14,8 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "packageManager": "pnpm@10.30.3"
+  "packageManager": "pnpm@10.30.3",
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
 }
