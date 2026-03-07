@@ -4,6 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "dev:watch": "bash watch-dev.sh",
+    "task": "tsx run-task-loop.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:tenant": "pnpm --filter api test:tenant",
     "snapshot": "bash scripts/snapshot.sh",
@@ -12,10 +14,14 @@
     "autosync": "bash scripts/git-auto-sync.sh",
     "audit:full": "bash scripts/full_audit.sh",
     "audit:json": "node scripts/full_audit.js",
-    "audit": "node scripts/full_audit.js"
+    "audit": "node scripts/full_audit.js",
+    "sync:auto": "bash auto-sync.sh"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "packageManager": "pnpm@10.30.3"
+  "packageManager": "pnpm@10.30.3",
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
 }

@@ -1,4 +1,4 @@
-import "dotenv/config";
+﻿import "dotenv/config";
 import { extractTextFromPdf, classifyAndExtract } from "../ai/docRecognition";
 import { analyzeRisks } from "../ai/riskAnalyzer";
 import { analyzeDocumentInsights } from "../ai/documentInsights";
@@ -617,7 +617,7 @@ app.get("/admin/firms/:firmId/billing", auth, requireRole(Role.PLATFORM_ADMIN), 
   }
 });
 
-// POST /firms — create firm (PLATFORM_ADMIN_API_KEY)
+// POST /firms ΓÇö create firm (PLATFORM_ADMIN_API_KEY)
 app.post("/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   try {
     const { name, plan } = (req.body ?? {}) as { name?: string; plan?: string };
@@ -637,7 +637,7 @@ app.post("/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   }
 });
 
-// POST /firms/:id/users — create user (PLATFORM_ADMIN or FIRM_ADMIN for this firm)
+// POST /firms/:id/users ΓÇö create user (PLATFORM_ADMIN or FIRM_ADMIN for this firm)
 app.post("/firms/:id/users", auth, requireAdminOrFirmAdminForFirm, async (req, res) => {
   try {
     const firmId = String(req.params.id ?? "");
@@ -666,7 +666,7 @@ app.post("/firms/:id/users", auth, requireAdminOrFirmAdminForFirm, async (req, r
   }
 });
 
-// POST /firms/:id/api-keys — create API key (PLATFORM_ADMIN or FIRM_ADMIN for this firm)
+// POST /firms/:id/api-keys ΓÇö create API key (PLATFORM_ADMIN or FIRM_ADMIN for this firm)
 app.post("/firms/:id/api-keys", auth, requireAdminOrFirmAdminForFirm, async (req, res) => {
   try {
     const firmId = String(req.params.id ?? "");
@@ -1135,7 +1135,7 @@ app.get("/admin/queue-status", auth, requireRole(Role.PLATFORM_ADMIN), async (_r
       ok: true,
       redis: {
         pending: redisPending,
-        description: "Document pipeline (OCR → classification → extraction → case match → timeline)",
+        description: "Document pipeline (OCR ΓåÆ classification ΓåÆ extraction ΓåÆ case match ΓåÆ timeline)",
       },
       db: {
         queued: dbCounts.queued,
@@ -1204,7 +1204,7 @@ app.post("/admin/jobs/:id/cancel", auth, requireRole(Role.PLATFORM_ADMIN), async
   }
 });
 
-// POST /jobs — create job (STAFF: firmId from auth)
+// POST /jobs ΓÇö create job (STAFF: firmId from auth)
 app.post("/jobs", auth, requireRole(Role.STAFF), async (req, res, next) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -1227,7 +1227,7 @@ app.post("/jobs", auth, requireRole(Role.STAFF), async (req, res, next) => {
   }
 });
 
-// GET /jobs — list jobs (STAFF: own firm; PLATFORM_ADMIN: all or ?firmId=)
+// GET /jobs ΓÇö list jobs (STAFF: own firm; PLATFORM_ADMIN: all or ?firmId=)
 app.get("/jobs", auth, requireRole(Role.STAFF), async (req, res, next) => {
   try {
     const authRole = (req as any).authRole as Role | undefined;
@@ -1258,7 +1258,7 @@ app.get("/jobs", auth, requireRole(Role.STAFF), async (req, res, next) => {
   }
 });
 
-// GET /jobs/counts — dashboard counts
+// GET /jobs/counts ΓÇö dashboard counts
 app.get("/jobs/counts", auth, requireRole(Role.STAFF), async (req, res, next) => {
   try {
     const authRole = (req as any).authRole as Role | undefined;
@@ -1272,7 +1272,7 @@ app.get("/jobs/counts", auth, requireRole(Role.STAFF), async (req, res, next) =>
   }
 });
 
-// GET /me/queue-status — simple queue visibility for STAFF (firm DB jobs + document pipeline pending)
+// GET /me/queue-status ΓÇö simple queue visibility for STAFF (firm DB jobs + document pipeline pending)
 app.get("/me/queue-status", auth, requireRole(Role.STAFF), async (req, res, next) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -1290,7 +1290,7 @@ app.get("/me/queue-status", auth, requireRole(Role.STAFF), async (req, res, next
   }
 });
 
-// GET /jobs/:id — job detail + events
+// GET /jobs/:id ΓÇö job detail + events
 app.get("/jobs/:id", auth, requireRole(Role.STAFF), async (req, res, next) => {
   try {
     const id = String(req.params.id ?? "");
@@ -1527,7 +1527,7 @@ app.post(
   }
 );
 
-// Admin: incidents — create
+// Admin: incidents ΓÇö create
 app.post("/admin/incidents", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -1547,7 +1547,7 @@ app.post("/admin/incidents", auth, requireRole(Role.PLATFORM_ADMIN), async (req,
   }
 });
 
-// Admin: incidents — list
+// Admin: incidents ΓÇö list
 app.get("/admin/incidents", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res, next) => {
   try {
     const limit = Math.min(parseInt(String(req.query.limit), 10) || 100, 500);
@@ -1567,7 +1567,7 @@ app.get("/admin/incidents", auth, requireRole(Role.PLATFORM_ADMIN), async (req, 
   }
 });
 
-// Admin: incidents — update
+// Admin: incidents ΓÇö update
 app.patch(
   "/admin/incidents/:id",
   auth,
@@ -1873,7 +1873,7 @@ app.get("/admin/quality/analytics", auth, requireRole(Role.PLATFORM_ADMIN), asyn
 
     const messageCounts = new Map<string, number>();
     for (const { message } of failureReasons) {
-      const key = message.length > 120 ? message.slice(0, 120) + "…" : message;
+      const key = message.length > 120 ? message.slice(0, 120) + "ΓÇª" : message;
       messageCounts.set(key, (messageCounts.get(key) ?? 0) + 1);
     }
     const topFailureReasons = Array.from(messageCounts.entries())
@@ -1949,7 +1949,7 @@ app.get("/admin/quality/analytics", auth, requireRole(Role.PLATFORM_ADMIN), asyn
   }
 });
 
-// Admin: processing funnel — stage counts, failures, avg time (optional firmId, dateFrom, dateTo)
+// Admin: processing funnel ΓÇö stage counts, failures, avg time (optional firmId, dateFrom, dateTo)
 app.get("/admin/quality/funnel", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   try {
     const q = (req as any).query || {};
@@ -2045,7 +2045,7 @@ app.get("/admin/quality/funnel", auth, requireRole(Role.PLATFORM_ADMIN), async (
   }
 });
 
-// Admin: recognition quality — docs by doc type, avg quality, issues, low-confidence, extraction correction rate, settlement offers count
+// Admin: recognition quality ΓÇö docs by doc type, avg quality, issues, low-confidence, extraction correction rate, settlement offers count
 app.get("/admin/quality/recognition", auth, requireRole(Role.STAFF), async (req, res) => {
   if (req.accepts("html")) {
     const p = path.join(__dirname, "..", "..", "public", "admin", "recognition-quality.html");
@@ -2148,7 +2148,7 @@ app.get("/admin/quality/recognition", auth, requireRole(Role.STAFF), async (req,
   }
 });
 
-// Admin: classification stats — documents by detected type, confidence averages, override counts/%
+// Admin: classification stats ΓÇö documents by detected type, confidence averages, override counts/%
 app.get("/admin/quality/classification-stats", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   try {
     const q = (req as any).query || {};
@@ -2229,7 +2229,7 @@ app.get("/admin/quality/classification-stats", auth, requireRole(Role.PLATFORM_A
   }
 });
 
-// Admin: failure categories — normalize SystemErrorLog.message into categories, return counts + examples
+// Admin: failure categories ΓÇö normalize SystemErrorLog.message into categories, return counts + examples
 app.get("/admin/quality/failure-categories", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   try {
     const q = (req as any).query || {};
@@ -2272,7 +2272,7 @@ app.get("/admin/quality/failure-categories", auth, requireRole(Role.PLATFORM_ADM
       const category = getFailureCategory(message, log.service);
       categories[category].count += 1;
       const set = seenExamples.get(category)!;
-      const snippet = message.length > 300 ? message.slice(0, 300) + "…" : message;
+      const snippet = message.length > 300 ? message.slice(0, 300) + "ΓÇª" : message;
       if (set.size < maxExamples && snippet.trim()) {
         set.add(snippet);
       }
@@ -2576,7 +2576,7 @@ app.get("/admin/quality/low-confidence-routes", auth, requireRole(Role.PLATFORM_
   }
 });
 
-// Admin: weekly quality summary (JSON or CSV) — total docs, processed, rates, avg latency, top failures, worst firms, health score delta
+// Admin: weekly quality summary (JSON or CSV) ΓÇö total docs, processed, rates, avg latency, top failures, worst firms, health score delta
 app.get("/admin/quality/weekly-summary", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   try {
     const q = (req as any).query || {};
@@ -4675,7 +4675,7 @@ app.get("/dashboard/attention", auth, requireRole(Role.STAFF), async (req, res) 
         })),
       },
       recordsRequestsNeedingFollowUp: {
-        // Requests with ≥1 failed send attempt; dashboard label: "Records requests with failed sends"
+        // Requests with ΓëÑ1 failed send attempt; dashboard label: "Records requests with failed sends"
         count: recordsNeedingFollowUpCount,
         items: recordsWithFailedAttempts.map((r) => ({
           id: r.id,
@@ -9153,7 +9153,7 @@ const NARRATIVE_TYPES = [
   "demand_rationale",
   "response_to_denial",
   "response_to_offer",
-  "denial_response", // alias → response_to_denial
+  "denial_response", // alias ΓåÆ response_to_denial
 ] as const;
 const NARRATIVE_TONES = ["neutral", "assertive", "aggressive"] as const;
 
@@ -9284,7 +9284,7 @@ app.post("/cases/:id/push-test", auth, requireRole(Role.STAFF), async (req, res)
   }
 });
 
-// === Case ↔ Provider linkage ===
+// === Case Γåö Provider linkage ===
 
 app.get("/cases/:id/providers", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
@@ -10430,7 +10430,7 @@ app.post("/demand-packages/:id/regenerate-pdf", auth, requireRole(Role.STAFF), a
       include: { case: { select: { clientName: true, caseNumber: true, title: true } } },
     });
     if (!pkg) return res.status(404).json({ ok: false, error: "Demand package not found" });
-    const caseLabel = [pkg.case.clientName, pkg.case.caseNumber, pkg.case.title].filter(Boolean).join(" · ") || "Case";
+    const caseLabel = [pkg.case.clientName, pkg.case.caseNumber, pkg.case.title].filter(Boolean).join(" ┬╖ ") || "Case";
     const caseDocs = await prisma.document.findMany({
       where: { firmId, routedCaseId: pkg.caseId },
       select: { originalName: true },
@@ -10670,7 +10670,7 @@ app.get("/records-requests/:id/letter", auth, requireRole(Role.STAFF), async (re
     const dateToStr = reqRow.dateTo ? fmt(reqRow.dateTo) : "";
     const rangeStr =
       dateFromStr && dateToStr
-        ? `${dateFromStr} – ${dateToStr}`
+        ? `${dateFromStr} ΓÇô ${dateToStr}`
         : dateFromStr
           ? `from ${dateFromStr}`
           : dateToStr
@@ -11371,7 +11371,7 @@ app.get("/documents/:id/route-explainer", auth, requireRole(Role.STAFF), async (
     const whyPassed =
       doc.routingStatus === "routed" && doc.routedCaseId
         ? doc.routedSystem === "auto"
-          ? `Auto-routed: match confidence ${matchConfidence != null ? (matchConfidence * 100).toFixed(0) : "—"}% ≥ threshold ${(threshold * 100).toFixed(0)}%. ${rec?.match_reason ?? ""}`
+          ? `Auto-routed: match confidence ${matchConfidence != null ? (matchConfidence * 100).toFixed(0) : "ΓÇö"}% ΓëÑ threshold ${(threshold * 100).toFixed(0)}%. ${rec?.match_reason ?? ""}`
           : "Manually routed by user."
         : null;
     const whyFailed =
@@ -11765,7 +11765,7 @@ app.get("/mailboxes/recent-ingests", auth, requireRole(Role.FIRM_ADMIN), async (
         from: r.from,
         subject: r.subject,
         receivedAt: r.received_at,
-        status: r.document_status ?? "—",
+        status: r.document_status ?? "ΓÇö",
         mailboxId: r.mailbox_id,
       })),
     });
@@ -11820,7 +11820,7 @@ app.get("/mailboxes/:id/recent-ingests", auth, requireRole(Role.FIRM_ADMIN), asy
         from: r.from_email,
         receivedAt: r.received_at,
         createdAt: r.created_at,
-        status: r.document_status ?? "—",
+        status: r.document_status ?? "ΓÇö",
       })),
     });
   } catch (e: any) {
@@ -11913,7 +11913,7 @@ app.patch("/mailboxes/:id", auth, requireRole(Role.FIRM_ADMIN), async (req, res)
   }
 });
 
-// POST /mailboxes — create mailbox (API key, firmId from key)
+// POST /mailboxes ΓÇö create mailbox (API key, firmId from key)
 app.post("/mailboxes", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;

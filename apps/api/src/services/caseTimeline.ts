@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Rebuild case timeline from all routed documents and their recognition data.
  * Supports tracks: medical (default), legal (court_*), insurance (insurance_*).
  * When rebuilding, matches event provider/facility text against Provider records

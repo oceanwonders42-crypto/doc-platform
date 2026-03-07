@@ -486,6 +486,8 @@ model RecordsRequest {
   providerContact   String?
   dateFrom          DateTime?
   dateTo            DateTime?
+  requestDate       DateTime?
+  responseDate      DateTime?
   notes             String?
   letterBody        String?   // AI-generated request letter text (fax/email ready)
   status            String    @default("DRAFT")
@@ -602,7 +604,9 @@ model LegalCase {
   title       String?
   caseNumber  String?
   clientName  String?
+  status      String   @default("open") // open | pending | closed
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   firm          Firm          @relation(fields: [firmId], references: [id])
   caseProviders CaseProvider[]
