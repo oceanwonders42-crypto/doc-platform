@@ -2,10 +2,16 @@
 /**
  * Generic webhook CRM adapter. POSTs case intelligence payload to a configurable URL.
  * Works with any CRM that accepts webhooks (Zapier, Make, custom endpoints).
+ * Retries on 5xx or network errors up to 2 times with backoff.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getWebhookUrl = getWebhookUrl;
 const prisma_1 = require("../../db/prisma");
+const WEBHOOK_RETRY_ATTEMPTS = 2;
+const WEBHOOK_RETRY_DELAYS_MS = [1000, 2000];
+async function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+}
 async function getWebhookUrl(firmId) {
     const firm = await prisma_1.prisma.firm.findUnique({
         where: { id: firmId },
@@ -35,31 +41,46 @@ const webhookAdapter = {
             meta: msg.meta ?? {},
             firmId: msg.firmId,
         };
-        try {
-            const res = await fetch(url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-            });
-            if (res.status >= 200 && res.status < 300) {
-                const text = await res.text();
-                let externalId;
-                try {
-                    const data = JSON.parse(text || "{}");
-                    externalId = data.id ?? data.externalId ?? data.external_id;
+        let lastErr = null;
+        for (let attempt = 0; attempt <= WEBHOOK_RETRY_ATTEMPTS; attempt++) {
+            try {
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+                if (res.status >= 200 && res.status < 300) {
+                    const text = await res.text();
+                    let externalId;
+                    try {
+                        const data = JSON.parse(text || "{}");
+                        externalId = data.id ?? data.externalId ?? data.external_id;
+                    }
+                    catch {
+                        // ignore
+                    }
+                    return { ok: true, externalId };
                 }
-                catch {
-                    // ignore
+                const errText = await res.text();
+                lastErr = `HTTP ${res.status}: ${errText.slice(0, 200)}`;
+                const retryable = res.status >= 500 || res.status === 429;
+                if (retryable && attempt < WEBHOOK_RETRY_ATTEMPTS) {
+                    await sleep(WEBHOOK_RETRY_DELAYS_MS[attempt]);
+                    continue;
                 }
-                return { ok: true, externalId };
+                return { ok: false, error: lastErr };
             }
-            const errText = await res.text();
-            return { ok: false, error: `HTTP ${res.status}: ${errText.slice(0, 200)}` };
+            catch (e) {
+                const message = e instanceof Error ? e.message : String(e);
+                lastErr = message;
+                if (attempt < WEBHOOK_RETRY_ATTEMPTS) {
+                    await sleep(WEBHOOK_RETRY_DELAYS_MS[attempt]);
+                    continue;
+                }
+                return { ok: false, error: message };
+            }
         }
-        catch (e) {
-            const message = e instanceof Error ? e.message : String(e);
-            return { ok: false, error: message };
-        }
+        return { ok: false, error: lastErr ?? "Webhook request failed" };
     },
 };
 exports.default = webhookAdapter;

@@ -1,9 +1,10 @@
 /**
  * Request ID and logging middleware.
- * Sets req.requestId (from X-Request-Id header or generated) and logs each request for debugging.
+ * Sets req.requestId (from X-Request-Id header or generated) and logs each request (structured JSON).
  */
 import type { Request, Response, NextFunction } from "express";
 import crypto from "crypto";
+import { log } from "../../lib/logger";
 
 export function requestIdAndLog(req: Request, res: Response, next: NextFunction) {
   const incomingId = req.header("x-request-id") ?? req.header("X-Request-Id");
@@ -14,19 +15,15 @@ export function requestIdAndLog(req: Request, res: Response, next: NextFunction)
 
   const start = Date.now();
   res.on("finish", () => {
-    const duration = Date.now() - start;
-    const logLine = {
+    const durationMs = Date.now() - start;
+    const level = res.statusCode >= 400 ? "warn" : "info";
+    log(level, "api_request", {
       requestId,
       method: req.method,
       path: req.path,
       status: res.statusCode,
-      durationMs: duration,
-    };
-    if (res.statusCode >= 400) {
-      console.warn("[api]", JSON.stringify(logLine));
-    } else {
-      console.log("[api]", JSON.stringify(logLine));
-    }
+      durationMs,
+    });
   });
 
   next();

@@ -14,11 +14,13 @@ const pg_1 = require("../../db/pg");
 const featureFlags_1 = require("../../services/featureFlags");
 const messageBuilder_1 = require("./messageBuilder");
 const webhookAdapter_1 = __importDefault(require("./webhookAdapter"));
+const crmAdapter_1 = require("./crmAdapter");
 async function pushCrmWebhook(params) {
     const { firmId, caseId, documentId, title, bodyMarkdown, meta = {} } = params;
     const enabled = await (0, featureFlags_1.hasFeature)(firmId, "crm_push");
     if (!enabled)
         return { ok: true };
+    const actionType = meta.actionType ?? "webhook_push";
     const msg = {
         firmId,
         caseId,
@@ -26,22 +28,39 @@ async function pushCrmWebhook(params) {
         bodyMarkdown,
         meta: { ...meta, documentId: documentId ?? undefined },
     };
-    const result = await webhookAdapter_1.default.pushNote(msg);
-    const actionType = meta.actionType ?? "webhook_push";
+    const firm = await prisma_1.prisma.firm.findUnique({
+        where: { id: firmId },
+        select: { settings: true },
+    });
+    const settings = (firm?.settings ?? {});
+    const provider = settings.crm === "clio" ? "clio" : "generic_webhook";
+    let result;
+    if (provider === "clio") {
+        result = await (0, crmAdapter_1.pushCaseUpdate)({
+            firmId,
+            caseId,
+            title,
+            bodyMarkdown,
+            meta,
+        });
+    }
+    else {
+        result = await webhookAdapter_1.default.pushNote(msg);
+    }
     await prisma_1.prisma.crmPushLog.create({
         data: {
             firmId,
             caseId,
             documentId: documentId ?? null,
             actionType,
-            provider: "generic_webhook",
+            provider,
             ok: result.ok,
             externalId: result.externalId ?? null,
             error: result.error ?? null,
         },
     });
     if (!result.ok) {
-        console.warn("[crm] push failed:", { firmId, caseId, actionType, error: result.error });
+        console.warn("[crm] push failed:", { firmId, caseId, actionType, provider, error: result.error });
     }
     return result.ok ? { ok: true } : { ok: false, error: result.error };
 }

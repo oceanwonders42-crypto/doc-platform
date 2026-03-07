@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.rateLimitEndpoint = rateLimitEndpoint;
+exports.rateLimitByIp = rateLimitByIp;
+const abuseTracking_1 = require("../../services/abuseTracking");
 const WINDOW_MS = 60 * 1000;
 const store = new Map();
 /**
@@ -23,6 +25,8 @@ function rateLimitEndpoint(maxPerMinute, endpointKey) {
         w.count += 1;
         if (w.count > maxPerMinute) {
             const requestId = req.requestId;
+            const ip = (req.ip || req.socket?.remoteAddress || "unknown").toString();
+            (0, abuseTracking_1.recordAbuse)({ ip, route: endpointKey, eventType: "rate_limit_hit" });
             console.warn("[api] endpoint rate limit exceeded", {
                 requestId,
                 apiKeyId,
@@ -34,6 +38,32 @@ function rateLimitEndpoint(maxPerMinute, endpointKey) {
             return res.status(429).json({
                 ok: false,
                 error: "Too many requests. Try again later.",
+            });
+        }
+        next();
+    };
+}
+const ipStore = new Map();
+/** Rate limit by IP for unauthenticated or session endpoints (e.g. support form). */
+function rateLimitByIp(maxPerMinute, endpointKey) {
+    return function rateLimit(req, res, next) {
+        const ip = (req.ip || req.socket?.remoteAddress || "unknown").toString();
+        const key = `${ip}:${endpointKey}`;
+        const now = Date.now();
+        let w = ipStore.get(key);
+        if (!w || now >= w.resetAt) {
+            w = { count: 0, resetAt: now + WINDOW_MS };
+            ipStore.set(key, w);
+        }
+        w.count += 1;
+        if (w.count > maxPerMinute) {
+            const ip = (req.ip || req.socket?.remoteAddress || "unknown").toString();
+            (0, abuseTracking_1.recordAbuse)({ ip, route: endpointKey, eventType: "rate_limit_hit" });
+            res.setHeader("Retry-After", "60");
+            return res.status(429).json({
+                ok: false,
+                error: "Too many requests. Try again later.",
+                code: "RATE_LIMITED",
             });
         }
         next();

@@ -13,12 +13,14 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
+import path from "path";
 import bcrypt from "bcryptjs";
 import multer from "multer";
 
 import { prisma } from "../db/prisma";
 import { auth } from "./middleware/auth";
 import { authWithScope } from "./middleware/authScope";
+import { sessionMiddleware } from "./middleware/session";
 import { requireRole } from "./middleware/requireRole";
 import { requireAdminOrFirmAdminForFirm } from "./middleware/requireAdminOrFirmAdmin";
 import { requireAdminOrFirmAdminForProvider } from "./middleware/requireAdminOrFirmAdminForProvider";
@@ -28,7 +30,24 @@ import {
   clearProviderSession,
 } from "./middleware/providerSession";
 import { requireExportFirm } from "./middleware/requireExportFirm";
-import { rateLimitEndpoint } from "./middleware/rateLimitEndpoint";
+import { rateLimitEndpoint, rateLimitByIp } from "./middleware/rateLimitEndpoint";
+import { securityHeaders } from "./middleware/securityHeaders";
+import { validateIdParam } from "./middleware/requestGuards";
+import { getSystemHealth } from "../services/systemHealth";
+import {
+  triggerDatabaseBackup,
+  listBackups,
+  getBackupById,
+  restoreFromBackup,
+} from "../services/backupManager";
+import { emitSystemAlert } from "../services/systemAlerts";
+import { getAbuseStats } from "../services/abuseTracking";
+import { validateUploadFile } from "../services/fileSecurityScan";
+import { logIntakeFailure } from "../services/intakeLogger";
+import { normalizeFilename, buildOriginalMetadata } from "../services/ingestHelpers";
+import { sendSafeError } from "../lib/errors";
+import { signToken } from "../lib/jwt";
+import { requestLog, logWarn } from "../lib/logger";
 import { requestIdAndLog } from "./middleware/requestIdAndLog";
 import { sendError } from "./middleware/sendError";
 import { errorLogMiddleware } from "./middleware/errorLogMiddleware";
@@ -38,8 +57,18 @@ import {
   enqueueOcrJob,
   enqueueExtractionJob,
   enqueueTimelineRebuildJob,
+  getRedisQueueLength,
+  getMigrationQueueLength,
 } from "../services/queue";
 import { matchDocumentToCase } from "../services/caseMatching";
+import {
+  scoreDocumentRouting,
+  getExtractedForRouting,
+  type RoutingScoreResult,
+} from "../services/routingScorer";
+import { recordRoutingFeedback } from "../services/routingFeedback";
+import { findDuplicateCandidates } from "../services/duplicateDetection";
+import { resolveProvider } from "../services/providerNormalization";
 import { rebuildCaseTimeline } from "../services/caseTimeline";
 import { getCaseInsights } from "../services/caseInsights";
 import {
@@ -50,29 +79,73 @@ import {
   markAllNotificationsRead,
 } from "../services/notifications";
 import { buildCaseReportPdf } from "../services/caseReportPdf";
+import {
+  buildTimelineChronologyPdf,
+  buildTimelineChronologyDocx,
+} from "../services/timelineChronologyExport";
 import { fetchCourtDocket } from "../court/docketFetcher";
 import { testImapConnection } from "../email/imapPoller";
 import { routeDocument } from "../services/documentRouting";
+import { correctRouting, correctProvider, setExportOverrides, AUDIT_ACTIONS } from "../services/adminCorrections";
+import { addDocumentAuditEvent } from "../services/audit";
+import { recordReviewQueueEnter, recordReviewQueueExit } from "../services/reviewQueueEvent";
 import { generateNarrative } from "../ai/narrativeAssistant";
 import { explainDocument } from "../ai/documentExplain";
 import { generateRecordsRequestLetter } from "../ai/recordsLetterGenerator";
 import { pushCaseIntelligenceToCrm, pushCrmWebhook } from "../integrations/crm/pushService";
 import { buildRecordsRequestLetterPdf } from "../services/recordsLetterPdf";
 import { buildOffersSummaryPdf } from "../services/offersSummaryPdf";
+import { buildProviderPacketPdf } from "../services/providerPacketPdf";
+import { generateCaseSummary } from "../services/caseSummaryService";
+import { buildCasePacketZip } from "../services/casePacketExport";
+import { logActivity } from "../services/activityFeed";
 import { sendAdapter } from "../send/compositeAdapter";
 import { pushDocumentToClio } from "../integrations/clioAdapter";
 import { getPresignedGetUrl } from "../services/storage";
-import { hasFeature } from "../services/featureFlags";
+import { countPagesFromBuffer } from "../services/pageCount";
+import { hasFeature, hasPremiumWorkflow } from "../services/featureFlags";
+import { getWorkflowConfig, setWorkflowConfig } from "../services/premiumWorkflowConfig";
+import { bulkRouteDocuments, bulkUnrouteDocuments } from "../services/bulkDocumentActions";
+import { recordPremiumEvent } from "../services/premiumAnalytics";
+import { canIngestDocument, getDocLimitForFirm, getOverageForPeriod, getUsageForPeriod, getPlanMetadata, listPlansForDisplay } from "../services/billingPlans";
+import { enqueueJob } from "../services/jobRunner";
+import { WEBHOOK_EVENTS } from "../services/webhooks";
 import casesRouter from "./routes/cases";
+import integrationsRouter from "./routes/integrations";
+import recordsRequestsRouter from "./routes/recordsRequests";
 import { Prisma, Role } from "@prisma/client";
+import { IntegrationType, IntegrationProvider, IntegrationStatus } from "@prisma/client";
+import { encryptSecret } from "../services/credentialEncryption";
 import { generateClioContactsCsv, generateClioMattersCsv } from "../exports/clioExport";
 import { importClioMappingsFromCsv } from "../services/clioMappingsImport";
-import { logSystemError } from "../services/errorLog";
+import { fetchCasesFromCRM, upsertCrmCaseMapping } from "../integrations/crm/crmAdapter";
+import { getClioAccessToken } from "../services/clioConfig";
+import { logSystemError, getFailureCategory, FAILURE_CATEGORIES } from "../services/errorLog";
+import { recordAbuse } from "../services/abuseTracking";
+import {
+  enqueueJob as enqueueJobToQueue,
+  listJobs,
+  getJobWithEvents,
+  retryJob,
+  cancelJob,
+  getJobCounts,
+} from "../services/jobQueue";
+import { getFirmExportNamingRules, setFirmExportNamingRules, getRecognitionForDocument, buildDocumentNamingContext, applyFilePattern, applyFolderPattern, getFolderForDocType } from "../services/export/namingRules";
+import { getPaperlessSettings, updatePaperlessSettings } from "../services/paperlessSettings";
+import { ingestMigrationDocument } from "../services/migrationIngest";
+import {
+  getChecklistWithState,
+  updatePaperlessTransitionState,
+  type PaperlessTransitionStepId,
+} from "../services/paperlessTransitionWorkflow";
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
+app.use(sessionMiddleware);
+app.use(securityHeaders);
+app.use(requestIdAndLog);
 app.use(express.json({ limit: "25mb" }));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
@@ -95,7 +168,175 @@ app.get("/readyz", async (_req, res) => {
   res.json({ ok: true });
 });
 
+// --- Auth (session + login) ---
+app.post("/auth/login", async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as { email?: string; password?: string };
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!email || !password) {
+      return res.status(400).json({ ok: false, error: "Email and password required", code: "VALIDATION_ERROR" });
+    }
+    const user = await prisma.user.findUnique({
+      where: { email },
+      select: { id: true, firmId: true, email: true, role: true, passwordHash: true },
+    });
+    if (!user) {
+      recordAbuse({
+        ip: (req as any).ip || req.socket?.remoteAddress || "unknown",
+        route: "/auth/login",
+        eventType: "auth_failure",
+      });
+      return res.status(401).json({ ok: false, error: "Invalid email or password", code: "UNAUTHORIZED" });
+    }
+    if (!user.passwordHash) {
+      return res.status(403).json({
+        ok: false,
+        error: "Password login not set for this user. Use an API key or contact admin.",
+        code: "PASSWORD_NOT_SET",
+      });
+    }
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) {
+      recordAbuse({
+        ip: (req as any).ip || req.socket?.remoteAddress || "unknown",
+        route: "/auth/login",
+        eventType: "auth_failure",
+      });
+      return res.status(401).json({ ok: false, error: "Invalid email or password", code: "UNAUTHORIZED" });
+    }
+    const session = (req as any).session;
+    if (session) {
+      session.userId = user.id;
+      session.firmId = user.firmId;
+      session.email = user.email;
+      session.role = user.role;
+    }
+    const token = signToken({
+      userId: user.id,
+      firmId: user.firmId,
+      role: user.role,
+      email: user.email,
+    });
+    res.json({
+      ok: true,
+      token,
+      user: { id: user.id, email: user.email, firmId: user.firmId, role: user.role },
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/auth/logout", (req, res) => {
+  const session = (req as any).session;
+  if (session && typeof session.destroy === "function") {
+    session.destroy((err: Error) => {
+      if (err) res.status(500).json({ ok: false, error: "Logout failed" });
+      else res.json({ ok: true });
+    });
+  } else {
+    res.json({ ok: true });
+  }
+});
+
+app.get("/auth/me", auth, (req, res) => {
+  const firmId = (req as any).firmId as string;
+  const userId = (req as any).userId as string | null;
+  const authRole = (req as any).authRole;
+  if (!firmId) {
+    return res.status(401).json({ ok: false, error: "Not authenticated", code: "UNAUTHORIZED" });
+  }
+  Promise.all([
+    prisma.firm.findUnique({
+      where: { id: firmId },
+      select: { id: true, name: true, plan: true, status: true },
+    }),
+    userId
+      ? prisma.user.findUnique({
+          where: { id: userId },
+          select: { id: true, email: true, role: true },
+        })
+      : Promise.resolve(null),
+  ])
+    .then(([firm, user]) => {
+      if (!firm) return res.status(404).json({ ok: false, error: "Firm not found" });
+      res.json({
+        ok: true,
+        firm: { id: firm.id, name: firm.name, plan: firm.plan, status: firm.status },
+        user: user ? { id: user.id, email: user.email, role: user.role } : null,
+        role: authRole,
+      });
+    })
+    .catch((e: any) => res.status(500).json({ ok: false, error: String(e?.message || e) }));
+});
+
+app.patch("/auth/set-password", auth, requireRole(Role.STAFF), async (req, res) => {
+  const userId = (req as any).userId as string | null;
+  const firmId = (req as any).firmId as string;
+  if (!userId) {
+    return res.status(400).json({ ok: false, error: "Session or user-scoped API key required to set password", code: "BAD_REQUEST" });
+  }
+  const body = (req.body ?? {}) as { password?: string };
+  const password = typeof body.password === "string" ? body.password : "";
+  if (password.length < 8) {
+    return res.status(400).json({ ok: false, error: "Password must be at least 8 characters", code: "VALIDATION_ERROR" });
+  }
+  const user = await prisma.user.findFirst({ where: { id: userId, firmId }, select: { id: true } });
+  if (!user) return res.status(404).json({ ok: false, error: "User not found" });
+  const hash = await bcrypt.hash(password, 10);
+  await prisma.user.update({ where: { id: userId }, data: { passwordHash: hash } });
+  res.json({ ok: true });
+});
+
+// Support: submit bug report (firm-scoped; STAFF+; rate limited)
+app.post(
+  "/support/bug-report",
+  auth,
+  requireRole(Role.STAFF),
+  rateLimitByIp(10, "support-bug-report"),
+  async (req, res, next) => {
+    try {
+      const firmId = (req as any).firmId as string | undefined;
+      const userId = (req as any).userId as string | undefined;
+      if (!firmId) {
+        return sendSafeError(res, 403, "Firm context required", "FORBIDDEN");
+      }
+      const body = req.body || {};
+      const title = typeof body.title === "string" ? body.title.trim() : "";
+      const description = typeof body.description === "string" ? body.description.trim() : "";
+      const pageUrl = typeof body.pageUrl === "string" ? body.pageUrl.trim() || null : null;
+      const screenshotUrl = typeof body.screenshotUrl === "string" ? body.screenshotUrl.trim() || null : null;
+      if (!title || title.length > 500) {
+        recordAbuse({ ip: (req as any).ip || req.socket?.remoteAddress || "unknown", route: "/support/bug-report", eventType: "invalid_payload" });
+        return sendSafeError(res, 400, "Title is required (max 500 chars)", "VALIDATION_ERROR");
+      }
+      if (!description || description.length > 10000) {
+        recordAbuse({ ip: (req as any).ip || req.socket?.remoteAddress || "unknown", route: "/support/bug-report", eventType: "invalid_payload" });
+        return sendSafeError(res, 400, "Description is required (max 10000 chars)", "VALIDATION_ERROR");
+      }
+      const report = await prisma.appBugReport.create({
+        data: {
+          firmId,
+          userId: userId || null,
+          title,
+          description,
+          pageUrl,
+          screenshotUrl,
+          status: "OPEN",
+          priority: (body.priority === "HIGH" || body.priority === "URGENT" || body.priority === "LOW") ? body.priority : "MEDIUM",
+        },
+      });
+      res.status(201).json({ ok: true, id: report.id });
+    } catch (e) {
+      next(e);
+    }
+  }
+);
+
 app.use("/cases", casesRouter);
+app.use("/integrations", integrationsRouter);
+app.use("/records-requests", recordsRequestsRouter);
 
 // Admin: list firms with stats (requires PLATFORM_ADMIN_API_KEY)
 app.get("/admin/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res) => {
@@ -153,6 +394,69 @@ app.get("/admin/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res
     console.error("[admin/firms]", e);
     res.status(500).json({ ok: false, error: "Failed to load firms" });
   }
+});
+
+// Admin: providers list (JSON for platform admin) or HTML page (firm admin / staff)
+app.get("/admin/providers", auth, async (req, res) => {
+  if (req.accepts("html")) {
+    requireRole(Role.STAFF)(req, res, () => {
+      const p = path.join(__dirname, "..", "..", "public", "admin", "providers.html");
+      res.sendFile(p, (err) => {
+        if (err) res.status(404).json({ ok: false, error: "Admin providers page not found" });
+      });
+    });
+    return;
+  }
+  requireRole(Role.PLATFORM_ADMIN)(req, res, async () => {
+    try {
+      const firmIdRaw = Array.isArray(req.query.firmId) ? req.query.firmId[0] : req.query.firmId;
+      const firmId = typeof firmIdRaw === "string" && firmIdRaw.trim() ? firmIdRaw.trim() : null;
+
+      const where = firmId ? { firmId } : {};
+      const providers = await prisma.provider.findMany({
+        where,
+        orderBy: { name: "asc" },
+        select: {
+          id: true,
+          firmId: true,
+          name: true,
+          address: true,
+          city: true,
+          state: true,
+          phone: true,
+          email: true,
+          specialty: true,
+          verified: true,
+          subscriptionTier: true,
+          listingActive: true,
+          expiresAt: true,
+          lat: true,
+          lng: true,
+          createdAt: true,
+        },
+      });
+      res.json({ ok: true, items: providers });
+    } catch (e) {
+      console.error("[admin/providers]", e);
+      res.status(500).json({ ok: false, error: "Failed to load providers" });
+    }
+  });
+});
+
+// Admin: provider management page (map, aliases, corrections)
+app.get("/admin/provider-management", auth, requireRole(Role.STAFF), (req, res) => {
+  const p = path.join(__dirname, "..", "..", "public", "admin", "provider-management.html");
+  res.sendFile(p, (err) => {
+    if (err) res.status(404).json({ ok: false, error: "Provider management page not found" });
+  });
+});
+
+// Admin: cases list page (HTML) for staff
+app.get("/admin/cases", auth, requireRole(Role.STAFF), (req, res) => {
+  const p = path.join(__dirname, "..", "..", "public", "admin", "cases-list.html");
+  res.sendFile(p, (err) => {
+    if (err) res.status(404).json({ ok: false, error: "Cases list page not found" });
+  });
 });
 
 // Admin: get firm details, users, api keys, usage (requires PLATFORM_ADMIN_API_KEY)
@@ -242,12 +546,22 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
 app.patch("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   try {
     const firmId = String(req.params.firmId ?? "");
-    const body = (req.body ?? {}) as { plan?: string; pageLimitMonthly?: number; status?: string };
+    const body = (req.body ?? {}) as { plan?: string; pageLimitMonthly?: number; status?: string; documentLimitMonthly?: number | null };
 
-    const data: { plan?: string; pageLimitMonthly?: number; status?: string } = {};
+    const data: { plan?: string; pageLimitMonthly?: number; status?: string; settings?: object } = {};
     if (typeof body.plan === "string" && body.plan.trim()) data.plan = body.plan.trim();
     if (typeof body.pageLimitMonthly === "number" && body.pageLimitMonthly >= 0) data.pageLimitMonthly = body.pageLimitMonthly;
     if (typeof body.status === "string" && body.status.trim()) data.status = body.status.trim();
+    if (body.documentLimitMonthly !== undefined) {
+      const current = await prisma.firm.findUnique({ where: { id: firmId }, select: { settings: true } });
+      const settings = (current?.settings as Record<string, unknown>) ?? {};
+      if (body.documentLimitMonthly === null || body.documentLimitMonthly === undefined) {
+        delete settings.documentLimitMonthly;
+      } else {
+        settings.documentLimitMonthly = Math.max(0, Math.floor(body.documentLimitMonthly));
+      }
+      data.settings = settings as object;
+    }
 
     if (Object.keys(data).length === 0) {
       return res.status(400).json({ ok: false, error: "No valid fields to update" });
@@ -256,13 +570,50 @@ app.patch("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async 
     const firm = await prisma.firm.update({
       where: { id: firmId },
       data,
-      select: { id: true, name: true, plan: true, pageLimitMonthly: true, status: true },
+      select: { id: true, name: true, plan: true, pageLimitMonthly: true, status: true, settings: true },
     });
     res.json({ ok: true, firm });
   } catch (e: any) {
     if (e?.code === "P2025") return res.status(404).json({ ok: false, error: "Firm not found" });
     console.error("[admin/firms/:firmId PATCH]", e);
     res.status(500).json({ ok: false, error: "Failed to update firm" });
+  }
+});
+
+// Admin: firm billing visibility (usage, overage, plan)
+app.get("/admin/firms/:firmId/billing", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const firmId = String(req.params.firmId ?? "");
+    const firm = await prisma.firm.findUnique({
+      where: { id: firmId },
+      select: { id: true, name: true, plan: true, pageLimitMonthly: true, billingStatus: true, trialEndsAt: true, billingCustomerId: true },
+    });
+    if (!firm) return res.status(404).json({ ok: false, error: "Firm not found" });
+
+    const ym = `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, "0")}`;
+    const documentLimitMonthly = await getDocLimitForFirm(firmId);
+    const usage = await getUsageForPeriod(firmId, ym);
+    const overage = await getOverageForPeriod(firmId, ym);
+    const planMeta = getPlanMetadata(firm.plan);
+
+    res.json({
+      ok: true,
+      firm: {
+        id: firm.id,
+        name: firm.name,
+        plan: firm.plan,
+        pageLimitMonthly: firm.pageLimitMonthly,
+        documentLimitMonthly,
+        billingStatus: firm.billingStatus,
+        trialEndsAt: firm.trialEndsAt?.toISOString() ?? null,
+        billingCustomerId: firm.billingCustomerId ?? null,
+        planMetadata: planMeta ? { name: planMeta.name, docLimitMonthly: planMeta.docLimitMonthly, priceMonthlyDollars: planMeta.priceMonthlyDollars, overagePerDocDollars: planMeta.overagePerDocDollars, priceOneTimeDollars: planMeta.priceOneTimeDollars } : null,
+      },
+      usage: usage ?? { yearMonth: ym, docsProcessed: 0, pagesProcessed: 0, insuranceDocsExtracted: 0, courtDocsExtracted: 0, narrativeGenerated: 0, duplicateDetected: 0 },
+      overage: overage ?? null,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
@@ -290,17 +641,21 @@ app.post("/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
 app.post("/firms/:id/users", auth, requireAdminOrFirmAdminForFirm, async (req, res) => {
   try {
     const firmId = String(req.params.id ?? "");
-    const { email, role } = (req.body ?? {}) as { email?: string; role?: string };
+    const { email, role, password } = (req.body ?? {}) as { email?: string; role?: string; password?: string };
     if (!email || typeof email !== "string" || !email.trim()) {
       return res.status(400).json({ ok: false, error: "email is required" });
     }
     const roleEnum = role === "STAFF" ? "STAFF" : "FIRM_ADMIN";
+    const data: { firmId: string; email: string; role: "STAFF" | "FIRM_ADMIN"; passwordHash?: string } = {
+      firmId,
+      email: email.trim().toLowerCase(),
+      role: roleEnum as "STAFF" | "FIRM_ADMIN",
+    };
+    if (typeof password === "string" && password.length >= 8) {
+      data.passwordHash = await bcrypt.hash(password, 10);
+    }
     const user = await prisma.user.create({
-      data: {
-        firmId,
-        email: email.trim().toLowerCase(),
-        role: roleEnum as "STAFF" | "FIRM_ADMIN",
-      },
+      data,
       select: { id: true, email: true, role: true, firmId: true },
     });
     res.json({ ok: true, user });
@@ -368,6 +723,146 @@ app.get("/exports/clio/matters.csv", auth, requireRole(Role.STAFF), requireExpor
   }
 });
 
+// Firm-level CRM config (no secrets). For UI/ops: show Clio vs webhook and if configured.
+app.get("/crm/config", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const firm = await prisma.firm.findUnique({
+      where: { id: firmId },
+      select: { settings: true },
+    });
+    const settings = (firm?.settings ?? {}) as Record<string, unknown>;
+    const provider = settings.crm === "clio" ? "clio" : settings.crmWebhookUrl || settings.crm_webhook_url ? "generic_webhook" : null;
+    const clioResult = provider === "clio" ? await getClioAccessToken(firmId) : { configured: false as const };
+    const clioConfigured = clioResult.configured === true;
+    const webhookConfigured = !!(settings.crmWebhookUrl || settings.crm_webhook_url || process.env.FIRM_CRM_WEBHOOK_URL);
+    res.json({
+      ok: true,
+      provider: provider ?? null,
+      clioConfigured,
+      webhookConfigured,
+    });
+  } catch (e: unknown) {
+    res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });
+  }
+});
+
+// Clio: connect (store OAuth token), disconnect, list matters for mapping
+app.post("/crm/clio/connect", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body ?? {}) as { accessToken?: string };
+    const accessToken = typeof body.accessToken === "string" ? body.accessToken.trim() : "";
+    if (!accessToken) {
+      return res.status(400).json({ ok: false, error: "accessToken is required" });
+    }
+    let encrypted: string;
+    try {
+      encrypted = encryptSecret(JSON.stringify({ accessToken }));
+    } catch {
+      return res.status(500).json({ ok: false, error: "Encryption not configured (ENCRYPTION_KEY)" });
+    }
+    const integration = await prisma.firmIntegration.create({
+      data: {
+        firmId,
+        type: IntegrationType.CASE_API,
+        provider: IntegrationProvider.CLIO,
+        status: "CONNECTED",
+      },
+    });
+    await prisma.integrationCredential.create({
+      data: { integrationId: integration.id, encryptedSecret: encrypted },
+    });
+    const firm = await prisma.firm.findUnique({
+      where: { id: firmId },
+      select: { settings: true },
+    });
+    const settings = (firm?.settings ?? {}) as Record<string, unknown>;
+    await prisma.firm.update({
+      where: { id: firmId },
+      data: {
+        settings: {
+          ...settings,
+          crm: "clio",
+          crmIntegrationId: integration.id,
+        } as object,
+      },
+    });
+    res.json({ ok: true, integrationId: integration.id, message: "Clio connected" });
+  } catch (e: unknown) {
+    res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });
+  }
+});
+
+app.post("/crm/clio/disconnect", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const firm = await prisma.firm.findUnique({
+      where: { id: firmId },
+      select: { settings: true },
+    });
+    const settings = (firm?.settings ?? {}) as Record<string, unknown>;
+    const integrationId = settings.crmIntegrationId as string | undefined;
+    if (integrationId) {
+      await prisma.firmIntegration.updateMany({
+        where: { id: integrationId, firmId },
+        data: { status: IntegrationStatus.DISCONNECTED },
+      });
+    }
+    const { crmIntegrationId: _removed, ...rest } = settings;
+    await prisma.firm.update({
+      where: { id: firmId },
+      data: { settings: { ...rest, crm: null } as object },
+    });
+    res.json({ ok: true, message: "Clio disconnected" });
+  } catch (e: unknown) {
+    res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });
+  }
+});
+
+app.get("/crm/clio/matters", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const result = await fetchCasesFromCRM(firmId);
+    if (!result.ok) {
+      return res.status(400).json({ ok: false, error: result.error, cases: [] });
+    }
+    res.json({ ok: true, cases: result.cases });
+  } catch (e: unknown) {
+    res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e), cases: [] });
+  }
+});
+
+// CRM push log (sync history) for support/ops
+app.get("/crm/push-log", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const limit = Math.min(parseInt(String(req.query.limit), 10) || 50, 200);
+    const caseIdRaw = typeof req.query.caseId === "string" ? req.query.caseId.trim() : null;
+    const items = await prisma.crmPushLog.findMany({
+      where: { firmId, ...(caseIdRaw ? { caseId: caseIdRaw } : {}) },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
+    res.json({
+      ok: true,
+      items: items.map((l) => ({
+        id: l.id,
+        caseId: l.caseId,
+        documentId: l.documentId,
+        actionType: l.actionType,
+        provider: l.provider,
+        ok: l.ok,
+        externalId: l.externalId,
+        error: l.error,
+        createdAt: l.createdAt.toISOString(),
+      })),
+    });
+  } catch (e: unknown) {
+    res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e), items: [] });
+  }
+});
+
 // Clio matter ID mappings (import CSV, list)
 app.get("/crm/clio/mappings", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
@@ -398,6 +893,27 @@ app.get("/crm/clio/mappings", auth, requireRole(Role.STAFF), async (req, res) =>
   } catch (e: any) {
     console.error("GET /crm/clio/mappings", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/crm/clio/mappings", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body ?? {}) as { caseId?: string; externalMatterId?: string };
+    const caseId = typeof body.caseId === "string" ? body.caseId.trim() : "";
+    const externalMatterId = typeof body.externalMatterId === "string" ? body.externalMatterId.trim() : "";
+    if (!caseId || !externalMatterId) {
+      return res.status(400).json({ ok: false, error: "caseId and externalMatterId are required" });
+    }
+    const c = await prisma.legalCase.findFirst({
+      where: { id: caseId, firmId },
+      select: { id: true },
+    });
+    if (!c) return res.status(404).json({ ok: false, error: "Case not found" });
+    await upsertCrmCaseMapping(firmId, caseId, externalMatterId);
+    res.json({ ok: true, caseId, externalMatterId });
+  } catch (e: unknown) {
+    res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });
   }
 });
 
@@ -531,8 +1047,8 @@ app.delete("/webhooks/:id", auth, requireRole(Role.FIRM_ADMIN), async (req, res)
     const firmId = (req as any).firmId as string;
     const id = String(req.params.id ?? "");
     const existing = await prisma.webhookEndpoint.findFirst({ where: { id, firmId } });
-    if (!existing) return res.status(404).json({ error: "Webhook not found" });
-    await prisma.webhookEndpoint.delete({ where: { id } });
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    await prisma.webhookEndpoint.delete({ where: { id, firmId } });
     res.json({ ok: true });
   } catch (e: any) {
     console.error("DELETE /webhooks/:id", e);
@@ -608,26 +1124,59 @@ app.patch("/webhooks/:id", auth, requireRole(Role.FIRM_ADMIN), async (req, res) 
   }
 });
 
+// Admin: queue status (Redis document pipeline + DB jobs) for operational visibility
+app.get("/admin/queue-status", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res, next) => {
+  try {
+    const [redisPending, dbCounts] = await Promise.all([
+      getRedisQueueLength(),
+      getJobCounts(null),
+    ]);
+    res.json({
+      ok: true,
+      redis: {
+        pending: redisPending,
+        description: "Document pipeline (OCR → classification → extraction → case match → timeline)",
+      },
+      db: {
+        queued: dbCounts.queued,
+        running: dbCounts.running,
+        failed: dbCounts.failed,
+        retryBacklog: dbCounts.retryBacklog,
+        description: "DB-backed jobs (demand_package, records_request, export, timeline.rebuild, etc.)",
+      },
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
 // Admin: jobs list and retry (requires PLATFORM_ADMIN_API_KEY)
 app.get("/admin/jobs", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res, next) => {
   try {
+    if (req.accepts("html")) {
+      const p = path.join(__dirname, "..", "..", "public", "admin", "jobs.html");
+      return res.sendFile(p);
+    }
     const limit = Math.min(parseInt(String(req.query.limit), 10) || 100, 500);
-    const statusFilter = typeof req.query.status === "string" && req.query.status.trim()
-      ? req.query.status.trim()
-      : null;
-    const firmIdFilter = typeof req.query.firmId === "string" && req.query.firmId.trim()
-      ? req.query.firmId.trim()
-      : null;
-    const items = await prisma.job.findMany({
-      where: {
-        ...(statusFilter ? { status: statusFilter as "queued" | "running" | "failed" | "done" } : {}),
-        ...(firmIdFilter ? { firmId: firmIdFilter } : {}),
-      },
-      orderBy: [{ createdAt: "desc" }],
-      take: limit,
-      include: { firm: { select: { name: true } } },
+    const statusFilter = typeof req.query.status === "string" && req.query.status.trim() ? req.query.status.trim() : undefined;
+    const typeFilter = typeof req.query.type === "string" && req.query.type.trim() ? req.query.type.trim() : undefined;
+    const firmIdFilter = typeof req.query.firmId === "string" && req.query.firmId.trim() ? req.query.firmId.trim() : undefined;
+    const onlyFailed = req.query.onlyFailed === "true" || req.query.onlyFailed === "1";
+    const cursor = typeof req.query.cursor === "string" && req.query.cursor.trim() ? req.query.cursor.trim() : undefined;
+    const { items, nextCursor } = await listJobs({
+      status: statusFilter,
+      type: typeFilter,
+      firmId: firmIdFilter,
+      onlyFailed,
+      limit,
+      cursor,
     });
-    res.json({ ok: true, items });
+    const enriched = items.map((j: { payload?: Record<string, unknown>; [k: string]: unknown }) => ({
+      ...j,
+      documentId: j.payload && typeof j.payload === "object" && "documentId" in j.payload ? (j.payload as { documentId?: string }).documentId : undefined,
+      caseId: j.payload && typeof j.payload === "object" && "caseId" in j.payload ? (j.payload as { caseId?: string }).caseId : undefined,
+    }));
+    res.json({ ok: true, items: enriched, nextCursor });
   } catch (e) {
     next(e);
   }
@@ -636,22 +1185,181 @@ app.get("/admin/jobs", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res, 
 app.post("/admin/jobs/:id/retry", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res, next) => {
   try {
     const id = String(req.params.id ?? "");
-    const job = await prisma.job.findUnique({ where: { id } });
-    if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
-    if (job.status !== "failed") {
-      return res.status(400).json({ ok: false, error: "Can only retry failed jobs" });
-    }
-    await prisma.job.update({
-      where: { id },
-      data: {
-        status: "queued",
-        runAt: new Date(),
-        lastError: null,
-        attempts: 0,
-        updatedAt: new Date(),
-      },
-    });
+    const result = await retryJob(id);
+    if (!result.ok) return res.status(result.error === "Job not found" ? 404 : 400).json({ ok: false, error: result.error });
     res.json({ ok: true, message: "Job queued for retry" });
+  } catch (e) {
+    next(e);
+  }
+});
+
+app.post("/admin/jobs/:id/cancel", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res, next) => {
+  try {
+    const id = String(req.params.id ?? "");
+    const result = await cancelJob(id);
+    if (!result.ok) return res.status(result.error === "Job not found" ? 404 : 400).json({ ok: false, error: result.error });
+    res.json({ ok: true, message: "Job cancelled" });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /jobs — create job (STAFF: firmId from auth)
+app.post("/jobs", auth, requireRole(Role.STAFF), async (req, res, next) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body ?? {}) as { type: string; payload?: Record<string, unknown>; priority?: number; runAt?: string; maxAttempts?: number };
+    const type = body.type?.trim();
+    if (!type) return res.status(400).json({ ok: false, error: "type required" });
+    const payload = body.payload != null ? body.payload : {};
+    const runAt = body.runAt ? new Date(body.runAt) : new Date();
+    const job = await enqueueJobToQueue({
+      firmId,
+      type,
+      payload,
+      priority: body.priority,
+      runAt,
+      maxAttempts: body.maxAttempts,
+    });
+    res.status(201).json({ ok: true, jobId: job.id, status: "queued" });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// GET /jobs — list jobs (STAFF: own firm; PLATFORM_ADMIN: all or ?firmId=)
+app.get("/jobs", auth, requireRole(Role.STAFF), async (req, res, next) => {
+  try {
+    const authRole = (req as any).authRole as Role | undefined;
+    const firmIdAuth = (req as any).firmId as string | undefined;
+    const firmIdFilter = typeof req.query.firmId === "string" && req.query.firmId.trim() ? req.query.firmId.trim() : null;
+    const firmId = authRole === Role.PLATFORM_ADMIN && firmIdFilter ? firmIdFilter : firmIdAuth;
+    const status = typeof req.query.status === "string" && req.query.status.trim() ? req.query.status.trim() : undefined;
+    const type = typeof req.query.type === "string" && req.query.type.trim() ? req.query.type.trim() : undefined;
+    const onlyFailed = req.query.onlyFailed === "true" || req.query.onlyFailed === "1";
+    const limit = Math.min(parseInt(String(req.query.limit), 10) || 50, 200);
+    const cursor = typeof req.query.cursor === "string" && req.query.cursor.trim() ? req.query.cursor.trim() : undefined;
+    const { items, nextCursor } = await listJobs({
+      ...(firmId ? { firmId } : {}),
+      status: status || undefined,
+      type,
+      onlyFailed,
+      limit,
+      cursor,
+    });
+    const enriched = items.map((j: { payload?: Record<string, unknown>; [k: string]: unknown }) => ({
+      ...j,
+      documentId: j.payload && typeof j.payload === "object" && "documentId" in j.payload ? (j.payload as { documentId?: string }).documentId : undefined,
+      caseId: j.payload && typeof j.payload === "object" && "caseId" in j.payload ? (j.payload as { caseId?: string }).caseId : undefined,
+    }));
+    res.json({ ok: true, items: enriched, nextCursor });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// GET /jobs/counts — dashboard counts
+app.get("/jobs/counts", auth, requireRole(Role.STAFF), async (req, res, next) => {
+  try {
+    const authRole = (req as any).authRole as Role | undefined;
+    const firmIdAuth = (req as any).firmId as string | undefined;
+    const firmIdFilter = typeof req.query.firmId === "string" && req.query.firmId.trim() ? req.query.firmId.trim() : null;
+    const firmId = authRole === Role.PLATFORM_ADMIN && firmIdFilter ? firmIdFilter : firmIdAuth ?? undefined;
+    const counts = await getJobCounts(firmId);
+    res.json({ ok: true, ...counts });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// GET /me/queue-status — simple queue visibility for STAFF (firm DB jobs + document pipeline pending)
+app.get("/me/queue-status", auth, requireRole(Role.STAFF), async (req, res, next) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const [dbCounts, redisPending] = await Promise.all([
+      getJobCounts(firmId),
+      getRedisQueueLength(),
+    ]);
+    res.json({
+      ok: true,
+      db: { queued: dbCounts.queued, running: dbCounts.running, failed: dbCounts.failed },
+      documentPipelinePending: redisPending,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// GET /jobs/:id — job detail + events
+app.get("/jobs/:id", auth, requireRole(Role.STAFF), async (req, res, next) => {
+  try {
+    const id = String(req.params.id ?? "");
+    const authRole = (req as any).authRole as Role | undefined;
+    const firmIdAuth = (req as any).firmId as string | undefined;
+    const job = await getJobWithEvents(id);
+    if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+    if (authRole !== Role.PLATFORM_ADMIN && job.firmId !== firmIdAuth) {
+      return res.status(404).json({ ok: false, error: "Job not found" });
+    }
+    const payload = job.payload as Record<string, unknown> | null | undefined;
+    const out = { ...job, documentId: payload?.documentId, caseId: payload?.caseId };
+    res.json({ ok: true, job: out });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Admin: job detail page (HTML) or JSON
+app.get("/admin/jobs/:id", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res, next) => {
+  try {
+    const id = String(req.params.id ?? "");
+    if (req.accepts("html")) {
+      const p = path.join(__dirname, "..", "..", "public", "admin", "job-detail.html");
+      return res.sendFile(p);
+    }
+    const job = await getJobWithEvents(id);
+    if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+    const payload = job.payload as Record<string, unknown> | null | undefined;
+    const out = { ...job, documentId: payload?.documentId, caseId: payload?.caseId };
+    res.json({ ok: true, job: out });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /jobs/:id/retry
+app.post("/jobs/:id/retry", auth, requireRole(Role.STAFF), async (req, res, next) => {
+  try {
+    const id = String(req.params.id ?? "");
+    const authRole = (req as any).authRole as Role | undefined;
+    const firmIdAuth = (req as any).firmId as string | undefined;
+    const job = await prisma.job.findUnique({ where: { id }, select: { firmId: true } });
+    if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+    if (authRole !== Role.PLATFORM_ADMIN && job.firmId !== firmIdAuth) {
+      return res.status(404).json({ ok: false, error: "Job not found" });
+    }
+    const result = await retryJob(id);
+    if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+    res.json({ ok: true, message: "Job queued for retry" });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /jobs/:id/cancel
+app.post("/jobs/:id/cancel", auth, requireRole(Role.STAFF), async (req, res, next) => {
+  try {
+    const id = String(req.params.id ?? "");
+    const authRole = (req as any).authRole as Role | undefined;
+    const firmIdAuth = (req as any).firmId as string | undefined;
+    const job = await prisma.job.findUnique({ where: { id }, select: { firmId: true } });
+    if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+    if (authRole !== Role.PLATFORM_ADMIN && job.firmId !== firmIdAuth) {
+      return res.status(404).json({ ok: false, error: "Job not found" });
+    }
+    const result = await cancelJob(id);
+    if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+    res.json({ ok: true, message: "Job cancelled" });
   } catch (e) {
     next(e);
   }
@@ -664,14 +1372,329 @@ app.get("/admin/errors", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res
     const serviceFilter = typeof req.query.service === "string" && req.query.service.trim()
       ? req.query.service.trim()
       : null;
+    const severityFilter = typeof req.query.severity === "string" && ["INFO", "WARN", "ERROR", "CRITICAL"].includes(req.query.severity)
+      ? req.query.severity
+      : null;
+    const areaFilter = typeof req.query.area === "string" && req.query.area.trim()
+      ? req.query.area.trim()
+      : null;
+    const statusFilter = typeof req.query.status === "string" && ["OPEN", "ACKNOWLEDGED", "RESOLVED"].includes(req.query.status)
+      ? req.query.status
+      : null;
+    const where: Record<string, unknown> = {};
+    if (serviceFilter) where.service = serviceFilter;
+    if (severityFilter) where.severity = severityFilter;
+    if (areaFilter) where.area = areaFilter;
+    if (statusFilter) where.status = statusFilter;
     const logs = await prisma.systemErrorLog.findMany({
-      where: serviceFilter ? { service: serviceFilter } : undefined,
+      where: Object.keys(where).length ? where : undefined,
       orderBy: { createdAt: "desc" },
       take: limit,
     });
     res.json({ ok: true, errors: logs });
   } catch (e) {
     next(e);
+  }
+});
+
+// Admin: get one system error
+app.get(
+  "/admin/errors/:id",
+  auth,
+  requireRole(Role.PLATFORM_ADMIN),
+  validateIdParam("id"),
+  async (req, res, next) => {
+    try {
+      const log = await prisma.systemErrorLog.findUnique({
+        where: { id: req.params.id },
+      });
+      if (!log) {
+        return sendSafeError(res, 404, "Error log not found", "NOT_FOUND");
+      }
+      res.json({ ok: true, error: log });
+    } catch (e) {
+      next(e);
+    }
+  }
+);
+
+// Admin: update system error (e.g. mark resolved)
+app.patch(
+  "/admin/errors/:id",
+  auth,
+  requireRole(Role.PLATFORM_ADMIN),
+  validateIdParam("id"),
+  async (req, res, next) => {
+    try {
+      const body = req.body || {};
+      const status = typeof body.status === "string" && ["OPEN", "ACKNOWLEDGED", "RESOLVED"].includes(body.status)
+        ? body.status
+        : undefined;
+      const resolvedAt = status === "RESOLVED" ? new Date() : undefined;
+      const log = await prisma.systemErrorLog.update({
+        where: { id: req.params.id },
+        data: { ...(status && { status }), ...(resolvedAt !== undefined && { resolvedAt }) },
+      });
+      res.json({ ok: true, error: log });
+    } catch (e: any) {
+      if (e?.code === "P2025") {
+        return sendSafeError(res, 404, "Error log not found", "NOT_FOUND");
+      }
+      next(e);
+    }
+  }
+);
+
+// Admin: system health (API, DB, redis, recent errors, failed jobs, abuse/support signals, backup status)
+app.get("/admin/system/health", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res, next) => {
+  try {
+    const health = await getSystemHealth();
+    res.json({ ok: true, health });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Admin: manually trigger backup
+app.post("/admin/system/backup", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res, next) => {
+  try {
+    const result = await triggerDatabaseBackup();
+    if (result.status === "FAILED") {
+      return res.status(500).json({ ok: false, error: "Backup failed" });
+    }
+    res.status(201).json({ ok: true, backup: result });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Admin: list backups (filter by date/type)
+app.get("/admin/system/backups", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res, next) => {
+  try {
+    const backupType = typeof req.query.backupType === "string" && ["DB", "FILE_STORAGE", "CONFIG"].includes(req.query.backupType) ? req.query.backupType as "DB" | "FILE_STORAGE" | "CONFIG" : undefined;
+    const status = typeof req.query.status === "string" && ["SUCCESS", "FAILED"].includes(req.query.status) ? req.query.status as "SUCCESS" | "FAILED" : undefined;
+    const from = typeof req.query.from === "string" ? new Date(req.query.from) : undefined;
+    const to = typeof req.query.to === "string" ? new Date(req.query.to) : undefined;
+    const take = Math.min(parseInt(String(req.query.limit), 10) || 100, 500);
+    const list = await listBackups({ backupType, status, since: from, until: to, limit: take });
+    res.json({ ok: true, backups: list, total: list.length });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Admin: restore from backup (confirmation required; logs incident)
+app.post(
+  "/admin/system/restore/:id",
+  auth,
+  requireRole(Role.PLATFORM_ADMIN),
+  validateIdParam("id"),
+  async (req, res, next) => {
+    try {
+      const body = req.body || {};
+      const confirm = typeof body.confirm === "string" ? body.confirm : "";
+      if (confirm !== "RESTORE") {
+        return sendSafeError(res, 400, "Confirmation required: send { confirm: 'RESTORE' } in body", "VALIDATION_ERROR");
+      }
+      const backupId = req.params.id;
+      const userId = (req as any).userId as string | undefined;
+      await emitSystemAlert("restore_attempted", { backupId, userId, confirmed: true }).catch(() => {});
+      const incident = await prisma.systemIncident.create({
+        data: {
+          severity: "CRITICAL",
+          title: "Database restore executed",
+          description: `Restore from backup ${backupId} was triggered.`,
+          status: "MITIGATING",
+          relatedErrorId: null,
+        },
+      });
+      const restoreResult = await restoreFromBackup(backupId);
+      if (!restoreResult.ok) {
+        await prisma.systemIncident.update({
+          where: { id: incident.id },
+          data: { description: `${incident.description} Failed: ${restoreResult.error}`, status: "RESOLVED", resolvedAt: new Date() },
+        });
+        return sendSafeError(res, 500, restoreResult.error ?? "Restore failed", "INTERNAL_ERROR");
+      }
+      await prisma.systemIncident.update({
+        where: { id: incident.id },
+        data: { description: `${incident.description} Completed successfully.`, status: "RESOLVED", resolvedAt: new Date() },
+      });
+      res.json({ ok: true, message: "Restore completed", incidentId: incident.id });
+    } catch (e) {
+      next(e);
+    }
+  }
+);
+
+// Admin: incidents — create
+app.post("/admin/incidents", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const severity = typeof body.severity === "string" && ["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(body.severity) ? body.severity : "MEDIUM";
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const description = typeof body.description === "string" ? body.description.trim() || null : null;
+    const relatedErrorId = typeof body.relatedErrorId === "string" ? body.relatedErrorId.trim() || null : null;
+    if (!title) {
+      return sendSafeError(res, 400, "Title is required", "VALIDATION_ERROR");
+    }
+    const incident = await prisma.systemIncident.create({
+      data: { severity, title, description, status: "OPEN", relatedErrorId },
+    });
+    res.status(201).json({ ok: true, incident });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Admin: incidents — list
+app.get("/admin/incidents", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res, next) => {
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit), 10) || 100, 500);
+    const statusFilter = typeof req.query.status === "string" && ["OPEN", "MITIGATING", "RESOLVED"].includes(req.query.status) ? req.query.status : null;
+    const severityFilter = typeof req.query.severity === "string" && ["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(req.query.severity) ? req.query.severity : null;
+    const incidents = await prisma.systemIncident.findMany({
+      where: {
+        ...(statusFilter && { status: statusFilter }),
+        ...(severityFilter && { severity: severityFilter }),
+      },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
+    res.json({ ok: true, incidents });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Admin: incidents — update
+app.patch(
+  "/admin/incidents/:id",
+  auth,
+  requireRole(Role.PLATFORM_ADMIN),
+  validateIdParam("id"),
+  async (req, res, next) => {
+    try {
+      const body = req.body || {};
+      const status = typeof body.status === "string" && ["OPEN", "MITIGATING", "RESOLVED"].includes(body.status) ? body.status : undefined;
+      const severity = typeof body.severity === "string" && ["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(body.severity) ? body.severity : undefined;
+      const title = typeof body.title === "string" ? body.title.trim() : undefined;
+      const description = typeof body.description === "string" ? body.description.trim() ?? undefined : undefined;
+      const resolvedAt = status === "RESOLVED" ? new Date() : undefined;
+      const incident = await prisma.systemIncident.update({
+        where: { id: req.params.id },
+        data: { ...(status && { status }), ...(severity && { severity }), ...(title && { title }), ...(description !== undefined && { description }), ...(resolvedAt !== undefined && { resolvedAt }) },
+      });
+      res.json({ ok: true, incident });
+    } catch (e: any) {
+      if (e?.code === "P2025") return sendSafeError(res, 404, "Incident not found", "NOT_FOUND");
+      next(e);
+    }
+  }
+);
+
+// Admin: security/abuse activity (platform admin)
+app.get("/admin/security/activity", auth, requireRole(Role.PLATFORM_ADMIN), (_req, res) => {
+  const stats = getAbuseStats();
+  res.json({ ok: true, abuse: stats });
+});
+
+// Admin: list bug reports (platform admin; optional firmId filter)
+app.get("/admin/support/bug-reports", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res, next) => {
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit), 10) || 100, 500);
+    const firmIdFilter = typeof req.query.firmId === "string" && req.query.firmId.trim() ? req.query.firmId.trim() : null;
+    const statusFilter = typeof req.query.status === "string" && ["OPEN", "IN_PROGRESS", "CLOSED"].includes(req.query.status) ? req.query.status : null;
+    const priorityFilter = typeof req.query.priority === "string" && ["LOW", "MEDIUM", "HIGH", "URGENT"].includes(req.query.priority) ? req.query.priority : null;
+    const reports = await prisma.appBugReport.findMany({
+      where: {
+        ...(firmIdFilter && { firmId: firmIdFilter }),
+        ...(statusFilter && { status: statusFilter }),
+        ...(priorityFilter && { priority: priorityFilter }),
+      },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
+    res.json({ ok: true, reports });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Admin: quality page (HTML); funnel and analytics are separate JSON endpoints
+app.get("/admin/quality", auth, requireRole(Role.PLATFORM_ADMIN), (req, res) => {
+  const p = path.join(__dirname, "..", "..", "public", "admin", "quality.html");
+  res.sendFile(p, (err) => {
+    if (err) res.status(404).json({ ok: false, error: "Quality page not found" });
+  });
+});
+
+// Settings: routing learning page (firm-scoped; STAFF can view)
+app.get("/settings/routing-learning", auth, requireRole(Role.STAFF), (_req, res) => {
+  const p = path.join(__dirname, "..", "..", "public", "admin", "routing-learning.html");
+  res.sendFile(p, (err) => {
+    if (err) res.status(404).json({ ok: false, error: "Routing learning page not found" });
+  });
+});
+
+// Admin: OCR and extraction quality metrics (low-confidence, handwriting, multilingual, etc.)
+app.get("/admin/quality/ocr-extraction-metrics", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const q = (req as any).query || {};
+    const firmIdFilter = typeof q.firmId === "string" && q.firmId.trim() ? q.firmId.trim() : null;
+    const dateFrom = typeof q.dateFrom === "string" && q.dateFrom.trim() ? new Date(q.dateFrom.trim()) : null;
+    const dateToRaw = typeof q.dateTo === "string" && q.dateTo.trim() ? new Date(q.dateTo.trim()) : null;
+    const dateTo = dateToRaw && !isNaN(dateToRaw.getTime()) ? (() => { const d = new Date(dateToRaw); d.setUTCHours(23, 59, 59, 999); return d; })() : null;
+
+    let whereClause = ' FROM document_recognition dr INNER JOIN "Document" d ON d.id = dr.document_id WHERE 1=1';
+    const params: (string | Date)[] = [];
+    let idx = 1;
+    if (firmIdFilter) {
+      whereClause += ` AND d."firmId" = $${idx}`;
+      params.push(firmIdFilter);
+      idx++;
+    }
+    if (dateFrom && !isNaN(dateFrom.getTime())) {
+      whereClause += ` AND d."ingestedAt" >= $${idx}`;
+      params.push(dateFrom);
+      idx++;
+    }
+    if (dateTo && !isNaN(dateTo.getTime())) {
+      whereClause += ` AND d."ingestedAt" <= $${idx}`;
+      params.push(dateTo);
+      idx++;
+    }
+
+    const { rows } = await pgPool.query<{
+      total_with_recognition: string;
+      low_ocr_confidence_count: string;
+      handwriting_doc_count: string;
+      multilingual_count: string;
+      strict_mode_count: string;
+    }>(
+      `SELECT
+        count(*)::text AS total_with_recognition,
+        count(*) FILTER (WHERE dr.ocr_confidence IS NOT NULL AND dr.ocr_confidence < 0.7)::text AS low_ocr_confidence_count,
+        count(*) FILTER (WHERE dr.has_handwriting = true)::text AS handwriting_doc_count,
+        count(*) FILTER (WHERE dr.detected_language IS NOT NULL AND dr.detected_language != 'en')::text AS multilingual_count,
+        count(*) FILTER (WHERE dr.extraction_strict_mode = true)::text AS strict_mode_count
+       ${whereClause}`,
+      params
+    );
+    const r = rows[0];
+    res.json({
+      ok: true,
+      metrics: {
+        totalWithRecognition: parseInt(r?.total_with_recognition ?? "0", 10),
+        lowOcrConfidenceCount: parseInt(r?.low_ocr_confidence_count ?? "0", 10),
+        handwritingDocCount: parseInt(r?.handwriting_doc_count ?? "0", 10),
+        multilingualCount: parseInt(r?.multilingual_count ?? "0", 10),
+        strictModeCount: parseInt(r?.strict_mode_count ?? "0", 10),
+      },
+      filter: { firmId: firmIdFilter ?? null, dateFrom: dateFrom?.toISOString() ?? null, dateTo: dateTo?.toISOString() ?? null },
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
@@ -923,6 +1946,863 @@ app.get("/admin/quality/analytics", auth, requireRole(Role.PLATFORM_ADMIN), asyn
     res.json(body);
   } catch (e) {
     next(e);
+  }
+});
+
+// Admin: processing funnel — stage counts, failures, avg time (optional firmId, dateFrom, dateTo)
+app.get("/admin/quality/funnel", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const q = (req as any).query || {};
+    const firmIdFilter = typeof q.firmId === "string" && q.firmId.trim() ? q.firmId.trim() : null;
+    const dateFrom = typeof q.dateFrom === "string" && q.dateFrom.trim() ? new Date(q.dateFrom.trim()) : null;
+    const dateToRaw = typeof q.dateTo === "string" && q.dateTo.trim() ? new Date(q.dateTo.trim()) : null;
+    const dateTo =
+      dateToRaw && !isNaN(dateToRaw.getTime())
+        ? (() => {
+            const d = new Date(dateToRaw);
+            d.setUTCHours(23, 59, 59, 999);
+            return d;
+          })()
+        : null;
+
+    const ingestedFilter: { gte?: Date; lte?: Date } = {};
+    if (dateFrom && !isNaN(dateFrom.getTime())) ingestedFilter.gte = dateFrom;
+    if (dateTo && !isNaN(dateTo.getTime())) ingestedFilter.lte = dateTo;
+    const hasDateFilter = Object.keys(ingestedFilter).length > 0;
+
+    const whereBase = {
+      ...(firmIdFilter ? { firmId: firmIdFilter } : {}),
+      ...(hasDateFilter ? { ingestedAt: ingestedFilter } : {}),
+    };
+
+    const stages = ["uploaded", "ocr", "classification", "extraction", "case_match", "complete"] as const;
+
+    const [byStage, failedCount, avgTimeResult] = await Promise.all([
+      prisma.document.groupBy({
+        by: ["processingStage"],
+        where: whereBase,
+        _count: { id: true },
+      }),
+      prisma.document.count({
+        where: { ...whereBase, status: "FAILED" },
+      }),
+      (() => {
+        const params: (string | Date)[] = [];
+        let sql = `SELECT
+          AVG(EXTRACT(EPOCH FROM ("processedAt" - "ingestedAt")) * 1000)::float AS avg_ms,
+          COUNT(*)::int AS completed_count
+          FROM "Document"
+          WHERE "processedAt" IS NOT NULL AND "ingestedAt" IS NOT NULL`;
+        if (firmIdFilter) {
+          params.push(firmIdFilter);
+          sql += ` AND "firmId" = $${params.length}`;
+        }
+        if (dateFrom && !isNaN(dateFrom.getTime())) {
+          params.push(dateFrom);
+          sql += ` AND "ingestedAt" >= $${params.length}`;
+        }
+        if (dateTo && !isNaN(dateTo.getTime())) {
+          params.push(dateTo);
+          sql += ` AND "ingestedAt" <= $${params.length}`;
+        }
+        return pgPool.query<{ avg_ms: number | null; completed_count: string }>(sql, params);
+      })(),
+    ]);
+
+    const stageCounts: Record<string, number> = {};
+    for (const s of stages) stageCounts[s] = 0;
+    for (const row of byStage) {
+      const stage = String(row.processingStage ?? "uploaded");
+      if (stages.includes(stage as any)) stageCounts[stage] = row._count.id;
+    }
+
+    const avgRow = (avgTimeResult as { rows: Array<{ avg_ms: number | null; completed_count: string }> }).rows?.[0];
+    const avgProcessingTimeMs = avgRow?.avg_ms != null ? Math.round(avgRow.avg_ms) : null;
+    const completedCount = avgRow?.completed_count != null ? parseInt(avgRow.completed_count, 10) || 0 : 0;
+
+    const totalInFunnel = stages.reduce((sum, s) => sum + (stageCounts[s] ?? 0), 0);
+
+    res.json({
+      ok: true,
+      stages: stageCounts,
+      uploaded: stageCounts.uploaded ?? 0,
+      ocr: stageCounts.ocr ?? 0,
+      classification: stageCounts.classification ?? 0,
+      extraction: stageCounts.extraction ?? 0,
+      case_match: stageCounts.case_match ?? 0,
+      complete: stageCounts.complete ?? 0,
+      failedCount,
+      completedCount,
+      totalInFunnel: totalInFunnel + failedCount,
+      avgProcessingTimeMs,
+      dateFrom: dateFrom?.toISOString().slice(0, 10) ?? null,
+      dateTo: dateTo?.toISOString().slice(0, 10) ?? null,
+      firmId: firmIdFilter,
+    });
+  } catch (e: any) {
+    console.error("GET /admin/quality/funnel failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Admin: recognition quality — docs by doc type, avg quality, issues, low-confidence, extraction correction rate, settlement offers count
+app.get("/admin/quality/recognition", auth, requireRole(Role.STAFF), async (req, res) => {
+  if (req.accepts("html")) {
+    const p = path.join(__dirname, "..", "..", "public", "admin", "recognition-quality.html");
+    return res.sendFile(p, (err: Error | null) => {
+      if (err) res.status(404).json({ ok: false, error: "Recognition quality page not found" });
+    });
+  }
+  try {
+    const firmId = (req as any).firmId as string;
+    const [byTypeRows, qualityRows, issuesRows, lowConfRows, extractionFeedback, offersCount] = await Promise.all([
+      pgPool.query<{ doc_type: string; count: string }>(
+        `select coalesce(dr.doc_type, 'unknown') as doc_type, count(*)::text as count
+         from document_recognition dr
+         inner join "Document" d on d.id = dr.document_id
+         where d."firmId" = $1
+         group by dr.doc_type order by count desc`,
+        [firmId]
+      ),
+      pgPool.query<{ avg_quality: string | null }>(
+        `select avg((dr.quality_score)::double precision)::text as avg_quality
+         from document_recognition dr
+         inner join "Document" d on d.id = dr.document_id
+         where d."firmId" = $1 and dr.quality_score is not null`,
+        [firmId]
+      ),
+      pgPool.query<{ issue_key: string; cnt: string }>(
+        `select j.key as issue_key, count(*)::text as cnt
+         from document_recognition dr
+         inner join "Document" d on d.id = dr.document_id,
+         lateral jsonb_each_text(dr.issues_json) j
+         where d."firmId" = $1 and dr.issues_json is not null and jsonb_typeof(dr.issues_json) = 'object'
+         group by j.key order by cnt desc limit 20`,
+        [firmId]
+      ).catch(() => ({ rows: [] })),
+      pgPool.query<{ document_id: string; doc_type: string | null; confidence: string }>(
+        `select dr.document_id, dr.doc_type, dr.confidence::text
+         from document_recognition dr
+         inner join "Document" d on d.id = dr.document_id
+         where d."firmId" = $1 and dr.confidence is not null and (dr.confidence::double precision) < 0.6
+         order by dr.confidence asc limit 50`,
+        [firmId]
+      ),
+      prisma.extractionFeedback.groupBy({
+        by: ["fieldKey"],
+        where: { firmId },
+        _count: { id: true },
+      }).then(async (groups) => {
+        const correctionRate: { fieldKey: string; total: number; correctCount: number }[] = [];
+        for (const g of groups) {
+          const correctCount = await prisma.extractionFeedback.count({
+            where: { firmId, fieldKey: g.fieldKey, wasCorrect: true },
+          });
+          correctionRate.push({ fieldKey: g.fieldKey, total: g._count.id, correctCount });
+        }
+        return correctionRate;
+      }).catch(() => []),
+      pgPool.query<{ cnt: string }>(
+        `select count(*)::text as cnt from "Document" d
+         join document_recognition dr on dr.document_id = d.id
+         where d."firmId" = $1 and dr.insurance_fields is not null
+         and (dr.insurance_fields->>'settlementOffer') is not null and (dr.insurance_fields->>'settlementOffer')::float > 0`,
+        [firmId]
+      ),
+    ]);
+
+    const byType = (byTypeRows as { rows: { doc_type: string; count: string }[] }).rows.map((r) => ({
+      docType: r.doc_type,
+      count: parseInt(r.count, 10) || 0,
+    }));
+    const avgQuality = qualityRows.rows[0]?.avg_quality != null ? parseFloat(qualityRows.rows[0].avg_quality) : null;
+    const topIssues = (issuesRows as { rows: { issue_key: string; cnt: string }[] }).rows.map((r) => ({
+      issue: r.issue_key,
+      count: parseInt(r.cnt, 10) || 0,
+    }));
+    const lowConfidence = (lowConfRows as { rows: { document_id: string; doc_type: string | null; confidence: string }[] }).rows.map((r) => ({
+      documentId: r.document_id,
+      docType: r.doc_type,
+      confidence: parseFloat(r.confidence) || 0,
+    }));
+    const extractionCorrectionByField = Array.isArray(extractionFeedback) ? extractionFeedback.map((x: { fieldKey: string; total: number; correctCount: number }) => ({
+      fieldKey: x.fieldKey,
+      total: x.total,
+      correctCount: x.correctCount,
+      correctionRatePct: x.total > 0 ? Math.round((1 - x.correctCount / x.total) * 1000) / 10 : null,
+    })) : [];
+    const settlementOffersCount = parseInt((offersCount as { rows: { cnt: string }[] }).rows[0]?.cnt ?? "0", 10);
+
+    res.json({
+      ok: true,
+      byDocType: byType,
+      avgQualityScore: avgQuality != null ? Math.round(avgQuality * 1000) / 1000 : null,
+      topQualityIssues: topIssues,
+      lowConfidenceClassifications: lowConfidence,
+      extractionCorrectionByField: extractionCorrectionByField,
+      settlementOffersDetectedCount: settlementOffersCount,
+    });
+  } catch (e: any) {
+    console.error("GET /admin/quality/recognition failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Admin: classification stats — documents by detected type, confidence averages, override counts/%
+app.get("/admin/quality/classification-stats", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const q = (req as any).query || {};
+    const firmIdFilter = typeof q.firmId === "string" && q.firmId.trim() ? q.firmId.trim() : null;
+    const dateFrom = typeof q.dateFrom === "string" && q.dateFrom.trim() ? new Date(q.dateFrom.trim()) : null;
+    const dateToRaw = typeof q.dateTo === "string" && q.dateTo.trim() ? new Date(q.dateTo.trim()) : null;
+    const dateTo =
+      dateToRaw && !isNaN(dateToRaw.getTime())
+        ? (() => {
+            const d = new Date(dateToRaw);
+            d.setUTCHours(23, 59, 59, 999);
+            return d;
+          })()
+        : null;
+
+    const params: (string | Date)[] = [];
+    let whereClause = ' FROM document_recognition dr INNER JOIN "Document" d ON d.id = dr.document_id WHERE 1=1';
+    if (firmIdFilter) {
+      params.push(firmIdFilter);
+      whereClause += ` AND d."firmId" = $${params.length}`;
+    }
+    if (dateFrom && !isNaN(dateFrom.getTime())) {
+      params.push(dateFrom);
+      whereClause += ` AND d."ingestedAt" >= $${params.length}`;
+    }
+    if (dateTo && !isNaN(dateTo.getTime())) {
+      params.push(dateTo);
+      whereClause += ` AND d."ingestedAt" <= $${params.length}`;
+    }
+
+    const sql = `
+      SELECT
+        COALESCE(dr.doc_type, 'unknown') AS doc_type,
+        COUNT(*)::int AS count,
+        AVG(CAST(dr.confidence AS double precision))::float AS avg_confidence,
+        SUM(CASE WHEN (d."extractedFields"->>'docType') IS NOT NULL AND (d."extractedFields"->>'docType') IS DISTINCT FROM dr.doc_type THEN 1 ELSE 0 END)::int AS override_count
+      ${whereClause}
+      GROUP BY dr.doc_type
+      ORDER BY count DESC
+    `;
+    const { rows } = await pgPool.query<{
+      doc_type: string;
+      count: number;
+      avg_confidence: number | null;
+      override_count: number;
+    }>(sql, params);
+
+    const byType = rows.map((r) => {
+      const count = Number(r.count) || 0;
+      const overrideCount = Number(r.override_count) || 0;
+      const overridePct = count > 0 ? Math.round((overrideCount / count) * 1000) / 10 : 0;
+      return {
+        docType: r.doc_type,
+        count,
+        avgConfidence: r.avg_confidence != null ? Math.round(r.avg_confidence * 1000) / 1000 : null,
+        overrideCount,
+        overridePct,
+      };
+    });
+
+    const totalWithRecognition = byType.reduce((sum, r) => sum + r.count, 0);
+    const totalOverrides = byType.reduce((sum, r) => sum + r.overrideCount, 0);
+    const overridePctOverall = totalWithRecognition > 0 ? Math.round((totalOverrides / totalWithRecognition) * 1000) / 10 : 0;
+
+    res.json({
+      ok: true,
+      byType,
+      totalWithRecognition,
+      totalOverrides,
+      overridePctOverall,
+      dateFrom: dateFrom?.toISOString().slice(0, 10) ?? null,
+      dateTo: dateTo?.toISOString().slice(0, 10) ?? null,
+      firmId: firmIdFilter ?? null,
+    });
+  } catch (e: any) {
+    console.error("GET /admin/quality/classification-stats failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Admin: failure categories — normalize SystemErrorLog.message into categories, return counts + examples
+app.get("/admin/quality/failure-categories", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const q = (req as any).query || {};
+    const limit = Math.min(Math.max(parseInt(String(q.limit), 10) || 2000, 1), 10000);
+    const dateFrom = typeof q.dateFrom === "string" && q.dateFrom.trim() ? new Date(q.dateFrom.trim()) : null;
+    const dateToRaw = typeof q.dateTo === "string" && q.dateTo.trim() ? new Date(q.dateTo.trim()) : null;
+    const dateTo =
+      dateToRaw && !isNaN(dateToRaw.getTime())
+        ? (() => {
+            const d = new Date(dateToRaw);
+            d.setUTCHours(23, 59, 59, 999);
+            return d;
+          })()
+        : null;
+    const maxExamples = Math.min(Math.max(parseInt(String(q.maxExamples), 10) || 5, 1), 20);
+
+    const where: { createdAt?: { gte?: Date; lte?: Date } } = {};
+    if (dateFrom && !isNaN(dateFrom.getTime())) where.createdAt = { ...where.createdAt, gte: dateFrom };
+    if (dateTo && !isNaN(dateTo.getTime())) where.createdAt = { ...where.createdAt, lte: dateTo };
+
+    const logs = await prisma.systemErrorLog.findMany({
+      where: Object.keys(where).length > 0 ? where : undefined,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: { id: true, message: true, service: true, createdAt: true },
+    });
+
+    const categories: Record<string, { count: number; examples: string[] }> = {};
+    for (const cat of FAILURE_CATEGORIES) {
+      categories[cat] = { count: 0, examples: [] };
+    }
+
+    const seenExamples = new Map<string, Set<string>>();
+    for (const cat of FAILURE_CATEGORIES) {
+      seenExamples.set(cat, new Set());
+    }
+
+    for (const log of logs) {
+      const message = log.message ?? "";
+      const category = getFailureCategory(message, log.service);
+      categories[category].count += 1;
+      const set = seenExamples.get(category)!;
+      const snippet = message.length > 300 ? message.slice(0, 300) + "…" : message;
+      if (set.size < maxExamples && snippet.trim()) {
+        set.add(snippet);
+      }
+    }
+
+    const result: Record<string, { count: number; examples: string[] }> = {};
+    for (const cat of FAILURE_CATEGORIES) {
+      result[cat] = {
+        count: categories[cat].count,
+        examples: Array.from(seenExamples.get(cat)!),
+      };
+    }
+
+    const totalCount = logs.length;
+
+    res.json({
+      ok: true,
+      categories: result,
+      totalCount,
+      dateFrom: dateFrom?.toISOString().slice(0, 10) ?? null,
+      dateTo: dateTo?.toISOString().slice(0, 10) ?? null,
+    });
+  } catch (e: any) {
+    console.error("GET /admin/quality/failure-categories failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Admin: health score per firm (failed rate, unmatched rate, auto-route rate, avg latency, recent errors, review backlog)
+app.get("/admin/quality/health-score", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const q = (req as any).query || {};
+    const firmIdFilter = typeof q.firmId === "string" && q.firmId.trim() ? q.firmId.trim() : null;
+    const dateFrom = typeof q.dateFrom === "string" && q.dateFrom.trim() ? new Date(q.dateFrom.trim()) : null;
+    const dateToRaw = typeof q.dateTo === "string" && q.dateTo.trim() ? new Date(q.dateTo.trim()) : null;
+    const dateTo =
+      dateToRaw && !isNaN(dateToRaw.getTime())
+        ? (() => {
+            const d = new Date(dateToRaw);
+            d.setUTCHours(23, 59, 59, 999);
+            return d;
+          })()
+        : null;
+
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const errorsSince = dateFrom && !isNaN(dateFrom.getTime()) ? dateFrom : sevenDaysAgo;
+
+    const [perFirmRows, firms, recentErrorsCount] = await Promise.all([
+      (() => {
+        const params: (string | Date)[] = [];
+        let sql = `SELECT
+          d."firmId" AS firm_id,
+          COUNT(*)::text AS total_docs,
+          COUNT(*) FILTER (WHERE d.status IN ('UPLOADED','NEEDS_REVIEW','UNMATCHED'))::text AS processed_docs,
+          COUNT(*) FILTER (WHERE d.status = 'UPLOADED')::text AS auto_routed,
+          COUNT(*) FILTER (WHERE d.status = 'UNMATCHED')::text AS unmatched,
+          COUNT(*) FILTER (WHERE d.status = 'FAILED')::text AS failed_docs,
+          COUNT(*) FILTER (WHERE d.status = 'NEEDS_REVIEW')::text AS needs_review_docs,
+          AVG(EXTRACT(EPOCH FROM (d."processedAt" - d."ingestedAt")) * 1000) FILTER (WHERE d."processedAt" IS NOT NULL AND d."ingestedAt" IS NOT NULL) AS avg_ms
+          FROM "Document" d
+          WHERE 1=1`;
+        if (firmIdFilter) {
+          params.push(firmIdFilter);
+          sql += ` AND d."firmId" = $${params.length}`;
+        }
+        if (dateFrom && !isNaN(dateFrom.getTime())) {
+          params.push(dateFrom);
+          sql += ` AND d."ingestedAt" >= $${params.length}`;
+        }
+        if (dateTo && !isNaN(dateTo.getTime())) {
+          params.push(dateTo);
+          sql += ` AND d."ingestedAt" <= $${params.length}`;
+        }
+        sql += ` GROUP BY d."firmId"`;
+        return pgPool.query(sql, params);
+      })(),
+      prisma.firm.findMany({
+        select: { id: true, name: true },
+        orderBy: { name: "asc" },
+        ...(firmIdFilter ? { where: { id: firmIdFilter } } : {}),
+      }),
+      prisma.systemErrorLog.count({
+        where: { createdAt: { gte: errorsSince } },
+      }),
+    ]);
+
+    const firmByName = new Map(firms.map((f) => [f.id, f.name]));
+
+    type Row = {
+      firm_id: string;
+      total_docs: string;
+      processed_docs: string;
+      auto_routed: string;
+      unmatched: string;
+      failed_docs: string;
+      needs_review_docs: string;
+      avg_ms: number | null;
+    };
+
+    const rows = (perFirmRows as { rows: Row[] }).rows ?? [];
+
+    function computeScore(r: Row, recentErrors: number): number {
+      const total = Math.max(1, parseInt(r.total_docs, 10) || 0);
+      const processed = Math.max(1, parseInt(r.processed_docs, 10) || 0);
+      const failed = parseInt(r.failed_docs, 10) || 0;
+      const unmatched = parseInt(r.unmatched, 10) || 0;
+      const autoRouted = parseInt(r.auto_routed, 10) || 0;
+      const needsReview = parseInt(r.needs_review_docs, 10) || 0;
+      const avgMs = r.avg_ms != null ? r.avg_ms : null;
+
+      const failedRate = failed / total;
+      const unmatchedRate = unmatched / processed;
+      const autoRouteRate = autoRouted / processed;
+      const failedRateScore = 1 - Math.min(1, failedRate);
+      const unmatchedRateScore = 1 - Math.min(1, unmatchedRate);
+      const autoRouteRateScore = Math.min(1, autoRouteRate);
+      const latencyScore = avgMs == null ? 1 : Math.max(0, 1 - avgMs / 120000); // 2 min = 0
+      const systemErrorsScore = Math.max(0, 1 - recentErrors / 30); // 30+ = 0
+      const reviewBacklogScore = Math.max(0, 1 - needsReview / 100); // 100+ = 0
+
+      const raw = (failedRateScore + unmatchedRateScore + autoRouteRateScore + latencyScore + systemErrorsScore + reviewBacklogScore) / 6;
+      return Math.round(raw * 100);
+    }
+
+    const items = rows.map((r) => {
+      const total = Math.max(1, parseInt(r.total_docs, 10) || 0);
+      const processed = Math.max(1, parseInt(r.processed_docs, 10) || 0);
+      const failed = parseInt(r.failed_docs, 10) || 0;
+      const unmatched = parseInt(r.unmatched, 10) || 0;
+      const autoRouted = parseInt(r.auto_routed, 10) || 0;
+      const needsReview = parseInt(r.needs_review_docs, 10) || 0;
+      const score = computeScore(r, recentErrorsCount);
+      return {
+        firmId: r.firm_id,
+        firmName: firmByName.get(r.firm_id) ?? r.firm_id,
+        score: Math.min(100, Math.max(0, score)),
+        failedRate: total > 0 ? Math.round((failed / total) * 10000) / 100 : 0,
+        unmatchedRate: processed > 0 ? Math.round((unmatched / processed) * 10000) / 100 : 0,
+        autoRouteRate: processed > 0 ? Math.round((autoRouted / processed) * 10000) / 100 : 0,
+        avgLatencyMs: r.avg_ms != null ? Math.round(r.avg_ms) : null,
+        recentSystemErrors: recentErrorsCount,
+        reviewBacklog: needsReview,
+        totalDocs: total,
+        processedDocs: parseInt(r.processed_docs, 10) || 0,
+        failedDocs: failed,
+      };
+    });
+
+    if (firmIdFilter && items.length === 1) {
+      return res.json({
+        ok: true,
+        firm: items[0],
+        recentSystemErrors: recentErrorsCount,
+        dateFrom: dateFrom?.toISOString().slice(0, 10) ?? null,
+        dateTo: dateTo?.toISOString().slice(0, 10) ?? null,
+      });
+    }
+
+    const overallScore = items.length > 0
+      ? Math.round(items.reduce((s, i) => s + i.score, 0) / items.length)
+      : null;
+
+    res.json({
+      ok: true,
+      items,
+      overallScore,
+      recentSystemErrors: recentErrorsCount,
+      dateFrom: dateFrom?.toISOString().slice(0, 10) ?? null,
+      dateTo: dateTo?.toISOString().slice(0, 10) ?? null,
+    });
+  } catch (e: any) {
+    console.error("GET /admin/quality/health-score failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Admin: review SLA metrics (avg/median review time, open count, resolved today/week)
+app.get("/admin/quality/review-sla", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const q = (req as any).query || {};
+    const firmIdFilter = typeof q.firmId === "string" && q.firmId.trim() ? q.firmId.trim() : null;
+    const dateFrom = typeof q.dateFrom === "string" && q.dateFrom.trim() ? new Date(q.dateFrom.trim()) : null;
+    const dateToRaw = typeof q.dateTo === "string" && q.dateTo.trim() ? new Date(q.dateTo.trim()) : null;
+    const dateTo =
+      dateToRaw && !isNaN(dateToRaw.getTime())
+        ? (() => {
+            const d = new Date(dateToRaw);
+            d.setUTCHours(23, 59, 59, 999);
+            return d;
+          })()
+        : null;
+
+    const baseWhere = {
+      ...(firmIdFilter ? { firmId: firmIdFilter } : {}),
+    };
+    const exitedAtRange: { gte?: Date; lte?: Date } = {};
+    if (dateFrom && !isNaN(dateFrom.getTime())) exitedAtRange.gte = dateFrom;
+    if (dateTo && !isNaN(dateTo.getTime())) exitedAtRange.lte = dateTo;
+    const resolvedWhere = {
+      ...baseWhere,
+      exitedAt: { not: null, ...(Object.keys(exitedAtRange).length ? exitedAtRange : {}) },
+    };
+    const resolvedWhereToday = {
+      ...baseWhere,
+      exitedAt: {
+        gte: new Date(new Date().setUTCHours(0, 0, 0, 0)),
+      },
+    };
+    const resolvedWhereWeek = {
+      ...baseWhere,
+      exitedAt: {
+        gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+      },
+    };
+
+    const [openCount, resolvedToday, resolvedWeek, resolvedEvents] = await Promise.all([
+      prisma.reviewQueueEvent.count({ where: { ...baseWhere, exitedAt: null } }),
+      prisma.reviewQueueEvent.count({ where: resolvedWhereToday }),
+      prisma.reviewQueueEvent.count({ where: resolvedWhereWeek }),
+      prisma.reviewQueueEvent.findMany({
+        where: resolvedWhere,
+        select: { enteredAt: true, exitedAt: true },
+      }),
+    ]);
+
+    const durationsMs = resolvedEvents
+      .map((e) => (e.exitedAt ? e.exitedAt.getTime() - e.enteredAt.getTime() : 0))
+      .filter((ms) => ms >= 0);
+    const avgReviewTimeMs = durationsMs.length ? durationsMs.reduce((a, b) => a + b, 0) / durationsMs.length : null;
+    const sorted = [...durationsMs].sort((a, b) => a - b);
+    const medianReviewTimeMs =
+      sorted.length > 0 ? (sorted[Math.floor((sorted.length - 1) / 2)]! + sorted[Math.ceil((sorted.length - 1) / 2)]!) / 2 : null;
+
+    res.json({
+      ok: true,
+      avgReviewTimeMs: avgReviewTimeMs != null ? Math.round(avgReviewTimeMs) : null,
+      medianReviewTimeMs: medianReviewTimeMs != null ? Math.round(medianReviewTimeMs) : null,
+      openReviewCount: openCount,
+      resolvedToday,
+      resolvedThisWeek: resolvedWeek,
+      dateFrom: dateFrom?.toISOString().slice(0, 10) ?? null,
+      dateTo: dateTo?.toISOString().slice(0, 10) ?? null,
+    });
+  } catch (e: any) {
+    console.error("GET /admin/quality/review-sla failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Admin: recent documents with low match confidence (below auto-route threshold or needs_review)
+app.get("/admin/quality/low-confidence-routes", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const q = (req as any).query || {};
+    const firmIdFilter = typeof q.firmId === "string" && q.firmId.trim() ? q.firmId.trim() : null;
+    const limit = Math.min(50, Math.max(1, parseInt(String(q.limit), 10) || 20));
+
+    const params: (string | number)[] = [limit];
+    let sql = `
+      SELECT d.id AS document_id, d."firmId", d."originalName", d."routedCaseId", d.status, d."routingStatus", d."updatedAt",
+             dr.match_confidence, dr.match_reason, dr.suggested_case_id,
+             COALESCE(rr."minAutoRouteConfidence", 0.9) AS threshold
+      FROM "Document" d
+      INNER JOIN document_recognition dr ON dr.document_id = d.id
+      LEFT JOIN "RoutingRule" rr ON rr."firmId" = d."firmId"
+      WHERE dr.match_confidence IS NOT NULL
+        AND (dr.match_confidence < COALESCE(rr."minAutoRouteConfidence", 0.9) OR d.status = 'NEEDS_REVIEW')
+    `;
+    if (firmIdFilter) {
+      params.push(firmIdFilter);
+      sql += ` AND d."firmId" = $${params.length}`;
+    }
+    sql += ` ORDER BY d."updatedAt" DESC LIMIT $1`;
+
+    const { rows } = await pgPool.query(sql, params);
+    const firmIds = [...new Set((rows as { firmId: string }[]).map((r) => r.firmId))];
+    const firms = firmIds.length
+      ? await prisma.firm.findMany({ where: { id: { in: firmIds } }, select: { id: true, name: true } })
+      : [];
+    const firmByName = new Map(firms.map((f) => [f.id, f.name]));
+
+    const items = (rows as any[]).map((r) => ({
+      documentId: r.document_id,
+      firmId: r.firmId,
+      firmName: firmByName.get(r.firmId) ?? r.firmId,
+      originalName: r.originalName ?? r.document_id,
+      matchConfidence: r.match_confidence != null ? Number(r.match_confidence) : null,
+      threshold: r.threshold != null ? Number(r.threshold) : 0.9,
+      matchReason: r.match_reason ?? null,
+      suggestedCaseId: r.suggested_case_id ?? null,
+      routedCaseId: r.routedCaseId ?? null,
+      status: r.status,
+      routingStatus: r.routingStatus ?? null,
+      updatedAt: r.updatedAt?.toISOString?.() ?? null,
+    }));
+
+    res.json({ ok: true, items });
+  } catch (e: any) {
+    console.error("GET /admin/quality/low-confidence-routes failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Admin: weekly quality summary (JSON or CSV) — total docs, processed, rates, avg latency, top failures, worst firms, health score delta
+app.get("/admin/quality/weekly-summary", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const q = (req as any).query || {};
+    const format = String(q.format || "").toLowerCase() === "csv" ? "csv" : "json";
+    let weekEnd: Date;
+    let weekStart: Date;
+    if (q.dateTo && q.dateFrom) {
+      weekStart = new Date(String(q.dateFrom).trim());
+      weekEnd = new Date(String(q.dateTo).trim());
+      weekEnd.setUTCHours(23, 59, 59, 999);
+    } else {
+      weekEnd = new Date();
+      weekStart = new Date();
+      weekStart.setDate(weekStart.getDate() - 7);
+      weekStart.setUTCHours(0, 0, 0, 0);
+    }
+    const prevWeekEnd = new Date(weekStart.getTime());
+    prevWeekEnd.setUTCMilliseconds(prevWeekEnd.getUTCMilliseconds() - 1);
+    const prevWeekStart = new Date(weekStart.getTime());
+    prevWeekStart.setDate(prevWeekStart.getDate() - 7);
+
+    type DocRow = {
+      firm_id: string;
+      total_docs: string;
+      processed_docs: string;
+      auto_routed: string;
+      unmatched: string;
+      failed_docs: string;
+      needs_review_docs: string;
+      duplicate_count: string;
+      avg_ms: number | null;
+    };
+
+    function runDocQuery(from: Date, to: Date): Promise<DocRow[]> {
+      return pgPool
+        .query(
+          `SELECT d."firmId" AS firm_id,
+          COUNT(*)::text AS total_docs,
+          COUNT(*) FILTER (WHERE d.status IN ('UPLOADED','NEEDS_REVIEW','UNMATCHED'))::text AS processed_docs,
+          COUNT(*) FILTER (WHERE d.status = 'UPLOADED')::text AS auto_routed,
+          COUNT(*) FILTER (WHERE d.status = 'UNMATCHED')::text AS unmatched,
+          COUNT(*) FILTER (WHERE d.status = 'FAILED')::text AS failed_docs,
+          COUNT(*) FILTER (WHERE d.status = 'NEEDS_REVIEW')::text AS needs_review_docs,
+          COUNT(*) FILTER (WHERE d."duplicateOfId" IS NOT NULL)::text AS duplicate_count,
+          AVG(EXTRACT(EPOCH FROM (d."processedAt" - d."ingestedAt")) * 1000) FILTER (WHERE d."processedAt" IS NOT NULL AND d."ingestedAt" IS NOT NULL) AS avg_ms
+          FROM "Document" d
+          WHERE d."ingestedAt" >= $1 AND d."ingestedAt" <= $2
+          GROUP BY d."firmId"`,
+          [from, to]
+        )
+        .then((r: { rows: DocRow[] }) => r.rows ?? []);
+    }
+
+    const [thisWeekRows, prevWeekRows, firms, errorLogs, globalAvgMs] = await Promise.all([
+      runDocQuery(weekStart, weekEnd),
+      runDocQuery(prevWeekStart, prevWeekEnd),
+      prisma.firm.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+      prisma.systemErrorLog.findMany({
+        where: { createdAt: { gte: weekStart, lte: weekEnd } },
+        select: { message: true, service: true },
+      }),
+      pgPool
+        .query<{ avg_ms: number | null }>(
+          `SELECT AVG(EXTRACT(EPOCH FROM (d."processedAt" - d."ingestedAt")) * 1000) AS avg_ms
+           FROM "Document" d
+           WHERE d."ingestedAt" >= $1 AND d."ingestedAt" <= $2
+             AND d."processedAt" IS NOT NULL AND d."ingestedAt" IS NOT NULL`,
+          [weekStart, weekEnd]
+        )
+        .then((r: { rows: { avg_ms: number | null }[] }) => r.rows[0]?.avg_ms ?? null),
+    ]);
+
+    const firmByName = new Map(firms.map((f) => [f.id, f.name]));
+    const recentErrorsCount = errorLogs.length;
+
+    function computeScore(r: DocRow, recentErrors: number): number {
+      const total = Math.max(1, parseInt(r.total_docs, 10) || 0);
+      const processed = Math.max(1, parseInt(r.processed_docs, 10) || 0);
+      const failed = parseInt(r.failed_docs, 10) || 0;
+      const unmatched = parseInt(r.unmatched, 10) || 0;
+      const autoRouted = parseInt(r.auto_routed, 10) || 0;
+      const needsReview = parseInt(r.needs_review_docs, 10) || 0;
+      const avgMs = r.avg_ms != null ? r.avg_ms : null;
+      const failedRate = failed / total;
+      const unmatchedRate = unmatched / processed;
+      const autoRouteRate = autoRouted / processed;
+      const failedRateScore = 1 - Math.min(1, failedRate);
+      const unmatchedRateScore = 1 - Math.min(1, unmatchedRate);
+      const autoRouteRateScore = Math.min(1, autoRouteRate);
+      const latencyScore = avgMs == null ? 1 : Math.max(0, 1 - avgMs / 120000);
+      const systemErrorsScore = Math.max(0, 1 - recentErrors / Math.max(1, thisWeekRows.length * 30));
+      const reviewBacklogScore = Math.max(0, 1 - needsReview / 100);
+      const raw = (failedRateScore + unmatchedRateScore + autoRouteRateScore + latencyScore + systemErrorsScore + reviewBacklogScore) / 6;
+      return Math.round(raw * 100);
+    }
+
+    const categoryCounts: Record<string, number> = {};
+    for (const cat of FAILURE_CATEGORIES) categoryCounts[cat] = 0;
+    for (const log of errorLogs) {
+      const cat = getFailureCategory(log.message ?? "", log.service ?? undefined);
+      categoryCounts[cat] = (categoryCounts[cat] ?? 0) + 1;
+    }
+    const topFailures = (FAILURE_CATEGORIES as readonly string[])
+      .map((cat) => ({ category: cat, count: categoryCounts[cat] ?? 0 }))
+      .filter((x) => x.count > 0)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    const thisWeekFirmScores = thisWeekRows.map((r) => ({
+      firmId: r.firm_id,
+      firmName: firmByName.get(r.firm_id) ?? r.firm_id,
+      score: Math.min(100, Math.max(0, computeScore(r, recentErrorsCount))),
+    }));
+    const prevWeekFirmScores = prevWeekRows.map((r) => ({
+      firmId: r.firm_id,
+      score: Math.min(100, Math.max(0, computeScore(r, 0))),
+    }));
+    const prevScoreByFirm = new Map(prevWeekFirmScores.map((p) => [p.firmId, p.score]));
+    const overallScoreThisWeek =
+      thisWeekFirmScores.length > 0
+        ? Math.round(thisWeekFirmScores.reduce((s, i) => s + i.score, 0) / thisWeekFirmScores.length)
+        : null;
+    const overallScorePrevWeek =
+      prevWeekFirmScores.length > 0
+        ? Math.round(prevWeekFirmScores.reduce((s, i) => s + i.score, 0) / prevWeekFirmScores.length)
+        : null;
+    const healthScoreDelta =
+      overallScoreThisWeek != null && overallScorePrevWeek != null ? overallScoreThisWeek - overallScorePrevWeek : null;
+
+    const worstFirms = [...thisWeekFirmScores].sort((a, b) => a.score - b.score).slice(0, 10);
+
+    const totalDocs = thisWeekRows.reduce((s, r) => s + (parseInt(r.total_docs, 10) || 0), 0);
+    const processedDocs = thisWeekRows.reduce((s, r) => s + (parseInt(r.processed_docs, 10) || 0), 0);
+    const autoRouted = thisWeekRows.reduce((s, r) => s + (parseInt(r.auto_routed, 10) || 0), 0);
+    const unmatched = thisWeekRows.reduce((s, r) => s + (parseInt(r.unmatched, 10) || 0), 0);
+    const duplicateCount = thisWeekRows.reduce((s, r) => s + (parseInt(r.duplicate_count, 10) || 0), 0);
+
+    const avgLatencyMs = globalAvgMs != null ? Math.round(globalAvgMs) : null;
+
+    const autoRouteRate = processedDocs > 0 ? Math.round((autoRouted / processedDocs) * 10000) / 100 : 0;
+    const unmatchedRate = processedDocs > 0 ? Math.round((unmatched / processedDocs) * 10000) / 100 : 0;
+    const duplicateRate = totalDocs > 0 ? Math.round((duplicateCount / totalDocs) * 10000) / 100 : 0;
+
+    const jsonPayload = {
+      ok: true,
+      dateFrom: weekStart.toISOString().slice(0, 10),
+      dateTo: weekEnd.toISOString().slice(0, 10),
+      previousWeekFrom: prevWeekStart.toISOString().slice(0, 10),
+      previousWeekTo: prevWeekEnd.toISOString().slice(0, 10),
+      totalDocs,
+      processedDocs,
+      autoRouteRate,
+      unmatchedRate,
+      duplicateRate,
+      avgLatencyMs,
+      topFailures,
+      worstFirms,
+      overallScoreThisWeek,
+      overallScorePrevWeek,
+      healthScoreDelta,
+    };
+
+    if (format === "csv") {
+      const rows: string[][] = [];
+      const escapeCsv = (v: unknown): string => {
+        const s = v === null || v === undefined ? "" : String(v);
+        return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      rows.push(["metric", "value"]);
+      rows.push(["totalDocs", String(jsonPayload.totalDocs)]);
+      rows.push(["processedDocs", String(jsonPayload.processedDocs)]);
+      rows.push(["autoRouteRate%", String(jsonPayload.autoRouteRate)]);
+      rows.push(["unmatchedRate%", String(jsonPayload.unmatchedRate)]);
+      rows.push(["duplicateRate%", String(jsonPayload.duplicateRate)]);
+      rows.push(["avgLatencyMs", String(jsonPayload.avgLatencyMs ?? "")]);
+      rows.push(["overallScoreThisWeek", String(jsonPayload.overallScoreThisWeek ?? "")]);
+      rows.push(["overallScorePrevWeek", String(jsonPayload.overallScorePrevWeek ?? "")]);
+      rows.push(["healthScoreDelta", String(jsonPayload.healthScoreDelta ?? "")]);
+      rows.push([]);
+      rows.push(["Top failures", "category", "count"]);
+      jsonPayload.topFailures.forEach((f) => rows.push(["", f.category, String(f.count)]));
+      rows.push([]);
+      rows.push(["Worst firms", "firmId", "firmName", "score"]);
+      jsonPayload.worstFirms.forEach((f) => rows.push(["", f.firmId, f.firmName, String(f.score)]));
+      const csv = rows.map((r) => r.map(escapeCsv).join(",")).join("\r\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="weekly-quality-summary-${weekStart.toISOString().slice(0, 10)}.csv"`);
+      return res.send(csv);
+    }
+
+    res.json(jsonPayload);
+  } catch (e: any) {
+    console.error("GET /admin/quality/weekly-summary failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Daily cron: enqueue overdue task reminders job (run by job runner process). Call e.g. 0 9 * * * with platform admin auth.
+app.post("/admin/cron/overdue-task-reminders", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const firm = await prisma.firm.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
+    const firmId = firm?.id ?? "";
+    if (!firmId) {
+      return res.json({ ok: true, enqueued: false, message: "No firm" });
+    }
+    const jobId = await enqueueJob(firmId, "overdue_task_reminders");
+    res.json({ ok: true, enqueued: true, jobId });
+  } catch (e: any) {
+    console.error("POST /admin/cron/overdue-task-reminders failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Nightly cron: enqueue retention cleanup job (run by job runner process). Call e.g. 0 2 * * * with platform admin auth.
+app.post("/admin/cron/retention-cleanup", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const firm = await prisma.firm.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
+    const firmId = firm?.id ?? "";
+    if (!firmId) {
+      return res.json({ ok: true, enqueued: false, message: "No firm" });
+    }
+    const jobId = await enqueueJob(firmId, "retention_cleanup");
+    res.json({ ok: true, enqueued: true, jobId });
+  } catch (e: any) {
+    console.error("POST /admin/cron/retention-cleanup failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
@@ -1199,15 +3079,31 @@ app.post("/ingest", authWithScope("ingest"), rateLimitEndpoint(60, "ingest"), up
   const source = (req.body?.source as string) || "upload";
   const externalId = req.body?.externalId ? String(req.body.externalId) : null;
 
-  if (!file) return res.status(400).json({ error: "Missing file (multipart field name must be 'file')" });
+  if (!file) return res.status(400).json({ ok: false, error: "Missing file (multipart field name must be 'file')" });
 
+  const scan = await validateUploadFile({
+    originalname: file.originalname,
+    mimetype: file.mimetype,
+    size: file.size,
+    buffer: file.buffer,
+  });
+  if (!scan.ok) {
+    logIntakeFailure({
+      stage: "validation",
+      error: (scan as { reason?: string }).reason ?? "Invalid file",
+      code: "INVALID_FILE",
+      firmId,
+      fileName: file.originalname,
+      sizeBytes: file.size,
+    });
+    recordAbuse({ ip: (req as any).ip || req.socket?.remoteAddress || "unknown", route: "/ingest", eventType: "suspicious_upload" });
+    return sendSafeError(res, 400, (scan as { reason?: string }).reason ?? "Invalid file", "INVALID_FILE");
+  }
   const firm = await prisma.firm.findUnique({
     where: { id: firmId },
     select: { pageLimitMonthly: true, billingStatus: true, trialEndsAt: true },
   });
   if (!firm) return res.status(404).json({ ok: false, error: "Firm not found" });
-
-  // Billing gate: active status OR within trial
   const now = new Date();
   const isActive = firm.billingStatus === "active";
   const inTrial = firm.billingStatus === "trial" && (!firm.trialEndsAt || firm.trialEndsAt > now);
@@ -1219,21 +3115,14 @@ app.post("/ingest", authWithScope("ingest"), rateLimitEndpoint(60, "ingest"), up
     });
   }
 
-  if (firm.pageLimitMonthly > 0) {
-    const ym = `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, "0")}`;
-    const usageRow = await prisma.usageMonthly.findUnique({
-      where: { firmId_yearMonth: { firmId, yearMonth: ym } },
-      select: { pagesProcessed: true },
+  const docLimitCheck = await canIngestDocument(firmId);
+  if (!docLimitCheck.allowed) {
+    return res.status(402).json({
+      ok: false,
+      error: docLimitCheck.error,
+      docsProcessed: docLimitCheck.currentDocs,
+      documentLimitMonthly: docLimitCheck.limit,
     });
-    const currentPages = usageRow?.pagesProcessed ?? 0;
-    if (currentPages >= firm.pageLimitMonthly) {
-      return res.status(402).json({
-        ok: false,
-        error: "Monthly limit exceeded",
-        pagesProcessed: currentPages,
-        pageLimitMonthly: firm.pageLimitMonthly,
-      });
-    }
   }
 
   const fileSha256 = crypto.createHash("sha256").update(file.buffer).digest("hex");
@@ -1279,7 +3168,7 @@ app.post("/ingest", authWithScope("ingest"), rateLimitEndpoint(60, "ingest"), up
           firmId,
           source,
           spacesKey: existing.spacesKey,
-          originalName: file.originalname,
+          originalName: normalizeFilename(file.originalname),
           mimeType: file.mimetype || "application/octet-stream",
           pageCount: 0,
           status: "UPLOADED",
@@ -1290,6 +3179,11 @@ app.post("/ingest", authWithScope("ingest"), rateLimitEndpoint(60, "ingest"), up
           duplicateOfId: existing.id,
           ingestedAt: new Date(),
           processedAt: new Date(),
+          metaJson: buildOriginalMetadata({
+            originalFilename: file.originalname,
+            sizeBytes: file.size,
+            mimeType: file.mimetype || "application/octet-stream",
+          }),
         },
       });
 
@@ -1308,25 +3202,484 @@ app.post("/ingest", authWithScope("ingest"), rateLimitEndpoint(60, "ingest"), up
 
   await putObject(key, file.buffer, file.mimetype || "application/octet-stream");
 
+  const originalMeta = buildOriginalMetadata({
+    originalFilename: file.originalname,
+    sizeBytes: file.size,
+    mimeType: file.mimetype || "application/octet-stream",
+  });
   const doc = await prisma.document.create({
     data: {
       firmId,
       source,
       spacesKey: key,
-      originalName: file.originalname,
-      mimeType: file.mimetype || "application/octet-stream",
+      originalName: originalMeta.normalizedFilename,
+      mimeType: originalMeta.mimeType,
       pageCount: 0,
       status: "RECEIVED",
       external_id: externalId ?? null,
       file_sha256: fileSha256,
       fileSizeBytes,
       ingestedAt: new Date(),
+      metaJson: originalMeta,
     },
   });
-
-  await enqueueDocumentJob({ documentId: doc.id, firmId });
+  try {
+    await enqueueDocumentJob({ documentId: doc.id, firmId });
+  } catch (e: unknown) {
+    const errMsg = (e as Error)?.message ?? "Failed to enqueue processing";
+    logIntakeFailure({
+      stage: "enqueue",
+      error: errMsg,
+      code: "ENQUEUE_FAILED",
+      firmId,
+      fileName: file.originalname,
+      sizeBytes: file.buffer?.length,
+      documentId: doc.id,
+    });
+    await prisma.document.update({
+      where: { id: doc.id },
+      data: { status: "FAILED", failureStage: "ingest", failureReason: errMsg.slice(0, 2000) },
+    });
+    res.status(500).json({ ok: false, error: errMsg });
+    return;
+  }
 
   res.json({ ok: true, documentId: doc.id, spacesKey: key });
+});
+
+// Session-based ingest for dashboard (drag-and-drop, bulk upload). Same pipeline as POST /ingest.
+app.post("/me/ingest", auth, requireRole(Role.STAFF), rateLimitEndpoint(60, "ingest"), upload.single("file"), async (req, res) => {
+  const firmId = (req as any).firmId as string;
+  const file = req.file;
+  const source = (req.body?.source as string) || "upload";
+  const externalId = req.body?.externalId ? String(req.body.externalId) : null;
+
+  if (!file) return res.status(400).json({ ok: false, error: "Missing file (multipart field name must be 'file')" });
+
+  const scan = await validateUploadFile({
+    originalname: file.originalname,
+    mimetype: file.mimetype,
+    size: file.size,
+    buffer: file.buffer,
+  });
+  if (!scan.ok) {
+    logIntakeFailure({
+      stage: "validation",
+      error: (scan as { reason?: string }).reason ?? "Invalid file",
+      code: "INVALID_FILE",
+      firmId,
+      fileName: file.originalname,
+      sizeBytes: file.size,
+    });
+    return sendSafeError(res, 400, (scan as { reason?: string }).reason ?? "Invalid file", "INVALID_FILE");
+  }
+  const firm = await prisma.firm.findUnique({
+    where: { id: firmId },
+    select: { pageLimitMonthly: true, billingStatus: true, trialEndsAt: true },
+  });
+  if (!firm) return res.status(404).json({ ok: false, error: "Firm not found" });
+  const now = new Date();
+  const isActive = firm.billingStatus === "active";
+  const inTrial = firm.billingStatus === "trial" && (!firm.trialEndsAt || firm.trialEndsAt > now);
+  if (!isActive && !inTrial) {
+    return res.status(402).json({ ok: false, error: "Billing required. Trial expired or inactive.", billingStatus: firm.billingStatus });
+  }
+  const docLimitCheck = await canIngestDocument(firmId);
+  if (!docLimitCheck.allowed) {
+    return res.status(402).json({ ok: false, error: docLimitCheck.error, docsProcessed: docLimitCheck.currentDocs, documentLimitMonthly: docLimitCheck.limit });
+  }
+
+  const fileSha256 = crypto.createHash("sha256").update(file.buffer).digest("hex");
+  const fileSizeBytes = file.buffer.length;
+  const duplicatesEnabled = await hasFeature(firmId, "duplicates_detection");
+  if (duplicatesEnabled) {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const existing = await prisma.document.findFirst({
+      where: { firmId, file_sha256: fileSha256, fileSizeBytes, ingestedAt: { gte: since } },
+      orderBy: { ingestedAt: "desc" },
+      select: { id: true, spacesKey: true },
+    });
+    if (existing) {
+      const ym = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+      await prisma.usageMonthly.upsert({
+        where: { firmId_yearMonth: { firmId, yearMonth: ym } },
+        create: { firmId, yearMonth: ym, pagesProcessed: 0, docsProcessed: 0, insuranceDocsExtracted: 0, courtDocsExtracted: 0, narrativeGenerated: 0, duplicateDetected: 1 },
+        update: { duplicateDetected: { increment: 1 } },
+      });
+      await prisma.document.update({ where: { id: existing.id }, data: { duplicateMatchCount: { increment: 1 } } });
+      const doc = await prisma.document.create({
+        data: {
+          firmId,
+          source,
+          spacesKey: existing.spacesKey,
+          originalName: normalizeFilename(file.originalname),
+          mimeType: file.mimetype || "application/octet-stream",
+          pageCount: 0,
+          status: "UPLOADED",
+          processingStage: "complete",
+          external_id: externalId ?? null,
+          file_sha256: fileSha256,
+          fileSizeBytes,
+          duplicateOfId: existing.id,
+          ingestedAt: now,
+          processedAt: now,
+          metaJson: buildOriginalMetadata({ originalFilename: file.originalname, sizeBytes: file.size, mimeType: file.mimetype || "application/octet-stream" }),
+        },
+      });
+      return res.json({ ok: true, duplicate: true, documentId: doc.id, existingId: existing.id, spacesKey: existing.spacesKey });
+    }
+  }
+
+  const ext = (file.originalname.split(".").pop() || "bin").toLowerCase();
+  const key = `${firmId}/${Date.now()}_${crypto.randomBytes(6).toString("hex")}.${ext}`;
+  await putObject(key, file.buffer, file.mimetype || "application/octet-stream");
+  const originalMeta = buildOriginalMetadata({ originalFilename: file.originalname, sizeBytes: file.size, mimeType: file.mimetype || "application/octet-stream" });
+  const doc = await prisma.document.create({
+    data: {
+      firmId,
+      source,
+      spacesKey: key,
+      originalName: originalMeta.normalizedFilename,
+      mimeType: originalMeta.mimeType,
+      pageCount: 0,
+      status: "RECEIVED",
+      external_id: externalId ?? null,
+      file_sha256: fileSha256,
+      fileSizeBytes,
+      ingestedAt: now,
+      metaJson: originalMeta,
+    },
+  });
+  try {
+    await enqueueDocumentJob({ documentId: doc.id, firmId });
+  } catch (e: unknown) {
+    const errMsg = (e as Error)?.message ?? "Failed to enqueue processing";
+    logIntakeFailure({
+      stage: "enqueue",
+      error: errMsg,
+      code: "ENQUEUE_FAILED",
+      firmId,
+      fileName: file.originalname,
+      sizeBytes: file.buffer?.length,
+      documentId: doc.id,
+    });
+    await prisma.document.update({ where: { id: doc.id }, data: { status: "FAILED", failureStage: "ingest", failureReason: errMsg.slice(0, 2000) });
+    return res.status(500).json({ ok: false, error: errMsg });
+  }
+  res.json({ ok: true, documentId: doc.id, spacesKey: key });
+});
+
+const ME_INGEST_BULK_MAX = 50;
+
+app.post("/me/ingest/bulk", auth, requireRole(Role.STAFF), rateLimitEndpoint(30, "ingest_bulk"), upload.array("files", ME_INGEST_BULK_MAX), async (req, res) => {
+  const firmId = (req as any).firmId as string;
+  const files = (req.files as Express.Multer.File[]) || [];
+  if (files.length === 0) return res.status(400).json({ ok: false, error: "No files (use multipart field 'files')" });
+
+  const firm = await prisma.firm.findUnique({ where: { id: firmId }, select: { pageLimitMonthly: true, billingStatus: true, trialEndsAt: true } });
+  if (!firm) return res.status(404).json({ ok: false, error: "Firm not found" });
+  const now = new Date();
+  const isActive = firm.billingStatus === "active";
+  const inTrial = firm.billingStatus === "trial" && (!firm.trialEndsAt || firm.trialEndsAt > now);
+  if (!isActive && !inTrial) {
+    return res.status(402).json({ ok: false, error: "Billing required.", billingStatus: firm.billingStatus });
+  }
+  let docLimitCheck = await canIngestDocument(firmId);
+  if (!docLimitCheck.allowed) {
+    return res.status(402).json({ ok: false, error: docLimitCheck.error, docsProcessed: docLimitCheck.currentDocs, documentLimitMonthly: docLimitCheck.limit });
+  }
+
+  const documentIds: string[] = [];
+  const duplicateIndices: number[] = [];
+  const errors: { file: string; error: string }[] = [];
+  const duplicatesEnabled = await hasFeature(firmId, "duplicates_detection");
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  let fileIndex = 0;
+  for (const file of files) {
+    const scan = await validateUploadFile({
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+      size: file.size,
+      buffer: file.buffer,
+    });
+    if (!scan.ok) {
+      const reason = (scan as { reason?: string }).reason ?? "Invalid file";
+      logIntakeFailure({
+        stage: "validation",
+        error: reason,
+        code: "INVALID_FILE",
+        firmId,
+        fileName: file.originalname,
+        sizeBytes: file.size,
+      });
+      errors.push({ file: file.originalname || "unknown", error: reason });
+      fileIndex++;
+      continue;
+    }
+    const fileSha256 = crypto.createHash("sha256").update(file.buffer).digest("hex");
+    const fileSizeBytes = file.buffer.length;
+
+    if (duplicatesEnabled) {
+      const existing = await prisma.document.findFirst({
+        where: { firmId, file_sha256: fileSha256, fileSizeBytes, ingestedAt: { gte: since } },
+        orderBy: { ingestedAt: "desc" },
+        select: { id: true },
+      });
+      if (existing) {
+        const ym = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+        await prisma.usageMonthly.upsert({
+          where: { firmId_yearMonth: { firmId, yearMonth: ym } },
+          create: { firmId, yearMonth: ym, pagesProcessed: 0, docsProcessed: 0, insuranceDocsExtracted: 0, courtDocsExtracted: 0, narrativeGenerated: 0, duplicateDetected: 1 },
+          update: { duplicateDetected: { increment: 1 } },
+        }).catch(() => {});
+        await prisma.document.update({ where: { id: existing.id }, data: { duplicateMatchCount: { increment: 1 } } }).catch(() => {});
+        documentIds.push(existing.id);
+        duplicateIndices.push(fileIndex);
+        fileIndex++;
+        continue;
+      }
+    }
+    fileIndex++;
+
+    docLimitCheck = await canIngestDocument(firmId);
+    if (!docLimitCheck.allowed) {
+      errors.push({ file: file.originalname || "unknown", error: docLimitCheck.error });
+      continue;
+    }
+
+    const ext = (file.originalname.split(".").pop() || "bin").toLowerCase();
+    const key = `${firmId}/${Date.now()}_${crypto.randomBytes(6).toString("hex")}.${ext}`;
+    await putObject(key, file.buffer, file.mimetype || "application/octet-stream");
+    const originalMeta = buildOriginalMetadata({ originalFilename: file.originalname, sizeBytes: file.size, mimeType: file.mimetype || "application/octet-stream" });
+    const doc = await prisma.document.create({
+      data: {
+        firmId,
+        source: "upload",
+        spacesKey: key,
+        originalName: originalMeta.normalizedFilename,
+        mimeType: originalMeta.mimeType,
+        pageCount: 0,
+        status: "RECEIVED",
+        file_sha256: fileSha256,
+        fileSizeBytes,
+        ingestedAt: now,
+        metaJson: originalMeta,
+      },
+    });
+    try {
+      await enqueueDocumentJob({ documentId: doc.id, firmId });
+      documentIds.push(doc.id);
+    } catch (e) {
+      const errMsg = (e as Error)?.message ?? "Enqueue failed";
+      logIntakeFailure({
+        stage: "enqueue",
+        error: errMsg,
+        code: "ENQUEUE_FAILED",
+        firmId,
+        fileName: file.originalname,
+        sizeBytes: file.buffer?.length,
+        documentId: doc.id,
+      });
+      await prisma.document.update({ where: { id: doc.id }, data: { status: "FAILED", failureStage: "ingest", failureReason: errMsg.slice(0, 2000) });
+      errors.push({ file: file.originalname || "unknown", error: errMsg });
+    }
+    fileIndex++;
+  }
+
+  res.json({
+    ok: true,
+    documentIds,
+    queued: documentIds.length,
+    totalFiles: files.length,
+    duplicatesDetected: duplicateIndices.length,
+    ...(duplicateIndices.length > 0 ? { duplicateIndices } : {}),
+    ...(errors.length > 0 ? { errors } : {}),
+  });
+});
+
+// --- Legacy migration (bulk import backfile) ---
+const MIGRATION_MAX_FILES_PER_REQUEST = 200;
+
+app.post(
+  "/migration/import",
+  auth,
+  requireRole(Role.STAFF),
+  rateLimitEndpoint(20, "migration_import"),
+  upload.array("files", MIGRATION_MAX_FILES_PER_REQUEST),
+  async (req, res) => {
+    try {
+      const firmId = (req as any).firmId as string;
+      const files = (req.files as Express.Multer.File[]) || [];
+      if (files.length === 0) {
+        return res.status(400).json({ ok: false, error: "No files (use multipart field 'files')" });
+      }
+
+      const firm = await prisma.firm.findUnique({
+        where: { id: firmId },
+        select: { pageLimitMonthly: true, billingStatus: true, trialEndsAt: true },
+      });
+      if (!firm) return res.status(404).json({ ok: false, error: "Firm not found" });
+      const now = new Date();
+      const isActive = firm.billingStatus === "active";
+      const inTrial = firm.billingStatus === "trial" && (!firm.trialEndsAt || firm.trialEndsAt > now);
+      if (!isActive && !inTrial) {
+        return res.status(402).json({
+          ok: false,
+          error: "Billing required for migration.",
+          billingStatus: firm.billingStatus,
+        });
+      }
+
+      const batchId = "mig_" + crypto.randomBytes(12).toString("hex");
+      const documentIds: string[] = [];
+      const errors: { file: string; error: string }[] = [];
+
+      for (const file of files) {
+        const scan = await validateUploadFile({
+          originalname: file.originalname,
+          mimetype: file.mimetype,
+          size: file.size,
+          buffer: file.buffer,
+        });
+        if (!scan.ok) {
+          logIntakeFailure({
+            stage: "validation",
+            error: (scan as { reason?: string }).reason ?? "Invalid file",
+            code: "INVALID_FILE",
+            firmId,
+            fileName: file.originalname,
+            sizeBytes: file.size,
+          });
+          errors.push({ file: file.originalname || "unknown", error: (scan as { reason?: string }).reason ?? "Invalid file" });
+          continue;
+        }
+        const result = await ingestMigrationDocument({
+          firmId,
+          batchId,
+          buffer: file.buffer,
+          originalName: file.originalname || "document",
+          mimeType: file.mimetype || "application/octet-stream",
+        });
+        if (result.ok) {
+          documentIds.push(result.documentId);
+        } else {
+          errors.push({ file: file.originalname || "unknown", error: result.error });
+        }
+      }
+
+      res.status(201).json({
+        ok: true,
+        batchId,
+        documentIds,
+        queued: documentIds.length,
+        totalFiles: files.length,
+        ...(errors.length > 0 ? { errors } : {}),
+      });
+    } catch (e: any) {
+      console.error("POST /migration/import failed", e);
+      res.status(500).json({ ok: false, error: String(e?.message || e) });
+    }
+  }
+);
+
+app.get("/migration/batches", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const limit = Math.min(parseInt(String(req.query.limit), 10) || 50, 100);
+    const { rows } = await pgPool.query<{ batch_id: string; ingested_at: Date }>(
+      `SELECT "metaJson"->>'migrationBatchId' AS batch_id, MIN("ingestedAt") AS ingested_at
+       FROM "Document"
+       WHERE "firmId" = $1 AND "metaJson"->>'migrationBatchId' IS NOT NULL AND "metaJson"->>'migrationBatchId' != ''
+       GROUP BY "metaJson"->>'migrationBatchId'
+       ORDER BY MIN("ingestedAt") DESC
+       LIMIT $2`,
+      [firmId, limit]
+    );
+    const batches = rows.map((r) => ({ batchId: r.batch_id, createdAt: r.ingested_at?.toISOString() ?? null }));
+    const migrationQueueLength = await getMigrationQueueLength();
+    res.json({ ok: true, batches, migrationQueueLength });
+  } catch (e: any) {
+    console.error("GET /migration/batches failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/migration/batches/:batchId", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const batchId = String(req.params.batchId ?? "").trim();
+    if (!batchId) return res.status(400).json({ ok: false, error: "batchId required" });
+
+    const docs = await prisma.document.findMany({
+      where: {
+        firmId,
+        metaJson: { path: ["migrationBatchId"], equals: batchId },
+      },
+      select: { id: true, status: true, originalName: true, failureStage: true, failureReason: true, processingStage: true },
+    });
+
+    if (docs.length === 0) {
+      return res.status(404).json({ ok: false, error: "Batch not found" });
+    }
+
+    const byStatus: Record<string, number> = {};
+    for (const d of docs) {
+      byStatus[d.status] = (byStatus[d.status] ?? 0) + 1;
+    }
+    const byStage: Record<string, number> = {};
+    for (const d of docs) {
+      const stage = d.processingStage ?? "uploaded";
+      byStage[stage] = (byStage[stage] ?? 0) + 1;
+    }
+
+    res.json({
+      ok: true,
+      batchId,
+      total: docs.length,
+      byStatus,
+      byStage,
+      documentIds: docs.map((d) => d.id),
+      failed: docs.filter((d) => d.status === "FAILED").map((d) => ({ id: d.id, originalName: d.originalName, failureStage: d.failureStage, failureReason: (d.failureReason ?? "").slice(0, 200) })),
+    });
+  } catch (e: any) {
+    console.error("GET /migration/batches/:batchId failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Paperless Transition operational workflow (checklist, state, naming templates, CRM placeholders)
+app.get("/me/paperless-transition/checklist", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const payload = await getChecklistWithState(firmId);
+    res.json({ ok: true, ...payload });
+  } catch (e: any) {
+    console.error("GET /me/paperless-transition/checklist failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/me/paperless-transition/state", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body || {}) as {
+      currentStepId?: PaperlessTransitionStepId | null;
+      completedStepIds?: PaperlessTransitionStepId[];
+      notes?: string | null;
+      crmMappingNotes?: Record<string, string> | null;
+    };
+    const state = await updatePaperlessTransitionState(firmId, {
+      ...(body.currentStepId !== undefined && { currentStepId: body.currentStepId }),
+      ...(body.completedStepIds !== undefined && { completedStepIds: body.completedStepIds }),
+      ...(body.notes !== undefined && { notes: body.notes }),
+      ...(body.crmMappingNotes !== undefined && { crmMappingNotes: body.crmMappingNotes }),
+    });
+    res.json({ ok: true, state });
+  } catch (e: any) {
+    console.error("PATCH /me/paperless-transition/state failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
 });
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4000;
@@ -1379,6 +3732,62 @@ app.patch("/me/notifications/read-all", auth, requireRole(Role.STAFF), async (re
     }
     const count = await markAllNotificationsRead(firmId);
     res.json({ ok: true, markedCount: count });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Notifications center: GET /notifications (HTML page or JSON), PATCH /notifications/:id/read, PATCH /notifications/read-all
+app.get("/notifications", auth, requireRole(Role.STAFF), async (req, res) => {
+  if (req.accepts("html")) {
+    const p = path.join(__dirname, "..", "..", "public", "admin", "notifications.html");
+    return res.sendFile(p, (err) => {
+      if (err) res.status(404).json({ ok: false, error: "Notifications page not found" });
+    });
+  }
+  try {
+    const firmId = (req as any).firmId as string;
+    const limit = Math.min(parseInt(String(req.query.limit), 10) || 30, 100);
+    const unreadOnly = req.query.unread === "true";
+    const typeRaw = Array.isArray(req.query.type) ? req.query.type[0] : req.query.type;
+    const type = typeof typeRaw === "string" ? typeRaw.trim() : undefined;
+    const items = await listNotifications(firmId, { limit, unreadOnly, type });
+    const unreadCount = await getUnreadCount(firmId);
+    res.json({
+      ok: true,
+      items: items.map((n) => ({
+        id: n.id,
+        type: n.type,
+        title: n.title,
+        message: n.message,
+        meta: n.meta,
+        read: n.read,
+        createdAt: n.createdAt.toISOString(),
+      })),
+      unreadCount,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/notifications/read-all", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const count = await markAllNotificationsRead(firmId);
+    res.json({ ok: true, markedCount: count });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/notifications/:id/read", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const id = String(req.params.id ?? "");
+    const ok = await markNotificationRead(firmId, id);
+    if (!ok) return res.status(404).json({ ok: false, error: "Notification not found" });
+    res.json({ ok: true });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
@@ -1460,24 +3869,279 @@ app.get("/me/metrics-summary", auth, requireRole(Role.STAFF), async (req, res) =
   }
 });
 
-// Overdue tasks (for dedicated overdue-tasks page)
-app.get("/me/overdue-tasks", auth, requireRole(Role.STAFF), async (req, res) => {
+// MVP analytics for product ops and demos (firm-scoped). Optional dateFrom, dateTo (ISO date).
+app.get("/me/analytics", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
-    const now = new Date();
-    const limit = Math.min(Number(req.query.limit) || 50, 100);
-    const tasks = await prisma.caseTask.findMany({
-      where: {
-        firmId,
-        completedAt: null,
-        dueDate: { lt: now },
-      },
-      select: { id: true, title: true, dueDate: true, caseId: true },
-      orderBy: { dueDate: "asc" },
-      take: limit,
+    const dateFromRaw = typeof req.query.dateFrom === "string" && req.query.dateFrom.trim() ? req.query.dateFrom.trim() : null;
+    const dateToRaw = typeof req.query.dateTo === "string" && req.query.dateTo.trim() ? req.query.dateTo.trim() : null;
+    const dateFrom = dateFromRaw ? new Date(dateFromRaw) : null;
+    const dateTo = dateToRaw ? (() => {
+      const d = new Date(dateToRaw);
+      if (!isNaN(d.getTime())) {
+        d.setUTCHours(23, 59, 59, 999);
+        return d;
+      }
+      return null;
+    })() : null;
+
+    const whereBase: { firmId: string; ingestedAt?: { gte?: Date; lte?: Date } } = { firmId };
+    if (dateFrom && !isNaN(dateFrom.getTime())) {
+      whereBase.ingestedAt = whereBase.ingestedAt ?? {};
+      (whereBase.ingestedAt as Record<string, Date>).gte = dateFrom;
+    }
+    if (dateTo && !isNaN(dateTo.getTime())) {
+      whereBase.ingestedAt = whereBase.ingestedAt ?? {};
+      (whereBase.ingestedAt as Record<string, Date>).lte = dateTo;
+    }
+
+    const [failedCount, needsReviewCount, routedCount, unmatchedCount, totalProcessedCount, latencyRow] = await Promise.all([
+      prisma.document.count({ where: { ...whereBase, status: "FAILED" } }),
+      prisma.document.count({ where: { ...whereBase, status: "NEEDS_REVIEW" } }),
+      prisma.document.count({ where: { ...whereBase, status: "ROUTED" } }),
+      prisma.document.count({ where: { ...whereBase, status: "UNMATCHED" } }),
+      prisma.document.count({
+        where: {
+          ...whereBase,
+          status: { in: ["SCANNED", "CLASSIFIED", "ROUTED", "NEEDS_REVIEW", "UPLOADED", "UNMATCHED", "FAILED"] },
+        },
+      }),
+      (() => {
+        const params: (string | Date)[] = [firmId];
+        let sql = `SELECT AVG(EXTRACT(EPOCH FROM ("processedAt" - "ingestedAt")) * 1000)::float AS avg_ms
+          FROM "Document"
+          WHERE "firmId" = $1 AND "processedAt" IS NOT NULL AND "ingestedAt" IS NOT NULL`;
+        if (dateFrom && !isNaN(dateFrom.getTime())) {
+          params.push(dateFrom);
+          sql += ` AND "ingestedAt" >= $${params.length}`;
+        }
+        if (dateTo && !isNaN(dateTo.getTime())) {
+          params.push(dateTo);
+          sql += ` AND "ingestedAt" <= $${params.length}`;
+        }
+        return pgPool.query<{ avg_ms: number | null }>(sql, params);
+      })(),
+    ]);
+
+    const totalRoutable = routedCount + needsReviewCount + unmatchedCount;
+    const successfulRouteRatePct =
+      totalRoutable > 0 ? Math.round((routedCount / totalRoutable) * 10000) / 100 : null;
+
+    res.json({
+      ok: true,
+      totalDocumentsProcessed: totalProcessedCount,
+      failedDocuments: failedCount,
+      needsReviewDocuments: needsReviewCount,
+      routedDocuments: routedCount,
+      unmatchedDocuments: unmatchedCount,
+      successfulRouteRatePct,
+      avgProcessingLatencyMs: latencyRow.rows[0]?.avg_ms != null ? Math.round(latencyRow.rows[0].avg_ms) : null,
+      dateFrom: dateFrom?.toISOString().slice(0, 10) ?? null,
+      dateTo: dateTo?.toISOString().slice(0, 10) ?? null,
     });
-    res.json({ ok: true, items: tasks });
   } catch (e: any) {
+    console.error("GET /me/analytics failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Firm-level export folder/file naming rules (paperless workflow).
+app.get("/me/export-naming", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const rules = await getFirmExportNamingRules(firmId);
+    res.json({
+      ok: true,
+      rules: rules ?? { filePattern: null, folderPattern: null, folderByDocType: null },
+      placeholders: ["caseNumber", "clientName", "caseTitle", "documentType", "providerName", "serviceDate", "originalName", "date"],
+    });
+  } catch (e: any) {
+    console.error("GET /me/export-naming failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/me/export-naming", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body ?? {}) as { filePattern?: string; folderPattern?: string; folderByDocType?: Record<string, string> };
+    const rules = await setFirmExportNamingRules(firmId, {
+      filePattern: body.filePattern !== undefined ? (body.filePattern ?? null) : undefined,
+      folderPattern: body.folderPattern !== undefined ? (body.folderPattern ?? null) : undefined,
+      folderByDocType: body.folderByDocType !== undefined ? body.folderByDocType ?? null : undefined,
+    });
+    res.json({ ok: true, rules });
+  } catch (e: any) {
+    console.error("PATCH /me/export-naming failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Firm-level paperless workflow settings (preferred export mode, review required, CRM vs standalone).
+app.get("/me/paperless-settings", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const [paperless, exportNaming] = await Promise.all([
+      getPaperlessSettings(firmId),
+      getFirmExportNamingRules(firmId),
+    ]);
+    res.json({
+      ok: true,
+      paperless,
+      exportNaming: exportNaming ?? { filePattern: null, folderPattern: null, folderByDocType: null },
+    });
+  } catch (e: any) {
+    console.error("GET /me/paperless-settings failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/me/paperless-settings", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body ?? {}) as {
+      preferredExportMode?: string;
+      reviewRequiredBeforeExport?: boolean;
+      workflowMode?: string;
+    };
+    const paperless = await updatePaperlessSettings(firmId, {
+      preferredExportMode: body.preferredExportMode as "download_bundle" | "cloud_drive" | "cloud_folder" | undefined,
+      reviewRequiredBeforeExport: body.reviewRequiredBeforeExport,
+      workflowMode: body.workflowMode as "crm" | "standalone" | undefined,
+    });
+    res.json({ ok: true, paperless });
+  } catch (e: any) {
+    console.error("PATCH /me/paperless-settings failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Admin MVP analytics
+app.get("/admin/quality/mvp", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const q = (req as any).query || {};
+    const firmIdParam = typeof q.firmId === "string" && q.firmId.trim() ? q.firmId.trim() : null;
+    const dateFromRaw = typeof q.dateFrom === "string" && q.dateFrom.trim() ? q.dateFrom.trim() : null;
+    const dateToRaw = typeof q.dateTo === "string" && q.dateTo.trim() ? q.dateTo.trim() : null;
+    const dateFrom = dateFromRaw ? new Date(dateFromRaw) : null;
+    const dateTo = dateToRaw ? (() => {
+      const d = new Date(dateToRaw);
+      if (!isNaN(d.getTime())) {
+        d.setUTCHours(23, 59, 59, 999);
+        return d;
+      }
+      return null;
+    })() : null;
+
+    const whereBase: { firmId?: string; ingestedAt?: { gte?: Date; lte?: Date } } = firmIdParam ? { firmId: firmIdParam } : {};
+    if (dateFrom && !isNaN(dateFrom.getTime())) {
+      whereBase.ingestedAt = whereBase.ingestedAt ?? {};
+      (whereBase.ingestedAt as Record<string, Date>).gte = dateFrom;
+    }
+    if (dateTo && !isNaN(dateTo.getTime())) {
+      whereBase.ingestedAt = whereBase.ingestedAt ?? {};
+      (whereBase.ingestedAt as Record<string, Date>).lte = dateTo;
+    }
+
+    const [failedCount, needsReviewCount, routedCount, unmatchedCount, totalProcessedCount, latencyRow] = await Promise.all([
+      prisma.document.count({ where: { ...whereBase, status: "FAILED" } }),
+      prisma.document.count({ where: { ...whereBase, status: "NEEDS_REVIEW" } }),
+      prisma.document.count({ where: { ...whereBase, status: "ROUTED" } }),
+      prisma.document.count({ where: { ...whereBase, status: "UNMATCHED" } }),
+      prisma.document.count({
+        where: {
+          ...whereBase,
+          status: { in: ["SCANNED", "CLASSIFIED", "ROUTED", "NEEDS_REVIEW", "UPLOADED", "UNMATCHED", "FAILED"] },
+        },
+      }),
+      (() => {
+        const params: (string | Date)[] = [];
+        let sql = `SELECT AVG(EXTRACT(EPOCH FROM ("processedAt" - "ingestedAt")) * 1000)::float AS avg_ms FROM "Document" WHERE "processedAt" IS NOT NULL AND "ingestedAt" IS NOT NULL`;
+        if (firmIdParam) {
+          params.push(firmIdParam);
+          sql += ` AND "firmId" = $1`;
+        }
+        if (dateFrom && !isNaN(dateFrom.getTime())) {
+          params.push(dateFrom);
+          sql += ` AND "ingestedAt" >= $${params.length}`;
+        }
+        if (dateTo && !isNaN(dateTo.getTime())) {
+          params.push(dateTo);
+          sql += ` AND "ingestedAt" <= $${params.length}`;
+        }
+        return pgPool.query<{ avg_ms: number | null }>(sql, params);
+      })(),
+    ]);
+
+    const totalRoutable = routedCount + needsReviewCount + unmatchedCount;
+    const successfulRouteRatePct =
+      totalRoutable > 0 ? Math.round((routedCount / totalRoutable) * 10000) / 100 : null;
+
+    res.json({
+      ok: true,
+      totalDocumentsProcessed: totalProcessedCount,
+      failedDocuments: failedCount,
+      needsReviewDocuments: needsReviewCount,
+      routedDocuments: routedCount,
+      unmatchedDocuments: unmatchedCount,
+      successfulRouteRatePct,
+      avgProcessingLatencyMs: latencyRow.rows[0]?.avg_ms != null ? Math.round(latencyRow.rows[0].avg_ms) : null,
+      dateFrom: dateFrom?.toISOString().slice(0, 10) ?? null,
+      dateTo: dateTo?.toISOString().slice(0, 10) ?? null,
+    });
+  } catch (e: any) {
+    console.error("GET /admin/quality/mvp failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+// Firm-wide audit log: recent document audit events
+app.get("/me/audit-events", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const limitRaw = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
+    const limit = Math.min(200, Math.max(1, parseInt(String(limitRaw || 100), 10) || 100));
+    const actionFilter = req.query.action as string | undefined;
+    const actions = actionFilter
+      ? (typeof actionFilter === "string" ? actionFilter : Array.isArray(actionFilter) ? actionFilter[0] : "")
+          .split(",")
+          .map((a) => a.trim())
+          .filter(Boolean)
+      : undefined;
+
+    const where: { firmId: string; action?: { in: string[] } } = { firmId };
+    if (actions && actions.length > 0) where.action = { in: actions };
+
+    const events = await prisma.documentAuditEvent.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        documentId: true,
+        actor: true,
+        action: true,
+        fromCaseId: true,
+        toCaseId: true,
+        metaJson: true,
+        createdAt: true,
+      },
+    });
+
+    res.json({
+      ok: true,
+      items: events.map((e) => ({
+        id: e.id,
+        documentId: e.documentId,
+        actor: e.actor,
+        action: e.action,
+        fromCaseId: e.fromCaseId,
+        toCaseId: e.toCaseId,
+        metaJson: e.metaJson,
+        createdAt: e.createdAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    console.error("GET /me/audit-events failed", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
@@ -1497,7 +4161,7 @@ app.get("/me/needs-attention", auth, requireRole(Role.STAFF), async (req, res) =
       }),
       prisma.document.findMany({
         where: { firmId, status: "FAILED" },
-        select: { id: true, originalName: true, createdAt: true },
+        select: { id: true, originalName: true, createdAt: true, failureStage: true, failureReason: true },
         orderBy: { createdAt: "desc" },
         take: 5,
       }),
@@ -1566,6 +4230,8 @@ app.get("/me/needs-attention", auth, requireRole(Role.STAFF), async (req, res) =
           id: d.id,
           originalName: d.originalName,
           createdAt: d.createdAt.toISOString(),
+          failureStage: (d as { failureStage?: string | null }).failureStage ?? null,
+          failureReason: (d as { failureReason?: string | null }).failureReason ?? null,
         })),
       },
       overdueCaseTasks: {
@@ -1601,6 +4267,446 @@ app.get("/me/needs-attention", auth, requireRole(Role.STAFF), async (req, res) =
     console.error("Failed to get needs-attention", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
+});
+
+// CRM activity feed
+app.get("/activity-feed", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseIdRaw = Array.isArray(req.query.caseId) ? req.query.caseId[0] : req.query.caseId;
+    const caseId = typeof caseIdRaw === "string" && caseIdRaw.trim() ? caseIdRaw.trim() : null;
+    const limitRaw = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
+    const limit = Math.min(100, Math.max(1, parseInt(String(limitRaw || 50), 10) || 50));
+
+    const where: { firmId: string; caseId?: string } = { firmId };
+    if (caseId) where.caseId = caseId;
+
+    const items = await prisma.activityFeedItem.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        caseId: true,
+        providerId: true,
+        documentId: true,
+        type: true,
+        title: true,
+        meta: true,
+        createdAt: true,
+      },
+    });
+
+    res.json({
+      ok: true,
+      items: items.map((i) => ({
+        id: i.id,
+        caseId: i.caseId,
+        providerId: i.providerId,
+        documentId: i.documentId,
+        type: i.type,
+        title: i.title,
+        meta: i.meta,
+        createdAt: i.createdAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    console.error("GET /activity-feed failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Saved views (dashboard / review queue filters)
+app.get("/saved-views", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const userId = (req as any).userId as string | undefined;
+    const scopeRaw = Array.isArray(req.query.scope) ? req.query.scope[0] : req.query.scope;
+    const scope = typeof scopeRaw === "string" && scopeRaw.trim() ? scopeRaw.trim() : null;
+
+    const where: { firmId: string; scope?: string; OR: { userId: string | null }[] } = {
+      firmId,
+      OR: [{ userId: userId ?? null }, { userId: null }],
+    };
+    if (scope) where.scope = scope;
+    const items = await prisma.savedView.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      select: { id: true, name: true, scope: true, filtersJson: true, createdAt: true },
+    });
+
+    res.json({
+      ok: true,
+      items: items.map((i) => ({
+        id: i.id,
+        name: i.name,
+        scope: i.scope,
+        filtersJson: i.filtersJson,
+        createdAt: i.createdAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    console.error("GET /saved-views failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/saved-views", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const userId = (req as any).userId as string | undefined;
+    const body = req.body || {};
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const scope = typeof body.scope === "string" ? body.scope.trim() : "";
+    const filtersJson = body.filtersJson != null ? body.filtersJson : {};
+
+    if (!name) {
+      res.status(400).json({ ok: false, error: "name is required" });
+      return;
+    }
+    if (!scope) {
+      res.status(400).json({ ok: false, error: "scope is required" });
+      return;
+    }
+    const normalizedFilters =
+      typeof filtersJson === "object" && filtersJson !== null ? filtersJson : {};
+
+    const view = await prisma.savedView.create({
+      data: {
+        firmId,
+        userId: userId || null,
+        name,
+        scope,
+        filtersJson: normalizedFilters as Prisma.InputJsonValue,
+      },
+      select: { id: true, name: true, scope: true, filtersJson: true, createdAt: true },
+    });
+
+    res.status(201).json({
+      ok: true,
+      item: {
+        id: view.id,
+        name: view.name,
+        scope: view.scope,
+        filtersJson: view.filtersJson,
+        createdAt: view.createdAt.toISOString(),
+      },
+    });
+  } catch (e: any) {
+    console.error("POST /saved-views failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.delete("/saved-views/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const id = String(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id ?? "");
+    const view = await prisma.savedView.findFirst({
+      where: { id, firmId },
+    });
+    if (!view) {
+      res.status(404).json({ ok: false, error: "Not found" });
+      return;
+    }
+    await prisma.savedView.delete({ where: { id, firmId } });
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("DELETE /saved-views/:id failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Daily operations digest: GET /dashboard/daily-digest
+app.get("/dashboard/daily-digest", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const now = new Date();
+    const startOfToday = new Date(now);
+    startOfToday.setUTCHours(0, 0, 0, 0);
+    const endOfToday = new Date(now);
+    endOfToday.setUTCHours(23, 59, 59, 999);
+
+    const [
+      newDocsTodayCount,
+      newDocsTodayItems,
+      processingCount,
+      processingItems,
+      unmatchedCount,
+      unmatchedItems,
+      failedCount,
+      failedItems,
+      overdueCount,
+      overdueItems,
+      requestsSentTodayCount,
+      requestsSentTodayItems,
+      latestNotifications,
+    ] = await Promise.all([
+      prisma.document.count({
+        where: { firmId, ingestedAt: { gte: startOfToday, lte: endOfToday } },
+      }),
+      prisma.document.findMany({
+        where: { firmId, ingestedAt: { gte: startOfToday, lte: endOfToday } },
+        select: { id: true, originalName: true, ingestedAt: true },
+        orderBy: { ingestedAt: "desc" },
+        take: 20,
+      }),
+      prisma.document.count({
+        where: { firmId, status: { in: ["RECEIVED", "PROCESSING"] } },
+      }),
+      prisma.document.findMany({
+        where: { firmId, status: { in: ["RECEIVED", "PROCESSING"] } },
+        select: { id: true, originalName: true, status: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      }),
+      prisma.document.count({ where: { firmId, status: "UNMATCHED" } }),
+      prisma.document.findMany({
+        where: { firmId, status: "UNMATCHED" },
+        select: { id: true, originalName: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      }),
+      prisma.document.count({ where: { firmId, status: "FAILED" } }),
+      prisma.document.findMany({
+        where: { firmId, status: "FAILED" },
+        select: { id: true, originalName: true, createdAt: true, failureStage: true, failureReason: true },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      }),
+      prisma.caseTask.count({ where: { firmId, completedAt: null, dueDate: { lt: now } } }),
+      prisma.caseTask.findMany({
+        where: { firmId, completedAt: null, dueDate: { lt: now } },
+        select: { id: true, title: true, dueDate: true, caseId: true },
+        orderBy: { dueDate: "asc" },
+        take: 10,
+      }),
+      prisma.recordsRequestAttempt.count({
+        where: { firmId, ok: true, createdAt: { gte: startOfToday, lte: endOfToday } },
+      }),
+      prisma.recordsRequestAttempt.findMany({
+        where: { firmId, ok: true, createdAt: { gte: startOfToday, lte: endOfToday } },
+        select: {
+          id: true,
+          recordsRequestId: true,
+          channel: true,
+          createdAt: true,
+          recordsRequest: { select: { providerName: true, caseId: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      }),
+      listNotifications(firmId, { limit: 15 }),
+    ]);
+
+    res.json({
+      ok: true,
+      date: startOfToday.toISOString().slice(0, 10),
+      newDocsToday: {
+        count: newDocsTodayCount,
+        items: newDocsTodayItems.map((d) => ({
+          id: d.id,
+          originalName: d.originalName,
+          ingestedAt: d.ingestedAt.toISOString(),
+        })),
+      },
+      docsStillProcessing: {
+        count: processingCount,
+        items: processingItems.map((d) => ({
+          id: d.id,
+          originalName: d.originalName,
+          status: d.status,
+          createdAt: d.createdAt.toISOString(),
+        })),
+      },
+      unmatchedDocs: {
+        count: unmatchedCount,
+        items: unmatchedItems.map((d) => ({
+          id: d.id,
+          originalName: d.originalName,
+          createdAt: d.createdAt.toISOString(),
+        })),
+      },
+      failedDocs: {
+        count: failedCount,
+        items: failedItems.map((d) => ({
+          id: d.id,
+          originalName: d.originalName,
+          createdAt: d.createdAt.toISOString(),
+          failureStage: (d as { failureStage?: string | null }).failureStage ?? null,
+          failureReason: (d as { failureReason?: string | null }).failureReason ?? null,
+        })),
+      },
+      overdueTasks: {
+        count: overdueCount,
+        items: overdueItems.map((t) => ({
+          id: t.id,
+          title: t.title,
+          dueDate: t.dueDate?.toISOString() ?? null,
+          caseId: t.caseId,
+        })),
+      },
+      requestsSentToday: {
+        count: requestsSentTodayCount,
+        items: requestsSentTodayItems.map((a) => ({
+          id: a.id,
+          recordsRequestId: a.recordsRequestId,
+          channel: a.channel,
+          createdAt: a.createdAt.toISOString(),
+          providerName: (a as any).recordsRequest?.providerName ?? null,
+          caseId: (a as any).recordsRequest?.caseId ?? null,
+        })),
+      },
+      latestNotifications: latestNotifications.map((n) => ({
+        id: n.id,
+        type: n.type,
+        title: n.title,
+        message: n.message,
+        meta: n.meta,
+        read: n.read,
+        createdAt: n.createdAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    console.error("GET /dashboard/daily-digest failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Dashboard "Needs Attention" panel: GET /dashboard/attention returns JSON; GET /dashboard serves dashboard page
+app.get("/dashboard/attention", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const now = new Date();
+
+    const [unmatchedDocs, failedDocs, overdueTasks, openReviewDocs, recordsWithFailedAttempts, recentFailures] =
+      await Promise.all([
+        prisma.document.findMany({
+          where: { firmId, status: "UNMATCHED" },
+          select: { id: true, originalName: true, createdAt: true },
+          orderBy: { createdAt: "desc" },
+          take: 10,
+        }),
+        prisma.document.findMany({
+          where: { firmId, status: "FAILED" },
+          select: { id: true, originalName: true, createdAt: true, failureStage: true, failureReason: true },
+          orderBy: { createdAt: "desc" },
+          take: 10,
+        }),
+        prisma.caseTask.findMany({
+          where: { firmId, completedAt: null, dueDate: { lt: now } },
+          select: { id: true, title: true, dueDate: true, caseId: true },
+          orderBy: { dueDate: "asc" },
+          take: 10,
+        }),
+        prisma.document.findMany({
+          where: { firmId, status: "NEEDS_REVIEW" },
+          select: { id: true, originalName: true, createdAt: true },
+          orderBy: { createdAt: "desc" },
+          take: 10,
+        }),
+        prisma.recordsRequest.findMany({
+          where: { firmId, attempts: { some: { ok: false } } },
+          select: { id: true, providerName: true, caseId: true, status: true, createdAt: true },
+          orderBy: { createdAt: "desc" },
+          take: 10,
+        }),
+        prisma.recordsRequestAttempt.findMany({
+          where: { firmId, ok: false },
+          select: {
+            id: true,
+            recordsRequestId: true,
+            error: true,
+            createdAt: true,
+            recordsRequest: { select: { caseId: true } },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 10,
+        }),
+      ]);
+
+    const [unmatchedCount, failedCount, overdueCount, openReviewCount, recordsNeedingFollowUpCount, recentFailuresCount] =
+      await Promise.all([
+        prisma.document.count({ where: { firmId, status: "UNMATCHED" } }),
+        prisma.document.count({ where: { firmId, status: "FAILED" } }),
+        prisma.caseTask.count({ where: { firmId, completedAt: null, dueDate: { lt: now } } }),
+        prisma.document.count({ where: { firmId, status: "NEEDS_REVIEW" } }),
+        prisma.recordsRequest.count({
+          where: { firmId, attempts: { some: { ok: false } } },
+        }),
+        prisma.recordsRequestAttempt.count({ where: { firmId, ok: false } }),
+      ]);
+
+    res.json({
+      ok: true,
+      unmatchedDocuments: {
+        count: unmatchedCount,
+        items: unmatchedDocs.map((d) => ({
+          id: d.id,
+          originalName: d.originalName,
+          createdAt: d.createdAt.toISOString(),
+        })),
+      },
+      failedDocuments: {
+        count: failedCount,
+        items: failedDocs.map((d) => ({
+          id: d.id,
+          originalName: d.originalName,
+          createdAt: d.createdAt.toISOString(),
+          failureStage: (d as { failureStage?: string | null }).failureStage ?? null,
+          failureReason: (d as { failureReason?: string | null }).failureReason ?? null,
+        })),
+      },
+      overdueCaseTasks: {
+        count: overdueCount,
+        items: overdueTasks.map((t) => ({
+          id: t.id,
+          title: t.title,
+          dueDate: t.dueDate?.toISOString() ?? null,
+          caseId: t.caseId,
+        })),
+      },
+      openReviewDocuments: {
+        count: openReviewCount,
+        items: openReviewDocs.map((d) => ({
+          id: d.id,
+          originalName: d.originalName,
+          createdAt: d.createdAt.toISOString(),
+        })),
+      },
+      recordsRequestsNeedingFollowUp: {
+        // Requests with ≥1 failed send attempt; dashboard label: "Records requests with failed sends"
+        count: recordsNeedingFollowUpCount,
+        items: recordsWithFailedAttempts.map((r) => ({
+          id: r.id,
+          providerName: r.providerName,
+          caseId: r.caseId,
+          status: r.status,
+          createdAt: r.createdAt.toISOString(),
+        })),
+      },
+      recentRequestSendFailures: {
+        count: recentFailuresCount,
+        items: recentFailures.map((a) => ({
+          id: a.id,
+          recordsRequestId: a.recordsRequestId,
+          caseId: (a as any).recordsRequest?.caseId ?? null,
+          error: a.error,
+          createdAt: a.createdAt.toISOString(),
+        })),
+      },
+    });
+  } catch (e: any) {
+    console.error("GET /dashboard/attention failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/dashboard", auth, requireRole(Role.STAFF), (req, res) => {
+  const p = path.join(__dirname, "..", "..", "public", "admin", "dashboard.html");
+  res.sendFile(p, (err) => {
+    if (err) res.status(404).json({ ok: false, error: "Dashboard page not found" });
+  });
 });
 
 // Overdue tasks (for dashboard overdue-tasks page)
@@ -1762,6 +4868,10 @@ app.get("/billing/status", auth, requireRole(Role.STAFF), async (req, res) => {
       select: { pagesProcessed: true, docsProcessed: true },
     });
 
+    const documentLimitMonthly = await getDocLimitForFirm(firmId);
+    const overage = await getOverageForPeriod(firmId, ym);
+    const planMeta = getPlanMetadata(firm.plan);
+
     res.json({
       ok: true,
       firm: {
@@ -1769,15 +4879,28 @@ app.get("/billing/status", auth, requireRole(Role.STAFF), async (req, res) => {
         name: firm.name,
         plan: firm.plan,
         pageLimitMonthly: firm.pageLimitMonthly,
+        documentLimitMonthly,
         billingStatus: firm.billingStatus,
         trialEndsAt: firm.trialEndsAt?.toISOString() ?? null,
+        planMetadata: planMeta ? { name: planMeta.name, priceMonthlyDollars: planMeta.priceMonthlyDollars, overagePerDocDollars: planMeta.overagePerDocDollars } : null,
       },
       usage: {
         yearMonth: ym,
         pagesProcessed: usageRow?.pagesProcessed ?? 0,
         docsProcessed: usageRow?.docsProcessed ?? 0,
       },
+      overage: overage ? { overageDocs: overage.overageDocs, overageDollars: overage.overageDollars, overageCents: overage.overageCents } : null,
     });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Plan metadata for display (website pricing parity)
+app.get("/billing/plans", auth, requireRole(Role.STAFF), async (_req, res) => {
+  try {
+    const plans = listPlansForDisplay();
+    res.json({ ok: true, plans });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
@@ -1849,45 +4972,148 @@ app.get("/firm/usage", auth, requireRole(Role.STAFF), async (req, res) => {
   });
 });
 
-// Latest documents (cursor pagination)
+// Latest documents (cursor pagination) with optional filters
 app.get("/me/documents", auth, requireRole(Role.STAFF), async (req, res) => {
-  const firmId = (req as any).firmId as string;
+  try {
+    const firmId = (req as any).firmId as string;
 
-  const limitRaw = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
-  const cursorRaw = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
+    const limitRaw = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
+    const cursorRaw = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
+    const statusRaw = Array.isArray(req.query.status) ? req.query.status[0] : req.query.status;
+    const providerRaw = Array.isArray(req.query.provider) ? req.query.provider[0] : req.query.provider;
+    const caseIdRaw = Array.isArray(req.query.caseId) ? req.query.caseId[0] : req.query.caseId;
+    const tagRaw = Array.isArray(req.query.tag) ? req.query.tag[0] : req.query.tag;
+    const dateFromRaw = Array.isArray(req.query.dateFrom) ? req.query.dateFrom[0] : req.query.dateFrom;
+    const dateToRaw = Array.isArray(req.query.dateTo) ? req.query.dateTo[0] : req.query.dateTo;
+    const hasSettlementOfferRaw = Array.isArray(req.query.hasSettlementOffer) ? req.query.hasSettlementOffer[0] : req.query.hasSettlementOffer;
+    const duplicatesOnlyRaw = Array.isArray(req.query.duplicatesOnly) ? req.query.duplicatesOnly[0] : req.query.duplicatesOnly;
 
-  const limit = Math.min(Math.max(parseInt(String(limitRaw ?? "25"), 10) || 25, 1), 100);
-  const cursor = cursorRaw ? String(cursorRaw) : null;
+    const limit = Math.min(Math.max(parseInt(String(limitRaw ?? "25"), 10) || 25, 1), 100);
+    const cursor = cursorRaw ? String(cursorRaw) : null;
 
-  const docs = await prisma.document.findMany({
-    where: { firmId },
-    orderBy: { createdAt: "desc" },
-    take: limit + 1,
-    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-    select: {
-      id: true,
-      source: true,
-      originalName: true,
-      mimeType: true,
-      pageCount: true,
-      status: true,
-      spacesKey: true,
-      routedCaseId: true,
-      createdAt: true,
-      processedAt: true,
-      routingStatus: true,
-      duplicateMatchCount: true,
-      duplicateOfId: true,
-      processingStage: true,
-    },
-  });
+    const where: Record<string, unknown> = { firmId };
 
-  const hasMore = docs.length > limit;
-  const page = hasMore ? docs.slice(0, limit) : docs;
-  const nextCursor = hasMore ? page[page.length - 1].id : null;
-  const docIds = page.map((d: { id: string }) => d.id);
+    if (statusRaw && String(statusRaw).trim()) {
+      const statuses = String(statusRaw).trim().split(",").map((s) => s.trim()).filter(Boolean);
+      if (statuses.length === 1) where.status = statuses[0];
+      else if (statuses.length > 1) where.status = { in: statuses };
+    }
 
-  const lastAudit =
+    if (caseIdRaw && String(caseIdRaw).trim()) {
+      where.routedCaseId = String(caseIdRaw).trim();
+    }
+
+    if (providerRaw && String(providerRaw).trim()) {
+      const providerId = String(providerRaw).trim();
+      const casesWithProvider = await prisma.caseProvider.findMany({
+        where: { firmId, providerId },
+        select: { caseId: true },
+      });
+      const caseIds = casesWithProvider.map((c) => c.caseId);
+      if (caseIds.length === 0) {
+        where.routedCaseId = { in: [] };
+      } else {
+        where.routedCaseId = { in: caseIds };
+      }
+    }
+
+    if (tagRaw && String(tagRaw).trim()) {
+      const tagId = String(tagRaw).trim();
+      const tag = await prisma.documentTag.findFirst({
+        where: { id: tagId, firmId },
+        select: { id: true },
+      });
+      if (!tag) {
+        where.id = { in: [] };
+      } else {
+        where.tagLinks = { some: { tagId: tag.id } };
+      }
+    }
+
+    if (dateFromRaw && String(dateFromRaw).trim()) {
+      const d = new Date(String(dateFromRaw).trim());
+      if (!isNaN(d.getTime())) {
+        (where as any).createdAt = Object.assign((where as any).createdAt || {}, { gte: d });
+      }
+    }
+    if (dateToRaw && String(dateToRaw).trim()) {
+      const d = new Date(String(dateToRaw).trim());
+      if (!isNaN(d.getTime())) {
+        (where as any).createdAt = Object.assign((where as any).createdAt || {}, { lte: d });
+      }
+    }
+
+    if (duplicatesOnlyRaw === "true" || duplicatesOnlyRaw === "1") {
+      where.OR = [
+        { duplicateOfId: { not: null } },
+        { duplicateMatchCount: { gt: 0 } },
+      ];
+    }
+
+    if (hasSettlementOfferRaw === "true" || hasSettlementOfferRaw === "1") {
+      const { rows: offerRows } = await pgPool.query<{ document_id: string }>(
+        `SELECT document_id FROM document_recognition WHERE (insurance_fields->>'settlementOffer') IS NOT NULL AND (insurance_fields->>'settlementOffer')::float > 0`
+      );
+      const docIdsWithOffer = (offerRows || []).map((r) => r.document_id).filter(Boolean);
+      if (docIdsWithOffer.length === 0) {
+        where.id = { in: [] };
+      } else {
+        const inFirm = await prisma.document.findMany({
+          where: { id: { in: docIdsWithOffer }, firmId },
+          select: { id: true },
+        });
+        const ids = inFirm.map((d) => d.id);
+        if (ids.length === 0) where.id = { in: [] };
+        else where.id = { in: ids };
+      }
+    }
+
+    const docs = await prisma.document.findMany({
+      where: where as any,
+      orderBy: { createdAt: "desc" },
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      select: {
+        id: true,
+        source: true,
+        originalName: true,
+        mimeType: true,
+        pageCount: true,
+        status: true,
+        spacesKey: true,
+        routedCaseId: true,
+        createdAt: true,
+        processedAt: true,
+        routingStatus: true,
+        duplicateMatchCount: true,
+        duplicateOfId: true,
+        processingStage: true,
+        failureStage: true,
+        failureReason: true,
+        thumbnailKey: true,
+      },
+    });
+
+    const hasMore = docs.length > limit;
+    const page = hasMore ? docs.slice(0, limit) : docs;
+    const nextCursor = hasMore ? page[page.length - 1].id : null;
+    const docIds = page.map((d: { id: string }) => d.id);
+
+    const tagLinks =
+      docIds.length > 0
+        ? await prisma.documentTagLink.findMany({
+            where: { documentId: { in: docIds } },
+            include: { tag: { select: { id: true, name: true, color: true } } },
+          })
+        : [];
+    const tagsByDoc = new Map<string, { id: string; name: string; color: string | null }[]>();
+    for (const l of tagLinks) {
+      const list = tagsByDoc.get(l.documentId) || [];
+      list.push({ id: l.tag.id, name: l.tag.name, color: l.tag.color });
+      tagsByDoc.set(l.documentId, list);
+    }
+
+    const lastAudit =
     docIds.length > 0
       ? await prisma.documentAuditEvent.findMany({
           where: { documentId: { in: docIds }, firmId },
@@ -1979,11 +5205,31 @@ app.get("/me/documents", auth, requireRole(Role.STAFF), async (req, res) => {
     duplicateMatchCount: d.duplicateMatchCount ?? 0,
     duplicateOfId: d.duplicateOfId ?? null,
     processingStage: d.processingStage ?? "uploaded",
+    failureStage: (d as { failureStage?: string | null }).failureStage ?? null,
+    failureReason: (d as { failureReason?: string | null }).failureReason ?? null,
     insuranceFields: insuranceByDoc.get(d.id) ?? null,
     recognition: recognitionByDoc.get(d.id) ?? null,
+    tags: tagsByDoc.get(d.id) ?? [],
+    thumbnailKey: (d as { thumbnailKey?: string | null }).thumbnailKey ?? null,
   }));
 
-  res.json({ items, nextCursor });
+  const itemsWithThumbUrls = await Promise.all(
+    items.map(async (item) => {
+      if (!item.thumbnailKey) return { ...item, thumbnailUrl: null as string | null };
+      try {
+        const thumbnailUrl = await getPresignedGetUrl(item.thumbnailKey, 300);
+        return { ...item, thumbnailUrl };
+      } catch {
+        return { ...item, thumbnailUrl: null as string | null };
+      }
+    })
+  );
+
+  res.json({ items: itemsWithThumbUrls, nextCursor });
+  } catch (e: any) {
+    requestLog(req, "error", "me_documents_failed", { error: String(e?.message || e) });
+    sendError(res, 500, String(e?.message || e), "INTERNAL_ERROR", (req as any).requestId);
+  }
 });
 
 // Review queue: documents with recognition data for UI (cursor pagination)
@@ -1999,7 +5245,7 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
     const docs = await prisma.document.findMany({
       where: {
         firmId,
-        status: { in: ["NEEDS_REVIEW", "UPLOADED"] },
+        status: { in: ["NEEDS_REVIEW", "UPLOADED", "UNMATCHED", "FAILED"] },
         OR: [{ routingStatus: null }, { routingStatus: "needs_review" }],
       },
       orderBy: { createdAt: "desc" },
@@ -2016,6 +5262,9 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
         routedCaseId: true,
         routingStatus: true,
         duplicateOfId: true,
+        failureStage: true,
+        failureReason: true,
+        metaJson: true,
       },
     });
 
@@ -2027,7 +5276,10 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
     const { rows: recRows } =
       docIds.length > 0
         ? await pgPool.query(
-            `select document_id, case_number, client_name, suggested_case_id, doc_type, confidence as doc_type_confidence, match_confidence, match_reason, summary, risks, insights, insurance_fields, court_fields from document_recognition where document_id = any($1)`,
+            `select document_id, case_number, client_name, suggested_case_id, doc_type, confidence as doc_type_confidence, match_confidence, match_reason, unmatched_reason, classification_reason, classification_signals_json, classification_status, suggested_doc_type, provider_name, provider_name_normalized, provider_resolution_status,
+              summary, risks, insights, insurance_fields, court_fields,
+              detected_language, possible_languages, ocr_engine, ocr_confidence, has_handwriting, handwriting_heavy, page_diagnostics, extraction_strict_mode
+              from document_recognition where document_id = any($1)`,
             [docIds]
           )
         : { rows: [] as any[] };
@@ -2041,9 +5293,25 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
       match_confidence?: unknown;
       doc_type_confidence?: unknown;
       match_reason?: string;
+      unmatched_reason?: string | null;
+      classification_reason?: string | null;
+      classification_signals_json?: unknown;
+      classification_status?: string | null;
+      suggested_doc_type?: string | null;
+      provider_name?: string | null;
+      provider_name_normalized?: string | null;
+      provider_resolution_status?: string | null;
       summary?: unknown;
       client_name?: string;
       insurance_fields?: unknown;
+      detected_language?: string | null;
+      possible_languages?: unknown;
+      ocr_engine?: string | null;
+      ocr_confidence?: number | null;
+      has_handwriting?: boolean | null;
+      handwriting_heavy?: boolean | null;
+      page_diagnostics?: unknown;
+      extraction_strict_mode?: boolean | null;
     }
     const recByDoc = new Map<string, DocRecRow>(recRows.map((r: DocRecRow) => [r.document_id ?? "", r]));
 
@@ -2079,6 +5347,34 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
       return "review_manually";
     }
 
+    /** Build human-readable reasons why this document is in the review queue. */
+    function buildReviewReasons(
+      doc: { status: string; failureStage?: string | null; failureReason?: string | null; metaJson?: unknown; duplicateOfId?: string | null },
+      rec: DocRecRow | undefined,
+      caseMatchConfidence: number | null,
+      docTypeConfidence: number | null,
+      suggestedCaseId: string | null
+    ): string[] {
+      const reasons: string[] = [];
+      if (doc.duplicateOfId) reasons.push("Duplicate");
+      if (doc.status === "FAILED") {
+        reasons.push("Processing failed");
+        if (doc.failureStage) reasons.push(`Failed at: ${doc.failureStage}`);
+      }
+      if (doc.status === "UNMATCHED") reasons.push("Unmatched case");
+      if (rec?.classification_status === "uncertain") reasons.push("Uncertain classification");
+      if (rec?.classification_status === "fallback") reasons.push("Unknown document type");
+      if (caseMatchConfidence != null && caseMatchConfidence > 0 && caseMatchConfidence < 0.9 && suggestedCaseId)
+        reasons.push("Low match confidence");
+      if (docTypeConfidence != null && docTypeConfidence < 0.5) reasons.push("Low classification confidence");
+      if (rec?.ocr_confidence != null && Number(rec.ocr_confidence) < 0.5) reasons.push("Low OCR confidence");
+      const meta = doc.metaJson as Record<string, unknown> | null | undefined;
+      if (meta?.extractionQuality === "unreadable") reasons.push("Unreadable (no text extracted)");
+      if (meta?.extractionQuality === "low") reasons.push("Low quality extraction");
+      if (doc.status === "NEEDS_REVIEW" && reasons.length === 0) reasons.push("Needs review");
+      return reasons;
+    }
+
     const items = page.map((d: typeof page[number]) => {
       const rec = recByDoc.get(d.id);
       const suggestedCaseId = rec?.suggested_case_id ?? null;
@@ -2101,15 +5397,30 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
                 }
               })()
           : null;
+      const reviewReasons = buildReviewReasons(
+        d as { status: string; failureStage?: string | null; failureReason?: string | null; metaJson?: unknown; duplicateOfId?: string | null },
+        rec,
+        caseMatchConfidence,
+        docTypeConfidence,
+        suggestedCaseId
+      );
       return {
         id: d.id,
         fileName: d.originalName,
+        status: d.status,
+        reviewReasons,
         clientName: rec?.client_name ?? (d.extractedFields as any)?.clientName ?? null,
+        caseNumber: rec?.case_number ?? (d.extractedFields as any)?.caseNumber ?? null,
         suggestedCaseId,
         routedCaseId: d.routedCaseId,
         matchConfidence: caseMatchConfidence,
         matchReason,
+        unmatchedReason: rec?.unmatched_reason ?? null,
         docTypeConfidence,
+        classificationReason: rec?.classification_reason ?? null,
+        classificationSignals: rec?.classification_signals_json ?? null,
+        classificationStatus: rec?.classification_status ?? null,
+        suggestedDocType: rec?.suggested_doc_type ?? null,
         routingRecommendation: recommendation,
         extractedFields: d.extractedFields,
         docType,
@@ -2117,11 +5428,33 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
         claimedBy: lastClaimByDoc.get(d.id) ?? null,
         routingStatus: d.routingStatus ?? null,
         lastAuditAction: lastAuditByDoc.get(d.id) ?? null,
+        providerName: rec?.provider_name ?? null,
+        providerNameNormalized: rec?.provider_name_normalized ?? null,
+        providerResolutionStatus: rec?.provider_resolution_status ?? null,
         risks,
         insights,
         summary: summaryPayload,
         insuranceFields: rec?.insurance_fields ?? null,
         duplicateOfId: d.duplicateOfId ?? null,
+        ocrDiagnostics:
+          rec != null &&
+          (rec.detected_language != null ||
+            rec.ocr_engine != null ||
+            rec.ocr_confidence != null ||
+            rec.has_handwriting != null)
+            ? {
+                detectedLanguage: rec.detected_language ?? null,
+                possibleLanguages: rec.possible_languages ?? null,
+                ocrEngine: rec.ocr_engine ?? null,
+                ocrConfidence: rec.ocr_confidence != null ? Number(rec.ocr_confidence) : null,
+                hasHandwriting: rec.has_handwriting ?? null,
+                handwritingHeavy: rec.handwriting_heavy ?? null,
+                pageDiagnostics: rec.page_diagnostics ?? null,
+                extractionStrictMode: rec.extraction_strict_mode ?? null,
+              }
+            : null,
+        failureStage: (d as { failureStage?: string | null }).failureStage ?? null,
+        failureReason: (d as { failureReason?: string | null }).failureReason ?? null,
       };
     });
     res.json({ items, nextCursor });
@@ -2239,11 +5572,125 @@ app.get("/me/search", auth, requireRole(Role.STAFF), async (req, res) => {
   }
 });
 
+// Review queue page (HTML)
+app.get("/review-queue", auth, requireRole(Role.STAFF), (req, res) => {
+  const p = path.join(__dirname, "..", "..", "public", "admin", "review-queue.html");
+  res.sendFile(p, (err) => {
+    if (err) res.status(404).json({ ok: false, error: "Review queue page not found" });
+  });
+});
+
+// GET /search: HTML = search page; otherwise grouped global search
+app.get("/search", auth, requireRole(Role.STAFF), async (req, res) => {
+  if (req.accepts("html")) {
+    const p = path.join(__dirname, "..", "..", "public", "admin", "search.html");
+    return res.sendFile(p, (err) => {
+      if (err) res.status(404).json({ ok: false, error: "Search page not found" });
+    });
+  }
+  try {
+    const firmId = (req as any).firmId as string;
+    const qRaw = Array.isArray(req.query.q) ? req.query.q[0] : req.query.q;
+    const q = typeof qRaw === "string" ? qRaw.trim() : "";
+
+    const empty = {
+      ok: true as const,
+      cases: { count: 0, items: [] },
+      documents: { count: 0, items: [] },
+      providers: { count: 0, items: [] },
+      recordsRequests: { count: 0, items: [] },
+      notes: { count: 0, items: [] },
+      tasks: { count: 0, items: [] },
+    };
+
+    if (!q || q.length < 1) {
+      return res.json(empty);
+    }
+
+    const ilike = { contains: q, mode: "insensitive" as const };
+
+    const [cases, documents, providers, recordsRequests, notes, tasks] = await Promise.all([
+      prisma.legalCase.findMany({
+        where: {
+          firmId,
+          OR: [
+            { title: ilike },
+            { caseNumber: ilike },
+            { clientName: ilike },
+          ],
+        },
+        select: { id: true, title: true, caseNumber: true, clientName: true },
+        take: 20,
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.document.findMany({
+        where: { firmId, originalName: ilike },
+        select: { id: true, originalName: true, routedCaseId: true },
+        take: 20,
+        orderBy: { ingestedAt: "desc" },
+      }),
+      prisma.provider.findMany({
+        where: {
+          firmId,
+          OR: [
+            { name: ilike },
+            { address: ilike },
+            { city: ilike },
+            { state: ilike },
+            { specialty: ilike },
+          ],
+        },
+        select: { id: true, name: true, city: true, state: true, specialty: true },
+        take: 20,
+        orderBy: { name: "asc" },
+      }),
+      prisma.recordsRequest.findMany({
+        where: {
+          firmId,
+          OR: [
+            { providerName: ilike },
+            { notes: ilike },
+            { providerContact: ilike },
+          ],
+        },
+        select: { id: true, providerName: true, status: true, caseId: true },
+        take: 20,
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.caseNote.findMany({
+        where: { firmId, body: ilike },
+        select: { id: true, body: true, caseId: true },
+        take: 20,
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.caseTask.findMany({
+        where: { firmId, title: ilike },
+        select: { id: true, title: true, caseId: true, completedAt: true },
+        take: 20,
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+
+    res.json({
+      ok: true,
+      cases: { count: cases.length, items: cases },
+      documents: { count: documents.length, items: documents },
+      providers: { count: providers.length, items: providers },
+      recordsRequests: { count: recordsRequests.length, items: recordsRequests },
+      notes: { count: notes.length, items: notes },
+      tasks: { count: tasks.length, items: tasks },
+    });
+  } catch (e: any) {
+    console.error("GET /search failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // Feature flags for add-ons (insurance_extraction, court_extraction, demand_narratives)
 app.get("/me/features", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
-    const [insurance_extraction, court_extraction, demand_narratives, duplicates_detection, crm_sync, crm_push, case_insights] = await Promise.all([
+    const [insurance_extraction, court_extraction, demand_narratives, duplicates_detection, crm_sync, crm_push, case_insights, growth_extraction, premium_workflow] = await Promise.all([
       hasFeature(firmId, "insurance_extraction"),
       hasFeature(firmId, "court_extraction"),
       hasFeature(firmId, "demand_narratives"),
@@ -2251,8 +5698,79 @@ app.get("/me/features", auth, requireRole(Role.STAFF), async (req, res) => {
       hasFeature(firmId, "crm_sync"),
       hasFeature(firmId, "crm_push"),
       hasFeature(firmId, "case_insights"),
+      hasFeature(firmId, "growth_extraction"),
+      hasPremiumWorkflow(firmId),
     ]);
-    res.json({ insurance_extraction, court_extraction, demand_narratives, duplicates_detection, crm_sync, crm_push, case_insights });
+    res.json({ insurance_extraction, court_extraction, demand_narratives, duplicates_detection, crm_sync, crm_push, case_insights, growth_extraction, premium_workflow });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Premium workflow config (STAFF + premium_workflow)
+app.get("/me/premium/workflow-config", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    if (!(await hasPremiumWorkflow(firmId))) {
+      return res.status(403).json({ ok: false, error: "Premium workflow not enabled" });
+    }
+    const config = await getWorkflowConfig(firmId);
+    res.json(config ?? {});
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/me/premium/workflow-config", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    if (!(await hasPremiumWorkflow(firmId))) {
+      return res.status(403).json({ ok: false, error: "Premium workflow not enabled" });
+    }
+    const body = req.body as { minAutoRouteConfidenceOverride?: number; bulkRouteMaxPerRequest?: number; autoRouteExcludeDocTypes?: string[] };
+    await setWorkflowConfig(firmId, body);
+    await recordPremiumEvent(firmId, "workflow_config_change", { patch: body });
+    const config = await getWorkflowConfig(firmId);
+    res.json(config ?? {});
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Premium bulk document actions (STAFF + premium_workflow)
+app.post("/me/documents/bulk-route", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const actor = (req as any).userId as string;
+    if (!(await hasPremiumWorkflow(firmId))) {
+      return res.status(403).json({ ok: false, error: "Premium workflow not enabled" });
+    }
+    const { documentIds, caseId } = req.body as { documentIds: string[]; caseId: string };
+    if (!Array.isArray(documentIds) || !caseId) {
+      return res.status(400).json({ ok: false, error: "documentIds (array) and caseId required" });
+    }
+    const result = await bulkRouteDocuments(firmId, documentIds, caseId, actor);
+    await recordPremiumEvent(firmId, "bulk_route", { caseId, routed: result.routed, skipped: result.skipped, errors: result.errors?.length ?? 0 });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/me/documents/bulk-unroute", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const actor = (req as any).userId as string;
+    if (!(await hasPremiumWorkflow(firmId))) {
+      return res.status(403).json({ ok: false, error: "Premium workflow not enabled" });
+    }
+    const { documentIds } = req.body as { documentIds: string[] };
+    if (!Array.isArray(documentIds)) {
+      return res.status(400).json({ ok: false, error: "documentIds (array) required" });
+    }
+    const result = await bulkUnrouteDocuments(firmId, documentIds, actor);
+    await recordPremiumEvent(firmId, "bulk_unroute", { routed: result.routed, skipped: result.skipped, errors: result.errors?.length ?? 0 });
+    res.json(result);
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
@@ -2593,20 +6111,34 @@ app.get("/providers/map", auth, requireRole(Role.STAFF), async (req, res) => {
     const radiusRaw = Array.isArray(req.query.radius) ? req.query.radius[0] : req.query.radius;
     const latRaw = Array.isArray(req.query.lat) ? req.query.lat[0] : req.query.lat;
     const lngRaw = Array.isArray(req.query.lng) ? req.query.lng[0] : req.query.lng;
+    const onlyActiveRaw = Array.isArray(req.query.onlyActive) ? req.query.onlyActive[0] : req.query.onlyActive;
 
     const specialty = typeof specialtyRaw === "string" && specialtyRaw.trim() ? specialtyRaw.trim() : null;
     const city = typeof cityRaw === "string" && cityRaw.trim() ? cityRaw.trim() : null;
     const radiusKm = radiusRaw != null ? Math.max(0, Number(radiusRaw)) : null;
     const centerLat = latRaw != null ? Number(latRaw) : null;
     const centerLng = lngRaw != null ? Number(lngRaw) : null;
+    const onlyActive = onlyActiveRaw === "true" || onlyActiveRaw === "1";
 
-    const where: { firmId: string; lat?: { not: null }; lng?: { not: null }; city?: string; specialty?: string } = {
+    const where: {
+      firmId: string;
+      lat?: { not: null };
+      lng?: { not: null };
+      city?: string;
+      specialty?: string;
+      listingActive?: boolean;
+      OR?: Array<{ expiresAt: null } | { expiresAt: { gt: Date } }>;
+    } = {
       firmId,
       lat: { not: null },
       lng: { not: null },
     };
     if (city) where.city = city;
     if (specialty) where.specialty = specialty;
+    if (onlyActive) {
+      where.listingActive = true;
+      where.OR = [{ expiresAt: null }, { expiresAt: { gt: new Date() } }];
+    }
 
     let providers = await prisma.provider.findMany({
       where,
@@ -2622,6 +6154,9 @@ app.get("/providers/map", auth, requireRole(Role.STAFF), async (req, res) => {
         email: true,
         lat: true,
         lng: true,
+        hoursJson: true,
+        serviceAreasJson: true,
+        intakeInstructions: true,
       },
     });
 
@@ -2685,6 +6220,151 @@ app.get("/providers", auth, requireRole(Role.STAFF), async (req, res) => {
   }
 });
 
+// Provider map: raw names from document_recognition with doc count, normalized, and resolved provider (for management UI)
+app.get("/me/provider-map", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const limit = Math.min(parseInt(String(req.query.limit), 10) || 200, 500);
+    const { rows } = await pgPool.query<{
+      raw_name: string;
+      normalized: string | null;
+      resolution_status: string | null;
+      suggested_provider_id: string | null;
+      doc_count: string;
+    }>(
+      `SELECT
+        COALESCE(TRIM(dr.provider_name), '') AS raw_name,
+        dr.provider_name_normalized AS normalized,
+        dr.provider_resolution_status AS resolution_status,
+        dr.suggested_provider_id AS suggested_provider_id,
+        COUNT(*)::text AS doc_count
+       FROM document_recognition dr
+       INNER JOIN "Document" d ON d.id = dr.document_id AND d."firmId" = $1
+       WHERE dr.provider_name IS NOT NULL AND TRIM(dr.provider_name) <> ''
+       GROUP BY dr.provider_name, dr.provider_name_normalized, dr.provider_resolution_status, dr.suggested_provider_id
+       ORDER BY COUNT(*) DESC
+       LIMIT $2`,
+      [firmId, limit]
+    );
+    const providerIds = [...new Set(rows.map((r) => r.suggested_provider_id).filter(Boolean))] as string[];
+    const providerNames =
+      providerIds.length > 0
+        ? await prisma.provider.findMany({
+            where: { id: { in: providerIds }, firmId },
+            select: { id: true, name: true },
+          }).then((list) => new Map(list.map((p) => [p.id, p.name])))
+        : new Map<string, string>();
+    res.json({
+      ok: true,
+      items: rows.map((r) => ({
+        rawName: r.raw_name,
+        normalized: r.normalized ?? null,
+        resolutionStatus: r.resolution_status ?? null,
+        suggestedProviderId: r.suggested_provider_id ?? null,
+        suggestedProviderName: r.suggested_provider_id ? providerNames.get(r.suggested_provider_id) ?? null : null,
+        docCount: parseInt(r.doc_count, 10) || 0,
+      })),
+    });
+  } catch (e: any) {
+    console.error("GET /me/provider-map failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// List provider aliases for the firm (for management UI)
+app.get("/me/provider-aliases", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const { rows } = await pgPool.query<{
+      id: string;
+      provider_id: string;
+      alias_normalized: string;
+      created_at: Date;
+    }>(
+      `SELECT a.id, a.provider_id, a.alias_normalized, a.created_at
+       FROM provider_alias a
+       WHERE a.firm_id = $1
+       ORDER BY a.alias_normalized ASC`,
+      [firmId]
+    );
+    const providerIds = [...new Set(rows.map((r) => r.provider_id))];
+    const providerNames =
+      providerIds.length > 0
+        ? await prisma.provider.findMany({
+            where: { id: { in: providerIds }, firmId },
+            select: { id: true, name: true },
+          }).then((list) => new Map(list.map((p) => [p.id, p.name])))
+        : new Map<string, string>();
+    res.json({
+      ok: true,
+      items: rows.map((r) => ({
+        id: r.id,
+        providerId: r.provider_id,
+        providerName: providerNames.get(r.provider_id) ?? null,
+        aliasNormalized: r.alias_normalized,
+        createdAt: r.created_at.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    console.error("GET /me/provider-aliases failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Add a provider alias (map a normalized name to a provider)
+app.post("/me/provider-aliases", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body ?? {}) as { providerId?: string; aliasNormalized?: string };
+    const providerId = typeof body.providerId === "string" ? body.providerId.trim() : null;
+    const aliasNormalized = typeof body.aliasNormalized === "string" ? body.aliasNormalized.trim() : null;
+    if (!providerId || !aliasNormalized) {
+      return res.status(400).json({ ok: false, error: "providerId and aliasNormalized are required" });
+    }
+    const provider = await prisma.provider.findFirst({
+      where: { id: providerId, firmId },
+      select: { id: true },
+    });
+    if (!provider) return res.status(404).json({ ok: false, error: "Provider not found" });
+    const id = crypto.randomBytes(12).toString("hex");
+    await pgPool.query(
+      `INSERT INTO provider_alias (id, firm_id, provider_id, alias_normalized) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (firm_id, provider_id, alias_normalized) DO NOTHING`,
+      [id, firmId, providerId, aliasNormalized]
+    );
+    const { rows } = await pgPool.query<{ id: string; created_at: Date }>(
+      `SELECT id, created_at FROM provider_alias WHERE firm_id = $1 AND provider_id = $2 AND alias_normalized = $3`,
+      [firmId, providerId, aliasNormalized]
+    );
+    const row = rows[0];
+    res.status(201).json({
+      ok: true,
+      alias: row ? { id: row.id, providerId, aliasNormalized, createdAt: row.created_at.toISOString() } : { id, providerId, aliasNormalized },
+    });
+  } catch (e: any) {
+    console.error("POST /me/provider-aliases failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Delete a provider alias
+app.delete("/me/provider-aliases/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const id = String(req.params.id ?? "").trim();
+    if (!id) return res.status(400).json({ ok: false, error: "Alias id required" });
+    const result = await pgPool.query(
+      `DELETE FROM provider_alias WHERE id = $1 AND firm_id = $2`,
+      [id, firmId]
+    );
+    if (!result.rowCount) return res.status(404).json({ ok: false, error: "Alias not found" });
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("DELETE /me/provider-aliases/:id failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.get("/providers/:id/cases", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -2717,6 +6397,12 @@ app.get("/providers/:id/cases", auth, requireRole(Role.STAFF), async (req, res) 
 });
 
 app.get("/providers/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  if (req.accepts("html")) {
+    const p = path.join(__dirname, "..", "..", "public", "admin", "provider-detail.html");
+    return res.sendFile(p, (err) => {
+      if (err) res.status(404).json({ error: "Provider detail page not found" });
+    });
+  }
   try {
     const firmId = (req as any).firmId as string;
     const id = String(req.params.id ?? "");
@@ -2733,7 +6419,7 @@ app.get("/providers/:id", auth, requireRole(Role.STAFF), async (req, res) => {
   }
 });
 
-// Provider summary: profile + related cases, records requests, timeline events
+// Provider summary: profile + related cases, records requests, timeline events, recent documents
 app.get("/providers/:id/summary", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -2746,21 +6432,23 @@ app.get("/providers/:id/summary", auth, requireRole(Role.STAFF), async (req, res
       return res.status(404).json({ error: "Provider not found" });
     }
 
-    const [caseLinks, recordsRequests, timelineEvents] = await Promise.all([
+    const [caseLinks, relatedCasesCount, recordsRequests, recordsRequestsCount, timelineEvents, timelineDocIds] = await Promise.all([
       prisma.caseProvider.findMany({
         where: { firmId, providerId: id },
         include: {
           case: { select: { id: true, title: true, caseNumber: true, clientName: true, createdAt: true } },
         },
         orderBy: { createdAt: "desc" },
-        take: 50,
+        take: 10,
       }),
+      prisma.caseProvider.count({ where: { firmId, providerId: id } }),
       prisma.recordsRequest.findMany({
         where: { firmId, providerId: id },
         select: { id: true, providerName: true, status: true, caseId: true, createdAt: true },
         orderBy: { createdAt: "desc" },
-        take: 20,
+        take: 10,
       }),
+      prisma.recordsRequest.count({ where: { firmId, providerId: id } }),
       prisma.caseTimelineEvent.findMany({
         where: { firmId, facilityId: id },
         select: {
@@ -2776,9 +6464,33 @@ app.get("/providers/:id/summary", auth, requireRole(Role.STAFF), async (req, res
         orderBy: [{ eventDate: "desc" }, { createdAt: "desc" }],
         take: 20,
       }),
+      prisma.caseTimelineEvent.findMany({
+        where: { firmId, facilityId: id },
+        select: { documentId: true },
+        orderBy: [{ eventDate: "desc" }, { createdAt: "desc" }],
+        take: 50,
+      }),
     ]);
 
-    const cases = caseLinks.map((l) => ({ ...l.case, relationship: l.relationship }));
+    const relatedCases = caseLinks.map((l) => ({ ...l.case, relationship: l.relationship }));
+    const docIds = [...new Set(timelineDocIds.map((e) => e.documentId))];
+    const recentDocuments =
+      docIds.length === 0
+        ? []
+        : await prisma.document.findMany({
+            where: { id: { in: docIds }, firmId },
+            select: {
+              id: true,
+              originalName: true,
+              status: true,
+              processingStage: true,
+              routedCaseId: true,
+              createdAt: true,
+              processedAt: true,
+            },
+            orderBy: { processedAt: "desc" },
+            take: 10,
+          });
 
     res.json({
       ok: true,
@@ -2795,17 +6507,198 @@ app.get("/providers/:id/summary", auth, requireRole(Role.STAFF), async (req, res
         specialtiesJson: provider.specialtiesJson,
         verified: provider.verified,
         subscriptionTier: provider.subscriptionTier,
+        listingActive: provider.listingActive,
+        expiresAt: provider.expiresAt,
         lat: provider.lat,
         lng: provider.lng,
         createdAt: provider.createdAt,
+        hoursJson: provider.hoursJson,
+        serviceAreasJson: provider.serviceAreasJson,
+        intakeInstructions: provider.intakeInstructions,
       },
-      cases,
-      recordsRequests,
-      timelineEvents,
+      relatedCasesCount,
+      relatedCases,
+      recordsRequestsCount,
+      recentRecordsRequests: recordsRequests,
+      recentTimelineEvents: timelineEvents,
+      recentDocuments,
     });
   } catch (err) {
     console.error("Failed to get provider summary", err);
     res.status(500).json({ error: "Failed to get provider summary" });
+  }
+});
+
+// Provider referrals
+app.get("/providers/:id/referrals", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const providerId = String(req.params.id ?? "");
+
+    const provider = await prisma.provider.findFirst({
+      where: { id: providerId, firmId },
+      select: { id: true },
+    });
+    if (!provider) return res.status(404).json({ ok: false, error: "Provider not found" });
+
+    const referrals = await prisma.referral.findMany({
+      where: { providerId, firmId },
+      orderBy: { referredAt: "desc" },
+      include: {
+        case: { select: { id: true, title: true, caseNumber: true, clientName: true } },
+      },
+    });
+
+    res.json({
+      ok: true,
+      items: referrals.map((r) => ({
+        id: r.id,
+        caseId: r.caseId,
+        providerId: r.providerId,
+        referredAt: r.referredAt.toISOString(),
+        status: r.status,
+        notes: r.notes,
+        case: r.case,
+      })),
+    });
+  } catch (e: any) {
+    console.error("Failed to list provider referrals", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Provider invoices
+app.get("/providers/:id/invoices", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const providerId = String(req.params.id ?? "");
+    const provider = await prisma.provider.findFirst({
+      where: { id: providerId, firmId },
+      select: { id: true },
+    });
+    if (!provider) {
+      return res.status(404).json({ ok: false, error: "Provider not found" });
+    }
+    const items = await prisma.providerInvoice.findMany({
+      where: { providerId },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json({
+      ok: true,
+      items: items.map((inv) => ({
+        id: inv.id,
+        providerId: inv.providerId,
+        amountCents: inv.amountCents,
+        status: inv.status,
+        billingPeriod: inv.billingPeriod,
+        dueAt: inv.dueAt?.toISOString() ?? null,
+        paidAt: inv.paidAt?.toISOString() ?? null,
+        stripeInvoiceId: inv.stripeInvoiceId ?? null,
+        createdAt: inv.createdAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    console.error("GET /providers/:id/invoices", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/providers/:id/invoices", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const providerId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as {
+      amountCents?: number;
+      billingPeriod?: string;
+      dueAt?: string;
+      status?: string;
+      stripeInvoiceId?: string;
+    };
+    const provider = await prisma.provider.findFirst({
+      where: { id: providerId, firmId },
+      select: { id: true },
+    });
+    if (!provider) {
+      return res.status(404).json({ ok: false, error: "Provider not found" });
+    }
+    const amountCents = typeof body.amountCents === "number" ? body.amountCents : parseInt(String(body.amountCents ?? 0), 10);
+    const billingPeriod = String(body.billingPeriod ?? "").trim() || null;
+    if (!billingPeriod) {
+      return res.status(400).json({ ok: false, error: "billingPeriod is required" });
+    }
+    const dueAt = body.dueAt ? new Date(body.dueAt) : null;
+    const status = String(body.status ?? "open").trim() || "open";
+    const stripeInvoiceId = body.stripeInvoiceId ? String(body.stripeInvoiceId).trim() || null : null;
+
+    const created = await prisma.providerInvoice.create({
+      data: {
+        providerId,
+        amountCents,
+        status,
+        billingPeriod,
+        dueAt,
+        paidAt: status === "paid" ? new Date() : null,
+        stripeInvoiceId,
+      },
+    });
+    res.status(201).json({
+      ok: true,
+      item: {
+        id: created.id,
+        providerId: created.providerId,
+        amountCents: created.amountCents,
+        status: created.status,
+        billingPeriod: created.billingPeriod,
+        dueAt: created.dueAt?.toISOString() ?? null,
+        paidAt: created.paidAt?.toISOString() ?? null,
+        stripeInvoiceId: created.stripeInvoiceId ?? null,
+        createdAt: created.createdAt.toISOString(),
+      },
+    });
+  } catch (e: any) {
+    console.error("POST /providers/:id/invoices", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/provider-invoices/:id/pay-status", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const invoiceId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { status?: string; paidAt?: string };
+    const invoice = await prisma.providerInvoice.findUnique({
+      where: { id: invoiceId },
+      include: { provider: { select: { firmId: true } } },
+    });
+    if (!invoice || invoice.provider.firmId !== firmId) {
+      return res.status(404).json({ ok: false, error: "Invoice not found" });
+    }
+    const status = body.status != null ? String(body.status).trim() : null;
+    if (!status) {
+      return res.status(400).json({ ok: false, error: "status is required (e.g. paid, open)" });
+    }
+    const paidAt = status === "paid" ? (body.paidAt ? new Date(body.paidAt) : new Date()) : null;
+    const updated = await prisma.providerInvoice.update({
+      where: { id: invoiceId },
+      data: { status, paidAt },
+    });
+    res.json({
+      ok: true,
+      item: {
+        id: updated.id,
+        providerId: updated.providerId,
+        amountCents: updated.amountCents,
+        status: updated.status,
+        billingPeriod: updated.billingPeriod,
+        dueAt: updated.dueAt?.toISOString() ?? null,
+        paidAt: updated.paidAt?.toISOString() ?? null,
+        stripeInvoiceId: updated.stripeInvoiceId ?? null,
+        createdAt: updated.createdAt.toISOString(),
+      },
+    });
+  } catch (e: any) {
+    console.error("PATCH /provider-invoices/:id/pay-status", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
@@ -2843,6 +6736,51 @@ app.post("/providers", auth, requireRole(Role.STAFF), async (req, res) => {
   }
 });
 
+// Provider monetization: verify toggle (firm admin or platform admin)
+app.patch("/providers/:id/verify", auth, requireAdminOrFirmAdminForProvider, async (req, res) => {
+  try {
+    const id = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { verified?: boolean };
+    const verified = body.verified === true;
+
+    const updated = await prisma.provider.update({
+      where: { id },
+      data: { verified },
+    });
+    res.json(updated);
+  } catch (err: any) {
+    console.error("Failed to update provider verify", err);
+    if (err?.code === "P2025") {
+      return res.status(404).json({ error: "Provider not found" });
+    }
+    res.status(500).json({ error: "Failed to update provider verify" });
+  }
+});
+
+// Provider monetization: subscription tier (and optional listingActive, expiresAt)
+app.patch("/providers/:id/subscription", auth, requireAdminOrFirmAdminForProvider, async (req, res) => {
+  try {
+    const id = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { subscriptionTier?: string; listingActive?: boolean; expiresAt?: string | null };
+    const data: { subscriptionTier?: string; listingActive?: boolean; expiresAt?: Date | null } = {};
+    if (body.subscriptionTier !== undefined) data.subscriptionTier = String(body.subscriptionTier);
+    if (body.listingActive !== undefined) data.listingActive = body.listingActive === true;
+    if (body.expiresAt !== undefined) data.expiresAt = body.expiresAt == null || body.expiresAt === "" ? null : new Date(body.expiresAt);
+
+    const updated = await prisma.provider.update({
+      where: { id },
+      data,
+    });
+    res.json(updated);
+  } catch (err: any) {
+    console.error("Failed to update provider subscription", err);
+    if (err?.code === "P2025") {
+      return res.status(404).json({ error: "Provider not found" });
+    }
+    res.status(500).json({ error: "Failed to update provider subscription" });
+  }
+});
+
 app.patch("/providers/:id", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -2870,6 +6808,27 @@ app.patch("/providers/:id", auth, requireRole(Role.STAFF), async (req, res) => {
         specialtiesJson: body.specialtiesJson ?? undefined,
         lat: body.lat !== undefined ? (body.lat == null ? null : Number(body.lat)) : undefined,
         lng: body.lng !== undefined ? (body.lng == null ? null : Number(body.lng)) : undefined,
+        verified: body.verified !== undefined ? body.verified === true : undefined,
+        subscriptionTier: body.subscriptionTier !== undefined ? body.subscriptionTier : undefined,
+        listingActive: body.listingActive !== undefined ? body.listingActive === true : undefined,
+        expiresAt: body.expiresAt !== undefined ? (body.expiresAt == null || body.expiresAt === "" ? null : new Date(body.expiresAt)) : undefined,
+        ...(body.hoursJson !== undefined && (() => {
+          try {
+            if (body.hoursJson == null) return { hoursJson: Prisma.JsonNull };
+            const v = typeof body.hoursJson === "object" ? body.hoursJson : JSON.parse(String(body.hoursJson));
+            return { hoursJson: v as Prisma.InputJsonValue };
+          } catch { return {}; }
+        })()),
+        ...(body.serviceAreasJson !== undefined && (() => {
+          try {
+            if (body.serviceAreasJson == null) return { serviceAreasJson: Prisma.JsonNull };
+            const v = Array.isArray(body.serviceAreasJson) || typeof body.serviceAreasJson === "object"
+              ? body.serviceAreasJson
+              : JSON.parse(String(body.serviceAreasJson));
+            return { serviceAreasJson: v as Prisma.InputJsonValue };
+          } catch { return {}; }
+        })()),
+        intakeInstructions: body.intakeInstructions !== undefined ? (body.intakeInstructions == null || body.intakeInstructions === "" ? null : String(body.intakeInstructions)) : undefined,
       },
     });
 
@@ -3160,6 +7119,42 @@ async function addDocumentAuditEvent(input: {
   }
 }
 
+// Document tags (firm-level)
+app.get("/document-tags", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const tags = await prisma.documentTag.findMany({
+      where: { firmId },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, color: true },
+    });
+    res.json({ ok: true, items: tags });
+  } catch (e: any) {
+    console.error("GET /document-tags failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/document-tags", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body ?? {}) as { name?: string; color?: string | null };
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name) {
+      return res.status(400).json({ ok: false, error: "name is required" });
+    }
+    const color = body.color != null && typeof body.color === "string" ? body.color.trim() || null : null;
+    const tag = await prisma.documentTag.create({
+      data: { firmId, name, color },
+      select: { id: true, name: true, color: true },
+    });
+    res.status(201).json({ ok: true, item: tag });
+  } catch (e: any) {
+    console.error("POST /document-tags failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // Bulk document actions (assign case, mark unmatched, mark needs review)
 app.patch("/documents/bulk", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
@@ -3212,6 +7207,7 @@ app.patch("/documents/bulk", auth, requireRole(Role.STAFF), async (req, res) => 
             where: { id: doc.id },
             data: { status: "UNMATCHED", routedCaseId: null, routedSystem: null, routingStatus: null },
           });
+          await recordReviewQueueExit(firmId, doc.id, "unmatched");
           await addDocumentAuditEvent({
             firmId,
             documentId: doc.id,
@@ -3227,6 +7223,7 @@ app.patch("/documents/bulk", auth, requireRole(Role.STAFF), async (req, res) => 
             where: { id: doc.id },
             data: { status: "NEEDS_REVIEW", routingStatus: "needs_review" },
           });
+          await recordReviewQueueEnter(firmId, doc.id);
           await addDocumentAuditEvent({
             firmId,
             documentId: doc.id,
@@ -3246,6 +7243,26 @@ app.patch("/documents/bulk", auth, requireRole(Role.STAFF), async (req, res) => 
     res.json({ ok: true, updated });
   } catch (e: any) {
     console.error("[documents/bulk]", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Merge PDFs into a single new document
+app.post("/documents/merge", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body ?? {}) as { documentIds?: string[] };
+    const documentIds = Array.isArray(body.documentIds)
+      ? body.documentIds.map((id) => String(id)).filter(Boolean)
+      : [];
+    if (documentIds.length < 2) {
+      return res.status(400).json({ ok: false, error: "documentIds must be an array of at least 2 document IDs" });
+    }
+    const { mergeDocuments } = await import("../services/documentMerge");
+    const result = await mergeDocuments({ firmId, documentIds });
+    res.status(201).json({ ok: true, document: result });
+  } catch (e: any) {
+    console.error("POST /documents/merge failed", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
@@ -3286,11 +7303,7 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
     const bytes = await getObjectBuffer(key);
     const text = await extractTextFromPdf(bytes);
 
-    console.log("[recognize]", {
-      documentId,
-      spacesKey: key,
-      extractedTextLength: text.length,
-    });
+    requestLog(req, "info", "recognize_start", { documentId, extractedTextLength: text.length });
 
     const result = classifyAndExtract(text);
     const classification = classify(text, key.split("/").pop() ?? "");
@@ -3412,12 +7425,11 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
   }
 });
 
-// Manual reprocess: Retry processing (full), Retry OCR, or Rebuild extraction
+// Manual reprocess: enqueue job (document.reprocess)
 app.post("/documents/:id/reprocess", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
     const documentId = String(req.params.id ?? "");
-    const actor = (req as any).apiKeyPrefix ?? "api";
     const body = (req.body ?? {}) as { mode?: string };
     const mode = (String(body.mode ?? "full").toLowerCase() || "full") as "full" | "ocr" | "extraction";
     if (!["full", "ocr", "extraction"].includes(mode)) {
@@ -3426,7 +7438,7 @@ app.post("/documents/:id/reprocess", auth, requireRole(Role.STAFF), async (req, 
 
     const doc = await prisma.document.findFirst({
       where: { id: documentId, firmId },
-      select: { id: true, firmId: true, duplicateOfId: true, mimeType: true, originalName: true },
+      select: { id: true, firmId: true, duplicateOfId: true },
     });
     if (!doc) {
       return res.status(404).json({ ok: false, error: "document not found" });
@@ -3434,15 +7446,7 @@ app.post("/documents/:id/reprocess", auth, requireRole(Role.STAFF), async (req, 
     if (doc.duplicateOfId) {
       return res.status(400).json({ ok: false, error: "cannot reprocess a duplicate document" });
     }
-
-    if (mode === "full" || mode === "ocr") {
-      await prisma.document.update({
-        where: { id: documentId },
-        data: { status: "PROCESSING", processingStage: "uploaded" },
-      });
-      await enqueueOcrJob({ documentId, firmId });
-    } else {
-      // mode === "extraction": requires existing recognition data
+    if (mode === "extraction") {
       const { rows } = await pgPool.query(
         `select document_id, text_excerpt, doc_type from document_recognition where document_id = $1`,
         [documentId]
@@ -3453,39 +7457,75 @@ app.post("/documents/:id/reprocess", auth, requireRole(Role.STAFF), async (req, 
           error: "Run recognition or OCR first; document has no text_excerpt or doc_type",
         });
       }
-      await prisma.document.update({
-        where: { id: documentId },
-        data: { status: "PROCESSING", processingStage: "extraction" },
-      });
-      await enqueueExtractionJob({ documentId, firmId });
     }
 
-    await addDocumentAuditEvent({
+    const job = await enqueueJobToQueue({
       firmId,
-      documentId,
-      actor,
-      action: "reprocess",
-      fromCaseId: null,
-      toCaseId: null,
-      metaJson: { mode },
+      type: "document.reprocess",
+      payload: { documentId, firmId, mode },
     });
-
-    res.json({ ok: true, documentId, mode });
+    res.json({ ok: true, jobId: job.id, status: "queued" });
   } catch (e: any) {
     logSystemError("api", e).catch(() => {});
-    const firmId = (req as any).firmId as string | undefined;
-    const documentId = String((req as any).params?.id ?? "");
-    if (firmId && documentId) {
-      addDocumentAuditEvent({
-        firmId,
-        documentId,
-        actor: "system",
-        action: "reprocess_failed",
-        fromCaseId: null,
-        toCaseId: null,
-        metaJson: { error: String(e?.message || e) },
-      }).catch(() => {});
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// OCR/extraction diagnostics for review UI (uncertain fields, page status, handwriting, language)
+app.get("/documents/:id/recognition-diagnostics", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true, extractedFields: true, confidence: true },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+    const { rows } = await pgPool.query(
+      `select detected_language, possible_languages, ocr_engine, ocr_confidence,
+              has_handwriting, handwriting_heavy, handwriting_confidence, page_diagnostics,
+              extraction_strict_mode
+       from document_recognition where document_id = $1`,
+      [documentId]
+    );
+    const rec = rows[0] || {};
+    const extracted = (doc.extractedFields as Record<string, unknown>) || {};
+    const uncertainFields: { field: string; reason: string; suppressedValue?: unknown }[] = [];
+    for (const [k, v] of Object.entries(extracted)) {
+      if (k.endsWith("_uncertain") && v === true) {
+        const field = k.replace(/_uncertain$/, "");
+        uncertainFields.push({
+          field,
+          reason: "below_confidence_threshold",
+          suppressedValue: (extracted as Record<string, unknown>)[`${field}_suppressedValue`],
+        });
+      }
     }
+    if ((extracted as Record<string, unknown>).consistencyConflicts) {
+      uncertainFields.push({
+        field: "consistency",
+        reason: "conflicting_values_across_pages",
+        suppressedValue: (extracted as Record<string, unknown>).consistencyCandidates,
+      });
+    }
+    res.json({
+      ok: true,
+      diagnostics: {
+        detectedLanguage: rec.detected_language ?? null,
+        possibleLanguages: rec.possible_languages ?? null,
+        ocrEngine: rec.ocr_engine ?? null,
+        ocrConfidence: rec.ocr_confidence ?? null,
+        hasHandwriting: rec.has_handwriting ?? false,
+        handwritingHeavy: rec.handwriting_heavy ?? false,
+        handwritingConfidence: rec.handwriting_confidence ?? null,
+        pageDiagnostics: rec.page_diagnostics ?? null,
+        extractionStrictMode: rec.extraction_strict_mode ?? true,
+        documentConfidence: doc.confidence ?? null,
+        uncertainFields,
+      },
+    });
+  } catch (e: any) {
+    logSystemError("api", e).catch(() => {});
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
@@ -3541,6 +7581,12 @@ app.post("/documents/:id/rematch", auth, requireRole(Role.STAFF), async (req, re
       data: updateData as { status?: "UPLOADED" | "NEEDS_REVIEW"; routedCaseId?: string | null },
     });
 
+    if (updateData.status === "NEEDS_REVIEW") {
+      await recordReviewQueueEnter(firmId, documentId);
+    } else if (updateData.status === "UPLOADED") {
+      await recordReviewQueueExit(firmId, documentId, "routed");
+    }
+
     await addDocumentAuditEvent({
       firmId,
       documentId,
@@ -3567,76 +7613,6 @@ app.post("/documents/:id/rematch", auth, requireRole(Role.STAFF), async (req, re
   }
 });
 
-// Reprocess document: retry full pipeline, OCR only, or extraction only
-app.post("/documents/:id/reprocess", auth, requireRole(Role.STAFF), async (req, res) => {
-  try {
-    const firmId = (req as any).firmId as string;
-    const documentId = String(req.params.id ?? "");
-    const actor = (req as any).apiKeyPrefix ?? "api";
-    const body = (req.body ?? {}) as { mode?: string };
-    const mode = String(body.mode ?? "full").toLowerCase() as "full" | "ocr" | "extraction";
-    const validModes = ["full", "ocr", "extraction"];
-    if (!validModes.includes(mode)) {
-      return res.status(400).json({
-        ok: false,
-        error: `mode must be one of: ${validModes.join(", ")}`,
-      });
-    }
-
-    const doc = await prisma.document.findFirst({
-      where: { id: documentId, firmId },
-      select: { id: true, duplicateOfId: true },
-    });
-    if (!doc) {
-      return res.status(404).json({ ok: false, error: "document not found" });
-    }
-    if (doc.duplicateOfId) {
-      return res.status(400).json({ ok: false, error: "Cannot reprocess a duplicate document" });
-    }
-
-    if (mode === "full" || mode === "ocr") {
-      await prisma.document.update({
-        where: { id: documentId },
-        data: { status: "PROCESSING", processingStage: "uploaded" },
-      });
-      await enqueueOcrJob({ documentId, firmId });
-    } else {
-      // mode === "extraction"
-      const { rows } = await pgPool.query<{ document_id: string }>(
-        `select document_id from document_recognition where document_id = $1 and text_excerpt is not null and doc_type is not null`,
-        [documentId]
-      );
-      if (!rows.length) {
-        return res.status(400).json({
-          ok: false,
-          error: "Document has no recognition data. Run retry processing or retry OCR first.",
-        });
-      }
-      await prisma.document.update({
-        where: { id: documentId },
-        data: { status: "PROCESSING", processingStage: "extraction" },
-      });
-      await enqueueExtractionJob({ documentId, firmId });
-    }
-
-    await addDocumentAuditEvent({
-      firmId,
-      documentId,
-      actor,
-      action: "reprocess",
-      fromCaseId: null,
-      toCaseId: null,
-      metaJson: { mode },
-    });
-
-    res.json({ ok: true, documentId, mode });
-  } catch (e: any) {
-    const errMsg = String(e?.message ?? e);
-    logSystemError("api", errMsg, (e as Error)?.stack).catch(() => {});
-    res.status(500).json({ ok: false, error: errMsg });
-  }
-});
-
 app.post("/documents/:id/approve", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -3649,6 +7625,14 @@ app.post("/documents/:id/approve", auth, requireRole(Role.STAFF), async (req, re
       select: { id: true, routedCaseId: true },
     });
     if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+
+    if (doc.routedCaseId) {
+      await prisma.document.update({
+        where: { id: documentId },
+        data: { routingStatus: "routed", status: "UPLOADED" },
+      });
+      await recordReviewQueueExit(firmId, documentId, "approved");
+    }
 
     await addDocumentAuditEvent({
       firmId,
@@ -3693,6 +7677,12 @@ app.post("/documents/:id/reject", auth, requireRole(Role.STAFF), async (req, res
     });
     if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
 
+    await prisma.document.update({
+      where: { id: documentId },
+      data: { routingStatus: "rejected" },
+    });
+    await recordReviewQueueExit(firmId, documentId, "rejected");
+
     await addDocumentAuditEvent({
       firmId,
       documentId,
@@ -3717,6 +7707,17 @@ app.post("/documents/:id/route", auth, requireRole(Role.STAFF), async (req, res)
     const body = (req.body ?? {}) as any;
     const toCaseId = body?.caseId ? String(body.caseId) : null;
 
+    const docBefore = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { routedCaseId: true, status: true, originalName: true, source: true },
+    });
+    if (!docBefore) return res.status(404).json({ ok: false, error: "document not found" });
+    const { rows: recRows } = await pgPool.query<{ suggested_case_id: string | null; match_confidence: number | null; doc_type: string | null; case_number: string | null; client_name: string | null }>(
+      `select suggested_case_id, match_confidence, doc_type, case_number, client_name from document_recognition where document_id = $1`,
+      [documentId]
+    );
+    const recBefore = recRows[0];
+
     const result = await routeDocument(firmId, documentId, toCaseId, {
       actor,
       action: "routed",
@@ -3728,6 +7729,30 @@ app.post("/documents/:id/route", auth, requireRole(Role.STAFF), async (req, res)
     if (!result.ok) {
       return res.status(404).json({ ok: false, error: result.error });
     }
+
+    recordRoutingFeedback(
+      {
+        firmId,
+        documentId,
+        finalCaseId: toCaseId,
+        finalStatus: toCaseId ? "UPLOADED" : docBefore.status,
+        finalDocType: recBefore?.doc_type ?? null,
+        correctedBy: actor,
+      },
+      {
+        caseId: docBefore.routedCaseId ?? recBefore?.suggested_case_id ?? null,
+        status: docBefore.status,
+        docType: recBefore?.doc_type ?? null,
+        confidence: recBefore?.match_confidence != null ? Number(recBefore.match_confidence) : null,
+      },
+      {
+        caseNumber: recBefore?.case_number ?? null,
+        clientName: recBefore?.client_name ?? null,
+        docType: recBefore?.doc_type ?? null,
+        fileName: docBefore.originalName,
+        source: docBefore.source,
+      }
+    ).catch((e) => logWarn("routing_feedback_after_route_failed", { documentId, firmId, error: (e as Error)?.message }));
 
     if (toCaseId) {
       const crmSyncEnabled = await hasFeature(firmId, "crm_sync");
@@ -3753,12 +7778,12 @@ app.post("/documents/:id/route", auth, requireRole(Role.STAFF), async (req, res)
                 fileUrl,
               });
               if (!pushResult.ok) {
-                console.warn("[route] Clio push failed:", pushResult.error);
+                logWarn("route_clio_push_failed", { documentId, firmId, caseId: toCaseId, error: pushResult.error });
               }
             }
           }
         } catch (e) {
-          console.warn("[route] CRM sync error:", e);
+          logWarn("route_crm_sync_error", { documentId, firmId, caseId: toCaseId, error: (e as Error)?.message });
         }
       }
       pushCaseIntelligenceToCrm({
@@ -3766,11 +7791,64 @@ app.post("/documents/:id/route", auth, requireRole(Role.STAFF), async (req, res)
         caseId: toCaseId,
         actionType: "document_routed",
         documentId,
-      }).catch((e) => console.warn("[crm] push after route failed", e));
+      }).catch((e) => logWarn("crm_push_after_route_failed", { documentId, firmId, caseId: toCaseId, error: (e as Error)?.message }));
     }
 
     res.json({ ok: true });
   } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Admin correction: wrong case routing (audited as routing_corrected)
+app.post("/documents/:id/correct-routing", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const actor = (req as any).apiKeyPrefix || "staff";
+    const body = (req.body ?? {}) as { toCaseId?: string | null };
+    const toCaseId = body.toCaseId != null ? (body.toCaseId ? String(body.toCaseId) : null) : null;
+    const result = await correctRouting(firmId, documentId, toCaseId, actor);
+    if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("POST /documents/:id/correct-routing failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Admin correction: wrong provider match (audited as provider_corrected)
+app.post("/documents/:id/correct-provider", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const actor = (req as any).apiKeyPrefix || "staff";
+    const body = (req.body ?? {}) as { providerId?: string | null };
+    const providerId = body.providerId != null ? (body.providerId ? String(body.providerId) : null) : null;
+    const result = await correctProvider(firmId, documentId, providerId, actor);
+    if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("POST /documents/:id/correct-provider failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Admin correction: export file name / folder overrides (audited as export_name_corrected)
+app.patch("/documents/:id/export-overrides", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const actor = (req as any).apiKeyPrefix || "staff";
+    const body = (req.body ?? {}) as { exportFileNameOverride?: string | null; exportFolderPathOverride?: string | null };
+    if (body.exportFileNameOverride === undefined && body.exportFolderPathOverride === undefined) {
+      return res.status(400).json({ ok: false, error: "Provide at least one of exportFileNameOverride, exportFolderPathOverride" });
+    }
+    const result = await setExportOverrides(firmId, documentId, body, actor);
+    if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("PATCH /documents/:id/export-overrides failed", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
@@ -3844,6 +7922,25 @@ app.post("/documents/:id/unclaim", auth, requireRole(Role.STAFF), async (req, re
   }
 });
 
+app.get("/documents/:id/thumbnail", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { thumbnailKey: true },
+    });
+    if (!doc?.thumbnailKey) return res.status(404).json({ ok: false, error: "thumbnail not found" });
+
+    const url = await getPresignedGetUrl(doc.thumbnailKey, 300);
+    res.redirect(302, url);
+  } catch (e: any) {
+    console.error("GET /documents/:id/thumbnail failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.get("/documents/:id/download", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -3868,11 +7965,18 @@ app.patch("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
     const firmId = (req as any).firmId as string;
     const documentId = String(req.params.id ?? "");
     const actor = (req as any).apiKeyPrefix || "reviewer";
-    const body = (req.body ?? {}) as { status?: string; routedCaseId?: string | null; routingStatus?: string | null };
+    const body = (req.body ?? {}) as {
+      status?: string;
+      routedCaseId?: string | null;
+      routingStatus?: string | null;
+      exportFileNameOverride?: string | null;
+      exportFolderPathOverride?: string | null;
+      duplicateOfId?: string | null;
+    };
 
     const doc = await prisma.document.findFirst({
       where: { id: documentId, firmId },
-      select: { id: true, status: true, routedCaseId: true, routingStatus: true },
+      select: { id: true, status: true, routedCaseId: true, routingStatus: true, originalName: true, source: true, metaJson: true, duplicateOfId: true },
     });
     if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
 
@@ -3896,6 +8000,7 @@ app.patch("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
         where: { id: documentId },
         data: { routedCaseId: null, routedSystem: null, routingStatus: null, status: "UNMATCHED" },
       });
+      await recordReviewQueueExit(firmId, documentId, "unmatched");
       await addDocumentAuditEvent({
         firmId,
         documentId,
@@ -3905,6 +8010,28 @@ app.patch("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
         toCaseId: null,
         metaJson: { source: "patch" },
       });
+      const { rows: recRows } = await pgPool.query<{ suggested_case_id: string | null; match_confidence: number | null; doc_type: string | null; case_number: string | null; client_name: string | null }>(
+        `select suggested_case_id, match_confidence, doc_type, case_number, client_name from document_recognition where document_id = $1`,
+        [documentId]
+      ).catch(() => ({ rows: [] }));
+      const rec = recRows[0];
+      recordRoutingFeedback(
+        {
+          firmId,
+          documentId,
+          finalCaseId: null,
+          finalStatus: "UNMATCHED",
+          finalDocType: rec?.doc_type ?? null,
+          correctedBy: actor,
+        },
+        {
+          caseId: doc.routedCaseId ?? rec?.suggested_case_id ?? null,
+          status: doc.status,
+          docType: rec?.doc_type ?? null,
+          confidence: rec?.match_confidence != null ? Number(rec.match_confidence) : null,
+        },
+        { caseNumber: rec?.case_number ?? null, clientName: rec?.client_name ?? null, docType: rec?.doc_type ?? null, fileName: doc.originalName, source: doc.source }
+      ).catch((e) => console.warn("[routing-feedback] record after unmatch failed", e));
       const updated = await prisma.document.findFirst({ where: { id: documentId, firmId } });
       return res.json(updated);
     }
@@ -3921,8 +8048,31 @@ app.patch("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
       if (updates.routingStatus === "needs_review") (updates as any).status = "NEEDS_REVIEW";
     }
 
+    if (body.exportFileNameOverride !== undefined || body.exportFolderPathOverride !== undefined) {
+      const meta = (doc.metaJson ?? {}) as Record<string, unknown>;
+      if (body.exportFileNameOverride !== undefined) {
+        meta.exportFileNameOverride = body.exportFileNameOverride === null || body.exportFileNameOverride === "" ? null : String(body.exportFileNameOverride).trim();
+      }
+      if (body.exportFolderPathOverride !== undefined) {
+        meta.exportFolderPathOverride = body.exportFolderPathOverride === null || body.exportFolderPathOverride === "" ? null : String(body.exportFolderPathOverride).trim();
+      }
+      (updates as any).metaJson = meta;
+    }
+
+    if (body.duplicateOfId !== undefined && doc.duplicateOfId != null) {
+      if (body.duplicateOfId === null || body.duplicateOfId === "") {
+        (updates as any).duplicateOfId = null;
+      }
+    }
+
     if (Object.keys(updates).length > 0) {
       await prisma.document.update({ where: { id: documentId }, data: updates });
+      const newStatus = (updates.status as string) ?? doc.status;
+      if (newStatus === "NEEDS_REVIEW" && doc.status !== "NEEDS_REVIEW") {
+        await recordReviewQueueEnter(firmId, documentId);
+      } else if (doc.status === "NEEDS_REVIEW" && (newStatus === "UPLOADED" || newStatus === "UNMATCHED")) {
+        await recordReviewQueueExit(firmId, documentId, newStatus === "UPLOADED" ? "routed" : "unmatched");
+      }
       await addDocumentAuditEvent({
         firmId,
         documentId,
@@ -3983,25 +8133,23 @@ app.get("/documents/:id/duplicates", auth, requireRole(Role.STAFF), async (req, 
     });
     if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
 
-    let original: { id: string; originalName: string } | null = null;
-    let duplicates: Array<{ id: string; originalName: string }> = [];
+    let normalizedText: string | null = null;
+    try {
+      const { rows } = await pgPool.query<{ text_excerpt: string | null }>(
+        `select text_excerpt from document_recognition where document_id = $1`,
+        [documentId]
+      );
+      normalizedText = rows[0]?.text_excerpt ?? null;
+    } catch (_) {}
 
-    if (doc.duplicateOfId) {
-      const orig = await prisma.document.findFirst({
-        where: { id: doc.duplicateOfId, firmId },
-        select: { id: true, originalName: true },
-      });
-      if (orig) original = { id: orig.id, originalName: orig.originalName };
-    }
+    const result = await findDuplicateCandidates(firmId, documentId, normalizedText);
 
-    const dups = await prisma.document.findMany({
-      where: { firmId, duplicateOfId: documentId },
-      select: { id: true, originalName: true },
-      orderBy: { ingestedAt: "desc" },
+    res.json({
+      ok: true,
+      original: result.original,
+      duplicates: result.duplicates,
+      nearDuplicates: result.nearDuplicates,
     });
-    duplicates = dups.map((d) => ({ id: d.id, originalName: d.originalName }));
-
-    res.json({ ok: true, original, duplicates });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
@@ -4024,7 +8172,260 @@ async function getDocumentAuditEvents(req: express.Request, res: express.Respons
 app.get("/documents/:id/audit", auth, requireRole(Role.STAFF), getDocumentAuditEvents);
 app.get("/documents/:id/audit-events", auth, requireRole(Role.STAFF), getDocumentAuditEvents);
 
+// Document tags (add/remove on a document)
+app.get("/documents/:id/tags", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "Document not found" });
+    const links = await prisma.documentTagLink.findMany({
+      where: { documentId },
+      include: { tag: { select: { id: true, name: true, color: true } } },
+    });
+    res.json({ ok: true, items: links.map((l) => ({ id: l.id, tagId: l.tagId, tag: l.tag })) });
+  } catch (e: any) {
+    console.error("GET /documents/:id/tags failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/documents/:id/tags", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { tagId?: string };
+    const tagId = typeof body.tagId === "string" ? body.tagId.trim() : "";
+    if (!tagId) {
+      return res.status(400).json({ ok: false, error: "tagId is required" });
+    }
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "Document not found" });
+    const tag = await prisma.documentTag.findFirst({
+      where: { id: tagId, firmId },
+      select: { id: true },
+    });
+    if (!tag) return res.status(404).json({ ok: false, error: "Tag not found" });
+    await prisma.documentTagLink.upsert({
+      where: { documentId_tagId: { documentId, tagId } },
+      create: { documentId, tagId },
+      update: {},
+    });
+    const links = await prisma.documentTagLink.findMany({
+      where: { documentId },
+      include: { tag: { select: { id: true, name: true, color: true } } },
+    });
+    res.status(201).json({
+      ok: true,
+      items: links.map((l) => ({ id: l.id, tagId: l.tagId, tag: l.tag })),
+    });
+  } catch (e: any) {
+    console.error("POST /documents/:id/tags failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.delete("/documents/:id/tags/:tagId", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const tagId = String(req.params.tagId ?? "");
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "Document not found" });
+    const tag = await prisma.documentTag.findFirst({
+      where: { id: tagId, firmId },
+      select: { id: true },
+    });
+    if (!tag) return res.status(404).json({ ok: false, error: "Tag not found" });
+    await prisma.documentTagLink.deleteMany({ where: { documentId, tagId } });
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("DELETE /documents/:id/tags/:tagId failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Document version history (must be before GET /documents/:id so "versions" and "new-version" match)
+app.get("/documents/:id/versions", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+
+    const versions = await prisma.documentVersion.findMany({
+      where: { documentId },
+      orderBy: { versionNumber: "desc" },
+    });
+
+    const items = await Promise.all(
+      versions.map(async (v) => {
+        const url = await getPresignedGetUrl(v.spacesKey, 300);
+        return {
+          id: v.id,
+          versionNumber: v.versionNumber,
+          spacesKey: v.spacesKey,
+          createdAt: v.createdAt.toISOString(),
+          downloadUrl: url,
+        };
+      })
+    );
+
+    res.json({ ok: true, items });
+  } catch (e: any) {
+    console.error("GET /documents/:id/versions failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/documents/:id/new-version", auth, requireRole(Role.STAFF), upload.single("file"), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true, spacesKey: true, originalName: true, mimeType: true },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+
+    const file = (req as any).file;
+    if (!file || !file.buffer || !Buffer.isBuffer(file.buffer)) {
+      return res.status(400).json({ ok: false, error: "file is required (multipart form field: file)" });
+    }
+    const scan = await validateUploadFile({
+      originalname: file.originalname || "document",
+      mimetype: file.mimetype || "application/octet-stream",
+      size: file.size ?? file.buffer.length,
+      buffer: file.buffer,
+    });
+    if (!scan.ok) {
+      logIntakeFailure({
+        stage: "validation",
+        error: (scan as { reason?: string }).reason ?? "Invalid file",
+        code: "INVALID_FILE",
+        firmId,
+        fileName: file.originalname,
+        sizeBytes: file.size ?? file.buffer?.length,
+      });
+      recordAbuse({ ip: (req as any).ip || req.socket?.remoteAddress || "unknown", route: req.path || "/documents/:id/new-version", eventType: "suspicious_upload" });
+      return sendSafeError(res, 400, (scan as { reason?: string }).reason ?? "Invalid file", "INVALID_FILE");
+    }
+
+    const mimeType = file.mimetype || "application/octet-stream";
+    const originalName = file.originalname || doc.originalName || "document.pdf";
+    const buf = file.buffer as Buffer;
+
+    const nextVersion = await prisma.documentVersion
+      .aggregate({
+        where: { documentId },
+        _max: { versionNumber: true },
+      })
+      .then((r) => (r._max?.versionNumber ?? 0) + 1);
+
+    if (nextVersion === 1) {
+      await prisma.documentVersion.create({
+        data: {
+          documentId,
+          versionNumber: 1,
+          spacesKey: doc.spacesKey,
+        },
+      });
+    }
+
+    const key = `${firmId}/documents/${documentId}/versions/v${nextVersion}_${Date.now()}.pdf`;
+    await putObject(key, buf, mimeType);
+
+    const fileSha256 = crypto.createHash("sha256").update(buf).digest("hex");
+    const pageCount = await countPagesFromBuffer(buf, mimeType, originalName).catch(() => 1);
+
+    await prisma.$transaction([
+      prisma.documentVersion.create({
+        data: {
+          documentId,
+          versionNumber: nextVersion,
+          spacesKey: key,
+        },
+      }),
+      prisma.document.update({
+        where: { id: documentId },
+        data: {
+          spacesKey: key,
+          mimeType,
+          pageCount,
+          fileSizeBytes: buf.length,
+          file_sha256: fileSha256,
+          originalName,
+          status: "UPLOADED",
+          processingStage: "complete",
+          processedAt: new Date(),
+        },
+      }),
+    ]);
+
+    const version = await prisma.documentVersion.findFirst({
+      where: { documentId, versionNumber: nextVersion },
+    });
+
+    res.status(201).json({
+      ok: true,
+      version: version
+        ? {
+            id: version.id,
+            versionNumber: version.versionNumber,
+            spacesKey: version.spacesKey,
+            createdAt: version.createdAt.toISOString(),
+          }
+        : null,
+    });
+  } catch (e: any) {
+    console.error("POST /documents/:id/new-version failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  if (req.accepts("html")) {
+    const p = path.join(__dirname, "..", "..", "public", "admin", "document-detail.html");
+    return res.sendFile(p, (err) => {
+      if (err) res.status(404).json({ ok: false, error: "Document detail page not found" });
+    });
+  }
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+    const out = { ...doc, createdAt: doc.createdAt?.toISOString?.() ?? null, processedAt: doc.processedAt?.toISOString?.() ?? null, ingestedAt: doc.ingestedAt?.toISOString?.() ?? null };
+    res.json(out);
+  } catch (e: any) {
+    console.error("Failed to get document", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.get("/cases/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  if (req.accepts("html")) {
+    const p = path.join(__dirname, "..", "..", "public", "admin", "case-detail.html");
+    return res.sendFile(p, (err) => {
+      if (err) res.status(404).json({ error: "Case detail page not found" });
+    });
+  }
   try {
     const firmId = (req as any).firmId as string;
     const caseId = String(req.params.id ?? "");
@@ -4098,6 +8499,468 @@ app.get("/cases/:id/report", auth, requireRole(Role.STAFF), async (req, res) => 
     res.setHeader("Content-Disposition", `attachment; filename="case-report-${caseId}.pdf"`);
     res.send(pdfBuffer);
   } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Case summary (auto-generated narrative, persisted)
+app.get("/cases/:id/summary", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ error: "Case not found" });
+
+    const summary = await prisma.caseSummary.findUnique({
+      where: { firmId_caseId: { firmId, caseId } },
+      select: { id: true, body: true, createdAt: true },
+    });
+
+    if (!summary) {
+      return res.json({ ok: true, summary: null });
+    }
+
+    res.json({
+      ok: true,
+      summary: {
+        id: summary.id,
+        body: summary.body,
+        createdAt: summary.createdAt.toISOString(),
+      },
+    });
+  } catch (e: any) {
+    console.error("Failed to get case summary", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/cases/:id/summary/generate", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ error: "Case not found" });
+
+    const result = await generateCaseSummary(caseId, firmId);
+
+    const summary = await prisma.caseSummary.upsert({
+      where: { firmId_caseId: { firmId, caseId } },
+      create: { firmId, caseId, body: result.body },
+      update: { body: result.body },
+      select: { id: true, body: true, createdAt: true },
+    });
+
+    res.json({
+      ok: true,
+      summary: {
+        id: summary.id,
+        body: summary.body,
+        createdAt: summary.createdAt.toISOString(),
+      },
+      conciseNarrative: result.sections.conciseNarrative,
+      injuries: result.sections.injuries,
+      providersInvolved: result.sections.providersInvolved,
+      treatmentTimelineSummary: result.sections.treatmentTimelineSummary,
+      latestOffer: result.sections.latestOffer,
+    });
+  } catch (e: any) {
+    console.error("Failed to generate case summary", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+const DEFAULT_CHECKLIST_ITEMS: { key: string; label: string }[] = [
+  { key: "bills", label: "Bills" },
+  { key: "records", label: "Records" },
+  { key: "mri", label: "MRI" },
+  { key: "narrative", label: "Narrative" },
+  { key: "demand_letter", label: "Demand letter" },
+  { key: "settlement_offer_history", label: "Settlement offer history" },
+];
+
+app.get("/cases/:id/checklist", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ error: "Case not found" });
+
+    let items = await prisma.caseChecklistItem.findMany({
+      where: { caseId, firmId },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, key: true, label: true, completed: true, createdAt: true, updatedAt: true },
+    });
+
+    if (items.length === 0) {
+      await prisma.caseChecklistItem.createMany({
+        data: DEFAULT_CHECKLIST_ITEMS.map(({ key, label }) => ({
+          firmId,
+          caseId,
+          key,
+          label,
+        })),
+      });
+      items = await prisma.caseChecklistItem.findMany({
+        where: { caseId, firmId },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, key: true, label: true, completed: true, createdAt: true, updatedAt: true },
+      });
+    }
+
+    res.json({
+      ok: true,
+      items: items.map((i) => ({
+        id: i.id,
+        key: i.key,
+        label: i.label,
+        completed: i.completed,
+        createdAt: i.createdAt.toISOString(),
+        updatedAt: i.updatedAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    console.error("Failed to get case checklist", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/cases/checklist-items/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const itemId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { completed?: boolean };
+
+    const item = await prisma.caseChecklistItem.findFirst({
+      where: { id: itemId, firmId },
+      select: { id: true, key: true, label: true, completed: true, createdAt: true, updatedAt: true },
+    });
+    if (!item) return res.status(404).json({ error: "Checklist item not found" });
+
+    const completed = body.completed === true;
+
+    const updated = await prisma.caseChecklistItem.update({
+      where: { id: itemId },
+      data: { completed },
+      select: { id: true, key: true, label: true, completed: true, createdAt: true, updatedAt: true },
+    });
+
+    res.json({
+      ok: true,
+      item: {
+        id: updated.id,
+        key: updated.key,
+        label: updated.label,
+        completed: updated.completed,
+        createdAt: updated.createdAt.toISOString(),
+        updatedAt: updated.updatedAt.toISOString(),
+      },
+    });
+  } catch (e: any) {
+    console.error("Failed to update checklist item", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Case financial tracker
+app.get("/cases/:id/financial", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ error: "Case not found" });
+
+    const fin = await prisma.caseFinancial.findUnique({
+      where: { firmId_caseId: { firmId, caseId } },
+    });
+    if (!fin) {
+      return res.json({
+        ok: true,
+        item: {
+          medicalBillsTotal: 0,
+          liensTotal: 0,
+          settlementOffer: null,
+          settlementAccepted: null,
+          attorneyFees: null,
+          costs: null,
+          netToClient: null,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+    }
+    res.json({
+      ok: true,
+      item: {
+        id: fin.id,
+        medicalBillsTotal: fin.medicalBillsTotal,
+        liensTotal: fin.liensTotal,
+        settlementOffer: fin.settlementOffer,
+        settlementAccepted: fin.settlementAccepted,
+        attorneyFees: fin.attorneyFees,
+        costs: fin.costs,
+        netToClient: fin.netToClient,
+        updatedAt: fin.updatedAt.toISOString(),
+      },
+    });
+  } catch (e: any) {
+    console.error("GET /cases/:id/financial failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Queue 3: Bill line items for case (from billing extraction)
+app.get("/cases/:id/bill-line-items", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ ok: false, error: "Case not found" });
+
+    const items = await prisma.medicalBillLineItem.findMany({
+      where: { caseId, firmId },
+      orderBy: [{ serviceDate: "asc" }, { createdAt: "asc" }],
+    });
+    res.json({
+      ok: true,
+      items: items.map((i: { id: string; documentId: string; providerName: string | null; serviceDate: Date | null; cptCode: string | null; procedureDescription: string | null; amountCharged: number | null; amountPaid: number | null; balance: number | null; lineTotal: number | null }) => ({
+        id: i.id,
+        documentId: i.documentId,
+        providerName: i.providerName,
+        serviceDate: i.serviceDate?.toISOString?.() ?? null,
+        cptCode: i.cptCode,
+        procedureDescription: i.procedureDescription,
+        amountCharged: i.amountCharged,
+        amountPaid: i.amountPaid,
+        balance: i.balance,
+        lineTotal: i.lineTotal,
+      })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/cases/:id/financial", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as {
+      medicalBillsTotal?: number;
+      liensTotal?: number;
+      settlementOffer?: number | null;
+      settlementAccepted?: number | null;
+      attorneyFees?: number | null;
+      costs?: number | null;
+      netToClient?: number | null;
+    };
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ error: "Case not found" });
+
+    const toNum = (v: unknown): number | undefined =>
+      v === null || v === undefined ? undefined : typeof v === "number" && Number.isFinite(v) ? v : undefined;
+
+    const medicalBillsTotal = toNum(body.medicalBillsTotal);
+    const liensTotal = toNum(body.liensTotal);
+    const settlementOffer = body.settlementOffer === null ? null : toNum(body.settlementOffer);
+    const settlementAccepted = body.settlementAccepted === null ? null : toNum(body.settlementAccepted);
+    const attorneyFees = body.attorneyFees === null ? null : toNum(body.attorneyFees);
+    const costs = body.costs === null ? null : toNum(body.costs);
+    const netToClient = body.netToClient === null ? null : toNum(body.netToClient);
+
+    const data: {
+      medicalBillsTotal?: number;
+      liensTotal?: number;
+      settlementOffer?: number | null;
+      settlementAccepted?: number | null;
+      attorneyFees?: number | null;
+      costs?: number | null;
+      netToClient?: number | null;
+    } = {};
+    if (medicalBillsTotal !== undefined) data.medicalBillsTotal = medicalBillsTotal;
+    if (liensTotal !== undefined) data.liensTotal = liensTotal;
+    if (settlementOffer !== undefined) data.settlementOffer = settlementOffer;
+    if (settlementAccepted !== undefined) data.settlementAccepted = settlementAccepted;
+    if (attorneyFees !== undefined) data.attorneyFees = attorneyFees;
+    if (costs !== undefined) data.costs = costs;
+    if (netToClient !== undefined) data.netToClient = netToClient;
+
+    // Auto-calc netToClient if settlementAccepted present and not explicitly provided
+    const existing = await prisma.caseFinancial.findUnique({
+      where: { firmId_caseId: { firmId, caseId } },
+    });
+    const merged = {
+      medicalBillsTotal: existing?.medicalBillsTotal ?? 0,
+      liensTotal: existing?.liensTotal ?? 0,
+      settlementOffer: existing?.settlementOffer ?? null,
+      settlementAccepted: existing?.settlementAccepted ?? null,
+      attorneyFees: existing?.attorneyFees ?? null,
+      costs: existing?.costs ?? null,
+      netToClient: existing?.netToClient ?? null,
+      ...data,
+    };
+    if (
+      merged.settlementAccepted != null &&
+      (netToClient === undefined || body.netToClient === undefined)
+    ) {
+      const fees = merged.attorneyFees ?? 0;
+      const costVal = merged.costs ?? 0;
+      const medical = merged.medicalBillsTotal ?? 0;
+      const liens = merged.liensTotal ?? 0;
+      merged.netToClient = merged.settlementAccepted - fees - costVal - medical - liens;
+      data.netToClient = merged.netToClient;
+    }
+
+    const fin = await prisma.caseFinancial.upsert({
+      where: { firmId_caseId: { firmId, caseId } },
+      create: {
+        firmId,
+        caseId,
+        medicalBillsTotal: merged.medicalBillsTotal,
+        liensTotal: merged.liensTotal,
+        settlementOffer: merged.settlementOffer,
+        settlementAccepted: merged.settlementAccepted,
+        attorneyFees: merged.attorneyFees,
+        costs: merged.costs,
+        netToClient: merged.netToClient,
+      },
+      update: {
+        medicalBillsTotal: merged.medicalBillsTotal,
+        liensTotal: merged.liensTotal,
+        settlementOffer: merged.settlementOffer,
+        settlementAccepted: merged.settlementAccepted,
+        attorneyFees: merged.attorneyFees,
+        costs: merged.costs,
+        netToClient: merged.netToClient,
+      },
+      select: {
+        id: true,
+        medicalBillsTotal: true,
+        liensTotal: true,
+        settlementOffer: true,
+        settlementAccepted: true,
+        attorneyFees: true,
+        costs: true,
+        netToClient: true,
+        updatedAt: true,
+      },
+    });
+
+    res.json({
+      ok: true,
+      item: {
+        id: fin.id,
+        medicalBillsTotal: fin.medicalBillsTotal,
+        liensTotal: fin.liensTotal,
+        settlementOffer: fin.settlementOffer,
+        settlementAccepted: fin.settlementAccepted,
+        attorneyFees: fin.attorneyFees,
+        costs: fin.costs,
+        netToClient: fin.netToClient,
+        updatedAt: fin.updatedAt.toISOString(),
+      },
+    });
+  } catch (e: any) {
+    console.error("PATCH /cases/:id/financial failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Case packet export (ZIP bundle)
+app.get("/cases/:id/export-packet/history", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ error: "Case not found" });
+
+    const exports = await prisma.casePacketExport.findMany({
+      where: { caseId, firmId },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, fileName: true, packetType: true, createdAt: true },
+    });
+
+    res.json({
+      ok: true,
+      items: exports.map((e) => ({
+        id: e.id,
+        fileName: e.fileName,
+        packetType: e.packetType ?? "combined",
+        createdAt: e.createdAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    console.error("Failed to list packet exports", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/cases/:id/export-packet", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as {
+      documentIds?: string[];
+      includeTimeline?: boolean;
+      includeSummary?: boolean;
+      destinations?: ("download_bundle" | "cloud_folder" | "cloud_drive" | "email_packet" | "crm")[];
+      packetType?: "records" | "bills" | "combined";
+      emailTo?: string;
+      emailSubject?: string;
+      cloudPathPrefix?: string;
+      cloudDrivePathPrefix?: string;
+    };
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ error: "Case not found" });
+
+    const documentIds = Array.isArray(body.documentIds) ? body.documentIds.map((id) => String(id)).filter(Boolean) : [];
+    const includeTimeline = body.includeTimeline === true;
+    const includeSummary = body.includeSummary === true;
+
+    const job = await enqueueJobToQueue({
+      firmId,
+      type: "export.packet",
+      payload: {
+        caseId,
+        firmId,
+        documentIds,
+        includeTimeline,
+        includeSummary,
+        destinations: body.destinations,
+        packetType: body.packetType ?? "combined",
+        emailTo: body.emailTo,
+        emailSubject: body.emailSubject,
+        cloudPathPrefix: body.cloudPathPrefix,
+        cloudDrivePathPrefix: body.cloudDrivePathPrefix,
+      },
+    });
+    res.status(202).json({ ok: true, jobId: job.id, status: "queued" });
+  } catch (e: any) {
+    console.error("Failed to export case packet", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/packet-exports/:id/download", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const exportId = String(req.params.id ?? "");
+
+    const row = await prisma.casePacketExport.findFirst({
+      where: { id: exportId, firmId },
+      select: { storageKey: true, fileName: true },
+    });
+    if (!row) return res.status(404).json({ error: "Export not found" });
+
+    const url = await getPresignedGetUrl(row.storageKey, 3600);
+    res.redirect(302, url);
+  } catch (e: any) {
+    console.error("Failed to get packet export download", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
@@ -4207,9 +9070,75 @@ app.post("/cases/:id/timeline/rebuild", auth, requireRole(Role.STAFF), async (re
     if (!caseExists) {
       return res.status(404).json({ ok: false, error: "Case not found." });
     }
-    await enqueueTimelineRebuildJob({ caseId, firmId });
-    res.status(202).json({ ok: true, queued: true, message: "Timeline rebuild queued." });
+    const job = await enqueueJobToQueue({
+      firmId,
+      type: "timeline.rebuild",
+      payload: { caseId, firmId },
+    });
+    res.status(202).json({ ok: true, jobId: job.id, status: "queued" });
   } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/cases/:id/timeline/export", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { format?: string };
+    const formatRaw = typeof body.format === "string" ? body.format.trim().toLowerCase() : "";
+    const format = formatRaw === "docx" ? "docx" : "pdf";
+
+    const caseRow = await prisma.legalCase.findFirst({
+      where: { id: caseId, firmId },
+      select: { id: true, caseNumber: true, clientName: true, title: true },
+    });
+    if (!caseRow) {
+      return res.status(404).json({ ok: false, error: "Case not found." });
+    }
+
+    const label = [caseRow.clientName, caseRow.caseNumber, caseRow.title].filter(Boolean).join(" ") || "chronology";
+    const safeLabel = label.replace(/[^a-zA-Z0-9\-_\s]/g, "").replace(/\s+/g, " ").trim().slice(0, 50) || "chronology";
+
+    let buffer: Buffer;
+    let ext: string;
+    let mimeType: string;
+    if (format === "docx") {
+      buffer = await buildTimelineChronologyDocx(caseId, firmId);
+      ext = "docx";
+      mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    } else {
+      buffer = await buildTimelineChronologyPdf(caseId, firmId);
+      ext = "pdf";
+      mimeType = "application/pdf";
+    }
+
+    const fileSha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+    const key = `${firmId}/timeline_export/${Date.now()}_${crypto.randomBytes(6).toString("hex")}.${ext}`;
+    await putObject(key, buffer, mimeType);
+
+    const originalName = `Medical Chronology - ${safeLabel}.${ext}`;
+    const doc = await prisma.document.create({
+      data: {
+        firmId,
+        source: "timeline_export",
+        spacesKey: key,
+        originalName,
+        mimeType,
+        pageCount: 0,
+        status: "UPLOADED",
+        processingStage: "complete",
+        file_sha256: fileSha256,
+        fileSizeBytes: buffer.length,
+        ingestedAt: new Date(),
+        processedAt: new Date(),
+        routedCaseId: caseId,
+      },
+    });
+
+    res.json({ ok: true, documentId: doc.id });
+  } catch (e: any) {
+    console.error("POST /cases/:id/timeline/export failed", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
@@ -4416,6 +9345,15 @@ app.post("/cases/:id/providers", auth, requireRole(Role.STAFF), async (req, res)
       },
     });
 
+    logActivity({
+      firmId,
+      caseId,
+      providerId,
+      type: "provider_attached",
+      title: "Provider attached to case",
+      meta: { providerName: created.provider?.name, relationship },
+    });
+
     res.status(201).json({
       ok: true,
       item: {
@@ -4454,76 +9392,202 @@ app.delete("/cases/:id/providers/:providerId", auth, requireRole(Role.STAFF), as
   }
 });
 
+// === Provider intake packet ===
+
+app.post("/cases/:id/provider-packet", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { providerId?: string; includeDocuments?: string[] };
+
+    const providerId = body.providerId ? String(body.providerId) : "";
+    if (!providerId) return res.status(400).json({ error: "providerId is required" });
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ error: "Case not found" });
+
+    const p = await prisma.provider.findFirst({ where: { id: providerId, firmId }, select: { id: true } });
+    if (!p) return res.status(404).json({ error: "Provider not found" });
+
+    const includeDocuments = Array.isArray(body.includeDocuments)
+      ? body.includeDocuments.map((id) => String(id)).filter(Boolean)
+      : [];
+
+    const pdfBuffer = await buildProviderPacketPdf({
+      caseId,
+      firmId,
+      providerId,
+      includeDocuments: includeDocuments.length > 0 ? includeDocuments : undefined,
+    });
+
+    const providerRow = await prisma.provider.findFirst({
+      where: { id: providerId, firmId },
+      select: { name: true },
+    });
+    const safeName = (providerRow?.name ?? "Provider").replace(/[^a-zA-Z0-9\-_\s]/g, "").replace(/\s+/g, " ").trim().slice(0, 50) || "Provider";
+    const originalName = `Intake Packet - ${safeName}.pdf`;
+
+    const fileSha256 = crypto.createHash("sha256").update(pdfBuffer).digest("hex");
+    const key = `${firmId}/provider_packet/${Date.now()}_${crypto.randomBytes(6).toString("hex")}.pdf`;
+
+    await putObject(key, pdfBuffer, "application/pdf");
+
+    const doc = await prisma.document.create({
+      data: {
+        firmId,
+        source: "provider_packet",
+        spacesKey: key,
+        originalName,
+        mimeType: "application/pdf",
+        pageCount: 0,
+        status: "UPLOADED",
+        processingStage: "complete",
+        file_sha256: fileSha256,
+        fileSizeBytes: pdfBuffer.length,
+        ingestedAt: new Date(),
+        processedAt: new Date(),
+        routedCaseId: caseId,
+      },
+    });
+
+    res.status(201).json({
+      ok: true,
+      documentId: doc.id,
+      item: {
+        id: doc.id,
+        originalName: doc.originalName,
+        status: doc.status,
+        createdAt: doc.createdAt,
+      },
+    });
+  } catch (e: any) {
+    console.error("Failed to generate provider packet", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// === Case referrals ===
+
+app.get("/cases/:id/referrals", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ error: "Case not found" });
+
+    const referrals = await prisma.referral.findMany({
+      where: { caseId, firmId },
+      orderBy: { referredAt: "desc" },
+      include: {
+        provider: { select: { id: true, name: true, city: true, state: true, specialty: true } },
+      },
+    });
+
+    res.json({
+      ok: true,
+      items: referrals.map((r) => ({
+        id: r.id,
+        caseId: r.caseId,
+        providerId: r.providerId,
+        referredAt: r.referredAt.toISOString(),
+        status: r.status,
+        notes: r.notes,
+        provider: r.provider,
+      })),
+    });
+  } catch (e: any) {
+    console.error("Failed to list case referrals", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/cases/:id/referrals", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { providerId?: string; status?: string; notes?: string };
+
+    const providerId = body.providerId ? String(body.providerId) : "";
+    if (!providerId) return res.status(400).json({ error: "providerId is required" });
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ error: "Case not found" });
+
+    const p = await prisma.provider.findFirst({ where: { id: providerId, firmId }, select: { id: true } });
+    if (!p) return res.status(404).json({ error: "Provider not found" });
+
+    const status = body.status && String(body.status).trim() ? String(body.status).trim() : "sent";
+    const notes = body.notes != null ? (body.notes === "" ? null : String(body.notes)) : null;
+
+    const created = await prisma.referral.create({
+      data: { firmId, caseId, providerId, status, notes },
+      include: {
+        provider: { select: { id: true, name: true, city: true, state: true, specialty: true } },
+      },
+    });
+
+    res.status(201).json({
+      ok: true,
+      item: {
+        id: created.id,
+        caseId: created.caseId,
+        providerId: created.providerId,
+        referredAt: created.referredAt.toISOString(),
+        status: created.status,
+        notes: created.notes,
+        provider: created.provider,
+      },
+    });
+  } catch (e: any) {
+    console.error("Failed to create referral", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // === Records requests ===
 
 app.post("/cases/:id/records-requests", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
     const caseId = String(req.params.id ?? "");
-    const body = (req.body ?? {}) as any;
-
-    const { providerId, providerName, providerContact, dateFrom, dateTo, notes } = body;
-
-    let name = providerName ? String(providerName) : "";
-    let contact = providerContact != null ? String(providerContact) : null;
-
-    if (providerId) {
-      const provider = await prisma.provider.findFirst({
-        where: { id: String(providerId), firmId },
-      });
-      if (provider) {
-        if (!name) name = provider.name;
-        if (contact == null) {
-          const parts = [provider.address, `${provider.city}, ${provider.state}`];
-          if (provider.phone) parts.push(`Phone: ${provider.phone}`);
-          if (provider.fax) parts.push(`Fax: ${provider.fax}`);
-          if (provider.email) parts.push(`Email: ${provider.email}`);
-          contact = parts.join("\n");
-        }
-      }
-    }
-
-    if (!name) {
-      return res.status(400).json({ error: "providerName or providerId is required" });
-    }
-
-    const created = await prisma.recordsRequest.create({
-      data: {
-        firmId,
-        caseId,
-        providerId: providerId ? String(providerId) : null,
-        providerName: name,
-        providerContact: contact,
-        dateFrom: dateFrom ? new Date(dateFrom) : null,
-        dateTo: dateTo ? new Date(dateTo) : null,
-        notes: notes ? String(notes) : null,
-        status: "Draft",
-      },
-    });
-
-    // Auto-generate letter text using AI (case + provider info)
-    const letterResult = await generateRecordsRequestLetter({
-      caseId,
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const {
+      createRecordsRequestDraft,
+    } = await import("./services/recordsRequestService");
+    const input = {
       firmId,
-      providerName: name,
-      providerContact: contact,
-      dateFrom: created.dateFrom,
-      dateTo: created.dateTo,
-      notes: created.notes,
+      caseId,
+      providerId: typeof body.providerId === "string" ? body.providerId : null,
+      providerName: typeof body.providerName === "string" ? body.providerName.trim() || null : null,
+      providerContact: body.providerContact != null ? String(body.providerContact) : null,
+      patientName: typeof body.patientName === "string" ? body.patientName : null,
+      patientDob: body.patientDob != null ? (typeof body.patientDob === "string" ? new Date(body.patientDob as string) : (body.patientDob as Date)) : null,
+      dateOfLoss: body.dateOfLoss != null ? (typeof body.dateOfLoss === "string" ? new Date(body.dateOfLoss as string) : (body.dateOfLoss as Date)) : null,
+      requestType: (body.requestType === "RECORDS" || body.requestType === "BILLS" || body.requestType === "BOTH") ? body.requestType : undefined,
+      destinationType: (body.destinationType === "EMAIL" || body.destinationType === "FAX" || body.destinationType === "PORTAL" || body.destinationType === "MANUAL") ? body.destinationType : undefined,
+      destinationValue: typeof body.destinationValue === "string" ? body.destinationValue : null,
+      subject: typeof body.subject === "string" ? body.subject : null,
+      messageBody: typeof body.messageBody === "string" ? body.messageBody : null,
+      requestedDateFrom: body.requestedDateFrom != null ? (typeof body.requestedDateFrom === "string" ? new Date(body.requestedDateFrom as string) : (body.requestedDateFrom as Date)) : null,
+      requestedDateTo: body.requestedDateTo != null ? (typeof body.requestedDateTo === "string" ? new Date(body.requestedDateTo as string) : (body.requestedDateTo as Date)) : null,
+      createdByUserId: (req as any).userId ?? null,
+    };
+    const result = await createRecordsRequestDraft(input);
+    if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+    const request = await prisma.recordsRequest.findFirst({
+      where: { id: result.id, firmId },
+      include: { attachments: true, events: { orderBy: { createdAt: "desc" }, take: 5 } },
     });
-
-    if (letterResult.text) {
-      await prisma.recordsRequest.update({
-        where: { id: created.id },
-        data: { letterBody: letterResult.text },
-      });
-      (created as any).letterBody = letterResult.text;
-    }
-    if (letterResult.error) {
-      (created as any).letterError = letterResult.error;
-    }
-
-    res.status(201).json({ ok: true, item: created });
+    logActivity({
+      firmId,
+      caseId,
+      providerId: request?.providerId ?? null,
+      type: "records_request_created",
+      title: "Records request created",
+      meta: { providerName: request?.providerName, recordsRequestId: result.id },
+    });
+    return res.status(201).json({ ok: true, item: request });
   } catch (e: any) {
     console.error("Failed to create records request", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
@@ -4673,7 +9737,53 @@ app.get("/cases/:id/documents", auth, requireRole(Role.STAFF), async (req, res) 
       orderBy: { createdAt: "desc" },
     });
 
-    res.json({ ok: true, items });
+    const docIds = items.map((d) => d.id);
+    const tagLinks =
+      docIds.length > 0
+        ? await prisma.documentTagLink.findMany({
+            where: { documentId: { in: docIds } },
+            include: { tag: { select: { id: true, name: true, color: true } } },
+          })
+        : [];
+    const tagsByDoc = new Map<string, { id: string; name: string; color: string | null }[]>();
+    for (const l of tagLinks) {
+      const list = tagsByDoc.get(l.documentId) || [];
+      list.push({ id: l.tag.id, name: l.tag.name, color: l.tag.color });
+      tagsByDoc.set(l.documentId, list);
+    }
+
+    const includeProvider = req.query.includeProvider === "true" || req.query.includeProvider === "1";
+    let providerByDoc = new Map<string, { provider: string | null; eventDate: string | null }>();
+    if (includeProvider && docIds.length > 0) {
+      const events = await prisma.caseTimelineEvent.findMany({
+        where: { caseId, firmId, documentId: { in: docIds } },
+        select: { documentId: true, provider: true, eventDate: true },
+      });
+      for (const e of events) {
+        if (!providerByDoc.has(e.documentId))
+          providerByDoc.set(e.documentId, { provider: e.provider, eventDate: e.eventDate?.toISOString() ?? null });
+      }
+    }
+
+    res.json({
+      ok: true,
+      items: items.map((d) => {
+        const base: Record<string, unknown> = {
+          id: d.id,
+          originalName: d.originalName,
+          status: d.status,
+          createdAt: d.createdAt,
+          pageCount: d.pageCount,
+          tags: tagsByDoc.get(d.id) || [],
+        };
+        if (includeProvider) {
+          const prov = providerByDoc.get(d.id);
+          base.providerName = prov?.provider ?? null;
+          base.timelineEventDate = prov?.eventDate ?? null;
+        }
+        return base;
+      }),
+    });
   } catch (e: any) {
     console.error("Failed to list case documents", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
@@ -4704,10 +9814,20 @@ app.post("/cases/:id/documents/attach", auth, requireRole(Role.STAFF), async (re
     });
     if (!result.ok) return res.status(404).json({ ok: false, error: result.error });
 
-    const updated = await prisma.document.findUnique({
-      where: { id: documentId },
+    logActivity({
+      firmId,
+      caseId,
+      documentId,
+      type: "document_routed",
+      title: "Document attached to case",
+      meta: {},
+    });
+
+    const updated = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
       select: { id: true, originalName: true, status: true, createdAt: true, pageCount: true },
     });
+    if (!updated) return res.status(404).json({ ok: false, error: "Not found" });
 
     res.status(201).json({ ok: true, item: updated });
   } catch (e: any) {
@@ -4723,7 +9843,26 @@ app.post("/cases/:id/documents/upload", auth, requireRole(Role.STAFF), upload.si
     const caseId = String(req.params.id ?? "");
     const file = req.file;
 
-    if (!file) return res.status(400).json({ error: "Missing file (multipart field name must be 'file')" });
+    if (!file) return res.status(400).json({ ok: false, error: "Missing file (multipart field name must be 'file')" });
+
+    const scan = await validateUploadFile({
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+      size: file.size,
+      buffer: file.buffer,
+    });
+    if (!scan.ok) {
+      logIntakeFailure({
+        stage: "validation",
+        error: (scan as { reason?: string }).reason ?? "Invalid file",
+        code: "INVALID_FILE",
+        firmId,
+        fileName: file.originalname,
+        sizeBytes: file.size,
+      });
+      recordAbuse({ ip: (req as any).ip || req.socket?.remoteAddress || "unknown", route: req.path || "/cases/:id/export-packet", eventType: "suspicious_upload" });
+      return sendSafeError(res, 400, (scan as { reason?: string }).reason ?? "Invalid file", "INVALID_FILE");
+    }
 
     const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
     if (!c) return res.status(404).json({ ok: false, error: "Case not found" });
@@ -4745,21 +9884,14 @@ app.post("/cases/:id/documents/upload", auth, requireRole(Role.STAFF), upload.si
       });
     }
 
-    if (firm.pageLimitMonthly > 0) {
-      const ym = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-      const usageRow = await prisma.usageMonthly.findUnique({
-        where: { firmId_yearMonth: { firmId, yearMonth: ym } },
-        select: { pagesProcessed: true },
+    const docLimitCheck = await canIngestDocument(firmId);
+    if (!docLimitCheck.allowed) {
+      return res.status(402).json({
+        ok: false,
+        error: docLimitCheck.error,
+        docsProcessed: docLimitCheck.currentDocs,
+        documentLimitMonthly: docLimitCheck.limit,
       });
-      const currentPages = usageRow?.pagesProcessed ?? 0;
-      if (currentPages >= firm.pageLimitMonthly) {
-        return res.status(402).json({
-          ok: false,
-          error: "Monthly limit exceeded",
-          pagesProcessed: currentPages,
-          pageLimitMonthly: firm.pageLimitMonthly,
-        });
-      }
     }
 
     const fileSha256 = crypto.createHash("sha256").update(file.buffer).digest("hex");
@@ -4798,8 +9930,27 @@ app.post("/cases/:id/documents/upload", auth, requireRole(Role.STAFF), upload.si
       metaJson: { caseId, source: "case_upload" },
     });
 
-    await enqueueDocumentJob({ documentId: doc.id, firmId });
-    await enqueueTimelineRebuildJob({ caseId, firmId });
+    logActivity({
+      firmId,
+      caseId,
+      documentId: doc.id,
+      type: "document_uploaded",
+      title: "Document uploaded",
+      meta: { documentName: doc.originalName },
+    });
+
+    try {
+      await enqueueDocumentJob({ documentId: doc.id, firmId });
+      await enqueueTimelineRebuildJob({ caseId, firmId });
+    } catch (e: unknown) {
+      const errMsg = (e as Error)?.message ?? "Failed to enqueue processing";
+      await prisma.document.update({
+        where: { id: doc.id },
+        data: { status: "FAILED", failureStage: "ingest", failureReason: errMsg.slice(0, 2000) },
+      });
+      res.status(500).json({ ok: false, error: errMsg });
+      return;
+    }
 
     res.status(201).json({
       ok: true,
@@ -4838,10 +9989,11 @@ app.post("/cases/:id/documents", auth, requireRole(Role.STAFF), async (req, res)
     });
     if (!result.ok) return res.status(404).json({ ok: false, error: result.error });
 
-    const updated = await prisma.document.findUnique({
-      where: { id: documentId },
+    const updated = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
       select: { id: true, originalName: true, status: true, createdAt: true, pageCount: true },
     });
+    if (!updated) return res.status(404).json({ ok: false, error: "Not found" });
 
     res.status(201).json({ ok: true, item: updated });
   } catch (e: any) {
@@ -4866,7 +10018,7 @@ app.patch("/cases/tasks/:id", auth, requireRole(Role.STAFF), async (req, res) =>
 
     const existing = await prisma.caseTask.findFirst({
       where: { id: taskId, firmId },
-      select: { id: true },
+      select: { id: true, caseId: true, title: true },
     });
     if (!existing) return res.status(404).json({ ok: false, error: "Task not found" });
 
@@ -4874,6 +10026,17 @@ app.patch("/cases/tasks/:id", auth, requireRole(Role.STAFF), async (req, res) =>
       where: { id: taskId },
       data: { completedAt: body.completed ? new Date() : null, updatedAt: new Date() },
     });
+
+    if (body.completed && existing.caseId) {
+      logActivity({
+        firmId,
+        caseId: existing.caseId,
+        type: "task_completed",
+        title: "Task completed",
+        meta: { taskId, taskTitle: existing.title },
+      });
+    }
+
     res.json({ ok: true, item: updated });
   } catch (e: any) {
     console.error("Failed to update case task", e);
@@ -4980,7 +10143,348 @@ app.post("/cases/:id/tasks", auth, requireRole(Role.STAFF), async (req, res) => 
   }
 });
 
+// === Case contacts ===
+app.get("/cases/:id/contacts", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ ok: false, error: "Case not found" });
+
+    const items = await prisma.caseContact.findMany({
+      where: { caseId, firmId },
+      orderBy: { createdAt: "desc" },
+    });
+
+    res.json({
+      ok: true,
+      items: items.map((x) => ({
+        id: x.id,
+        name: x.name,
+        role: x.role,
+        phone: x.phone ?? null,
+        email: x.email ?? null,
+        notes: x.notes ?? null,
+        createdAt: x.createdAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    console.error("GET /cases/:id/contacts failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/cases/:id/contacts", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { name?: string; role?: string; phone?: string; email?: string; notes?: string };
+
+    const name = body.name != null ? String(body.name).trim() : "";
+    const role = body.role != null ? String(body.role).trim() : "";
+    if (!name) return res.status(400).json({ ok: false, error: "name is required" });
+    if (!role) return res.status(400).json({ ok: false, error: "role is required" });
+
+    const c = await prisma.legalCase.findFirst({ where: { id: caseId, firmId }, select: { id: true } });
+    if (!c) return res.status(404).json({ ok: false, error: "Case not found" });
+
+    const created = await prisma.caseContact.create({
+      data: {
+        caseId,
+        firmId,
+        name,
+        role,
+        phone: body.phone != null ? String(body.phone).trim() || null : null,
+        email: body.email != null ? String(body.email).trim() || null : null,
+        notes: body.notes != null ? String(body.notes).trim() || null : null,
+      },
+    });
+
+    res.status(201).json({
+      ok: true,
+      item: {
+        id: created.id,
+        name: created.name,
+        role: created.role,
+        phone: created.phone ?? null,
+        email: created.email ?? null,
+        notes: created.notes ?? null,
+        createdAt: created.createdAt.toISOString(),
+      },
+    });
+  } catch (e: any) {
+    console.error("POST /cases/:id/contacts failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/case-contacts/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const contactId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { name?: string; role?: string; phone?: string; email?: string; notes?: string };
+
+    const existing = await prisma.caseContact.findFirst({
+      where: { id: contactId, firmId },
+    });
+    if (!existing) return res.status(404).json({ ok: false, error: "Contact not found" });
+
+    const data: { name?: string; role?: string; phone?: string | null; email?: string | null; notes?: string | null } = {};
+    if (body.name !== undefined) data.name = String(body.name).trim();
+    if (body.role !== undefined) data.role = String(body.role).trim();
+    if (body.phone !== undefined) data.phone = body.phone === "" || body.phone == null ? null : String(body.phone).trim();
+    if (body.email !== undefined) data.email = body.email === "" || body.email == null ? null : String(body.email).trim();
+    if (body.notes !== undefined) data.notes = body.notes === "" || body.notes == null ? null : String(body.notes).trim();
+
+    if (data.name !== undefined && !data.name) return res.status(400).json({ ok: false, error: "name cannot be empty" });
+    if (data.role !== undefined && !data.role) return res.status(400).json({ ok: false, error: "role cannot be empty" });
+
+    const updated = await prisma.caseContact.update({
+      where: { id: contactId },
+      data,
+    });
+
+    res.json({
+      ok: true,
+      item: {
+        id: updated.id,
+        name: updated.name,
+        role: updated.role,
+        phone: updated.phone ?? null,
+        email: updated.email ?? null,
+        notes: updated.notes ?? null,
+        createdAt: updated.createdAt.toISOString(),
+      },
+    });
+  } catch (e: any) {
+    if (e?.code === "P2025") return res.status(404).json({ ok: false, error: "Contact not found" });
+    console.error("PATCH /case-contacts/:id failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.delete("/case-contacts/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const contactId = String(req.params.id ?? "");
+
+    const existing = await prisma.caseContact.findFirst({
+      where: { id: contactId, firmId },
+    });
+    if (!existing) return res.status(404).json({ ok: false, error: "Contact not found" });
+
+    await prisma.caseContact.delete({ where: { id: contactId } });
+    res.json({ ok: true });
+  } catch (e: any) {
+    if (e?.code === "P2025") return res.status(404).json({ ok: false, error: "Contact not found" });
+    console.error("DELETE /case-contacts/:id failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Demand packages (case-scoped)
+app.get("/cases/:id/demand-packages", auth, requireRole(Role.STAFF), async (req, res) => {
+  if (req.accepts("html")) {
+    const p = path.join(__dirname, "..", "..", "public", "admin", "demand-packages.html");
+    return res.sendFile(p, (err) => {
+      if (err) res.status(404).json({ ok: false, error: "Demand packages page not found" });
+    });
+  }
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+    const c = await prisma.legalCase.findFirst({
+      where: { id: caseId, firmId },
+      select: { id: true },
+    });
+    if (!c) return res.status(404).json({ ok: false, error: "Case not found" });
+    const list = await prisma.demandPackage.findMany({
+      where: { caseId, firmId },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, title: true, status: true, generatedDocId: true, generatedAt: true, createdAt: true, updatedAt: true },
+    });
+    res.json({ ok: true, items: list });
+  } catch (e: any) {
+    console.error("GET /cases/:id/demand-packages failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/cases/:id/demand-packages", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { title?: string };
+    const c = await prisma.legalCase.findFirst({
+      where: { id: caseId, firmId },
+      select: { id: true },
+    });
+    if (!c) return res.status(404).json({ ok: false, error: "Case not found" });
+    const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : "Demand Package";
+    const pkg = await prisma.demandPackage.create({
+      data: { firmId, caseId, title, status: "draft" },
+    });
+    res.status(201).json({ ok: true, item: pkg });
+  } catch (e: any) {
+    console.error("POST /cases/:id/demand-packages failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Demand package by id (package-scoped)
+app.get("/demand-packages/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  if (req.accepts("html")) {
+    const p = path.join(__dirname, "..", "..", "public", "admin", "demand-package-detail.html");
+    return res.sendFile(p, (err) => {
+      if (err) res.status(404).json({ ok: false, error: "Demand package page not found" });
+    });
+  }
+  try {
+    const firmId = (req as any).firmId as string;
+    const id = String(req.params.id ?? "");
+    const pkg = await prisma.demandPackage.findFirst({
+      where: { id, firmId },
+      include: { sectionSources: true },
+    });
+    if (!pkg) return res.status(404).json({ ok: false, error: "Demand package not found" });
+    res.json({
+      ok: true,
+      item: {
+        ...pkg,
+        sectionSources: pkg.sectionSources,
+      },
+    });
+  } catch (e: any) {
+    console.error("GET /demand-packages/:id failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/demand-packages/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const id = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as {
+      title?: string;
+      summaryText?: string | null;
+      damagesText?: string | null;
+      liabilityText?: string | null;
+      treatmentText?: string | null;
+      futureCareText?: string | null;
+      settlementText?: string | null;
+      status?: string;
+    };
+    const existing = await prisma.demandPackage.findFirst({
+      where: { id, firmId },
+      select: { id: true },
+    });
+    if (!existing) return res.status(404).json({ ok: false, error: "Demand package not found" });
+    const data: Record<string, unknown> = {};
+    if (body.title !== undefined) data.title = String(body.title).trim();
+    if (body.summaryText !== undefined) data.summaryText = body.summaryText === null || body.summaryText === "" ? null : String(body.summaryText);
+    if (body.damagesText !== undefined) data.damagesText = body.damagesText === null || body.damagesText === "" ? null : String(body.damagesText);
+    if (body.liabilityText !== undefined) data.liabilityText = body.liabilityText === null || body.liabilityText === "" ? null : String(body.liabilityText);
+    if (body.treatmentText !== undefined) data.treatmentText = body.treatmentText === null || body.treatmentText === "" ? null : String(body.treatmentText);
+    if (body.futureCareText !== undefined) data.futureCareText = body.futureCareText === null || body.futureCareText === "" ? null : String(body.futureCareText);
+    if (body.settlementText !== undefined) data.settlementText = body.settlementText === null || body.settlementText === "" ? null : String(body.settlementText);
+    if (body.status !== undefined && ["draft", "generating", "ready", "failed"].includes(String(body.status))) data.status = body.status;
+    const updated = await prisma.demandPackage.update({
+      where: { id },
+      data: data as any,
+    });
+    res.json({ ok: true, item: updated });
+  } catch (e: any) {
+    console.error("PATCH /demand-packages/:id failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/demand-packages/:id/generate", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const id = String(req.params.id ?? "");
+    const pkg = await prisma.demandPackage.findFirst({
+      where: { id, firmId },
+      select: { id: true },
+    });
+    if (!pkg) return res.status(404).json({ ok: false, error: "Demand package not found" });
+    const job = await enqueueJobToQueue({
+      firmId,
+      type: "demand_package.generate",
+      payload: { demandPackageId: id, firmId },
+    });
+    res.status(202).json({ ok: true, jobId: job.id, status: "queued" });
+  } catch (e: any) {
+    console.error("POST /demand-packages/:id/generate failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/demand-packages/:id/regenerate-pdf", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const id = String(req.params.id ?? "");
+    const pkg = await prisma.demandPackage.findFirst({
+      where: { id, firmId },
+      include: { case: { select: { clientName: true, caseNumber: true, title: true } } },
+    });
+    if (!pkg) return res.status(404).json({ ok: false, error: "Demand package not found" });
+    const caseLabel = [pkg.case.clientName, pkg.case.caseNumber, pkg.case.title].filter(Boolean).join(" · ") || "Case";
+    const caseDocs = await prisma.document.findMany({
+      where: { firmId, routedCaseId: pkg.caseId },
+      select: { originalName: true },
+    });
+    const { buildDemandPackagePdf } = await import("../services/demandPackagePdf");
+    const pdfBuffer = await buildDemandPackagePdf({
+      title: pkg.title,
+      caseLabel,
+      generatedDate: new Date(),
+      summaryText: pkg.summaryText,
+      liabilityText: pkg.liabilityText,
+      treatmentText: pkg.treatmentText,
+      damagesText: pkg.damagesText,
+      futureCareText: pkg.futureCareText,
+      settlementText: pkg.settlementText,
+      appendixDocuments: caseDocs.map((d) => ({ name: d.originalName || "" })),
+    });
+    const key = `${firmId}/demand_packages/${id}_${Date.now()}.pdf`;
+    await putObject(key, pdfBuffer, "application/pdf");
+    const fileSha256 = crypto.createHash("sha256").update(pdfBuffer).digest("hex");
+    const doc = await prisma.document.create({
+      data: {
+        firmId,
+        source: "demand_package",
+        spacesKey: key,
+        originalName: `${pkg.title.replace(/[^\w\s-]/g, "")}-demand-package.pdf`,
+        mimeType: "application/pdf",
+        pageCount: 0,
+        status: "UPLOADED",
+        processingStage: "complete",
+        file_sha256: fileSha256,
+        fileSizeBytes: pdfBuffer.length,
+        processedAt: new Date(),
+        routedCaseId: pkg.caseId,
+      },
+    });
+    await prisma.demandPackage.update({
+      where: { id },
+      data: { generatedDocId: doc.id, generatedAt: new Date(), status: "ready" },
+    });
+    res.json({ ok: true, documentId: doc.id });
+  } catch (e: any) {
+    console.error("POST /demand-packages/:id/regenerate-pdf failed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.get("/records-requests/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  if (req.accepts("html")) {
+    const p = path.join(__dirname, "..", "..", "public", "admin", "records-request-detail.html");
+    return res.sendFile(p, (err) => {
+      if (err) res.status(404).json({ ok: false, error: "Records request page not found" });
+    });
+  }
   try {
     const firmId = (req as any).firmId as string;
     const id = String(req.params.id ?? "");
@@ -5066,10 +10570,37 @@ app.post("/records-requests/:id/generate-pdf", auth, requireRole(Role.STAFF), as
       return res.status(400).json({ ok: false, error: "Letter body is empty; save the letter first" });
     }
 
+    const [firm, caseRow, provider] = await Promise.all([
+      prisma.firm.findUnique({ where: { id: firmId }, select: { name: true } }),
+      prisma.legalCase.findUnique({
+        where: { id: reqRow.caseId },
+        select: { title: true, caseNumber: true, clientName: true },
+      }),
+      reqRow.providerId
+        ? prisma.provider.findFirst({
+            where: { id: reqRow.providerId, firmId },
+            select: { name: true, address: true, city: true, state: true, phone: true, fax: true, email: true },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const fmtDate = (d: Date | null) => (d ? d.toLocaleDateString("en-US") : "");
+    const providerAddress = provider
+      ? [provider.address, [provider.city, provider.state].filter(Boolean).join(", ")].filter(Boolean).join("\n")
+      : null;
+
     const pdfBuffer = await buildRecordsRequestLetterPdf({
       letterBody,
       providerName: reqRow.providerName,
       providerContact: reqRow.providerContact,
+      firmName: firm?.name ?? null,
+      providerAddress: providerAddress || null,
+      caseTitle: caseRow?.title ?? null,
+      caseNumber: caseRow?.caseNumber ?? null,
+      clientName: caseRow?.clientName ?? null,
+      dateFrom: fmtDate(reqRow.dateFrom),
+      dateTo: fmtDate(reqRow.dateTo),
+      notes: reqRow.notes ?? null,
     });
 
     const safeName = reqRow.providerName.replace(/[^a-zA-Z0-9\-_\s]/g, "").replace(/\s+/g, " ").trim().slice(0, 60) || "Records Request";
@@ -5195,94 +10726,37 @@ app.post("/records-requests/:id/send", auth, requireRole(Role.STAFF), async (req
   try {
     const firmId = (req as any).firmId as string;
     const id = String(req.params.id ?? "");
-    const body = (req.body ?? {}) as { channel?: string; to?: string };
+    const body = (req.body ?? {}) as { channel?: string; destination?: string; to?: string };
     const channel = String(body.channel ?? "").toLowerCase();
-    const to = String(body.to ?? "").trim();
+    const destination = String(body.destination ?? body.to ?? "").trim();
 
     if (!["email", "fax"].includes(channel)) {
       return res.status(400).json({ ok: false, error: "channel must be email or fax" });
     }
-    if (!to) {
-      return res
-        .status(400)
-        .json({
-          ok: false,
-          error: channel === "email" ? "to (email address) is required" : "to (fax number) is required",
-        });
+    if (!destination) {
+      return res.status(400).json({
+        ok: false,
+        error: channel === "email" ? "destination (email address) is required" : "destination (fax number) is required",
+      });
     }
 
     const reqRow = await prisma.recordsRequest.findFirst({
       where: { id, firmId },
+      select: { id: true, letterBody: true },
     });
     if (!reqRow) {
       return res.status(404).json({ ok: false, error: "RecordsRequest not found" });
     }
-
-    const letterBody = reqRow.letterBody ?? "";
-    if (!letterBody.trim()) {
+    if (!(reqRow.letterBody ?? "").trim()) {
       return res.status(400).json({ ok: false, error: "Letter body is empty; save the letter first" });
     }
 
-    const pdfBuffer = await buildRecordsRequestLetterPdf({
-      letterBody,
-      providerName: reqRow.providerName,
-      providerContact: reqRow.providerContact,
-    });
-
-    let result: { ok: boolean; error?: string };
-    if (channel === "email") {
-      const safeName = reqRow.providerName.replace(/[^a-zA-Z0-9\-_\s]/g, "").replace(/\s+/g, " ").trim().slice(0, 60) || "Records Request";
-      const subject = `Medical Records Request - ${reqRow.providerName}`;
-      const textBody = letterBody;
-      result = await sendAdapter.sendEmail(to, subject, textBody, [
-        { filename: `records-request-${safeName}.pdf`, content: pdfBuffer, contentType: "application/pdf" },
-      ]);
-    } else {
-      result = await sendAdapter.sendFax(to, pdfBuffer);
-    }
-
-    await prisma.crmPushLog.create({
-      data: {
-        firmId,
-        caseId: reqRow.caseId,
-        documentId: null,
-        actionType: "records_request_send",
-        provider: channel,
-        ok: result.ok,
-        error: result.error ?? null,
-      },
-    });
-
-    await prisma.recordsRequestAttempt.create({
-      data: {
-        firmId,
-        recordsRequestId: id,
-        channel,
-        destination: to,
-        ok: result.ok,
-        error: result.error ?? null,
-        externalId: (result as { externalId?: string }).externalId ?? null,
-      },
-    });
-
-    if (!result.ok) {
-      return res.status(500).json({ ok: false, error: result.error || "Send failed" });
-    }
-
-    await prisma.recordsRequest.update({
-      where: { id },
-      data: { status: "Sent" },
-    });
-
-    createNotification(
+    const job = await enqueueJobToQueue({
       firmId,
-      "records_request_sent",
-      "Records request sent",
-      `Records request for ${reqRow.providerName} was sent via ${channel} to ${to}.`,
-      { caseId: reqRow.caseId, recordsRequestId: id, channel, to }
-    ).catch((e) => console.warn("[notifications] records_request_sent failed", e));
-
-    res.json({ ok: true, message: `Sent via ${channel} to ${to}` });
+      type: "records_request.send",
+      payload: { recordsRequestId: id, firmId, channel, destination },
+    });
+    res.status(202).json({ ok: true, jobId: job.id, status: "queued" });
   } catch (e: any) {
     console.error("Failed to send records request", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
@@ -5522,18 +10996,28 @@ app.get("/documents/:id/recognition", auth, requireRole(Role.STAFF), async (req,
 
     const doc = await prisma.document.findFirst({
       where: { id: documentId, firmId },
-      select: { id: true, originalName: true, status: true, routedCaseId: true, routingStatus: true, mimeType: true, confidence: true, extractedFields: true, duplicateMatchCount: true, duplicateOfId: true, pageCount: true, ingestedAt: true },
+      select: { id: true, originalName: true, status: true, routedCaseId: true, routingStatus: true, mimeType: true, confidence: true, extractedFields: true, duplicateMatchCount: true, duplicateOfId: true, pageCount: true, ingestedAt: true, metaJson: true, failureStage: true, failureReason: true, processingStage: true },
     });
     if (!doc) {
       return res.status(404).json({ ok: false, error: "document not found" });
     }
 
     const { rows } = await pgPool.query(
-      `select document_id, text_excerpt, doc_type, client_name, case_number, incident_date, confidence, match_confidence, match_reason, risks, insights, insurance_fields, court_fields, updated_at
+      `select document_id, text_excerpt, doc_type, client_name, case_number, incident_date, confidence, match_confidence, match_reason, unmatched_reason, suggested_case_id, classification_reason, classification_signals_json, classification_status, suggested_doc_type, facility_name,
+              risks, insights, insurance_fields, court_fields, updated_at,
+              page_texts_json, extracted_json, quality_score, issues_json, page_count_detected, provider_name, provider_name_normalized, provider_resolution_status,
+              detected_language, possible_languages, ocr_engine, ocr_confidence, has_handwriting, handwriting_heavy, handwriting_confidence, page_diagnostics, extraction_strict_mode
        from document_recognition where document_id = $1`,
       [documentId]
     );
     const rec = rows[0] || null;
+
+    const meta = doc.metaJson && typeof doc.metaJson === "object" ? (doc.metaJson as Record<string, unknown>) : null;
+    const pipelineError = meta?.pipelineError != null ? String(meta.pipelineError) : null;
+    const pipelineStageMeta = meta?.pipelineStage != null ? String(meta.pipelineStage) : null;
+    const failureStage = doc.failureStage ?? pipelineStageMeta;
+    const failureReason = doc.failureReason ?? pipelineError;
+    const providerCandidate = meta?.providerCandidate && typeof meta.providerCandidate === "object" ? meta.providerCandidate : null;
 
     res.json({
       ok: true,
@@ -5547,11 +11031,17 @@ app.get("/documents/:id/recognition", auth, requireRole(Role.STAFF), async (req,
         confidence: doc.confidence,
         extractedFields: doc.extractedFields,
         lastRunAt: rec?.updated_at ?? null,
-        errors: doc.status === "FAILED" ? "Document processing failed" : null,
+        errors: doc.status === "FAILED" ? (failureReason || "Document processing failed") : null,
+        pipelineStage: doc.status === "FAILED" ? failureStage : null,
+        failureStage: doc.status === "FAILED" ? failureStage : null,
+        failureReason: doc.status === "FAILED" ? failureReason : null,
+        processingStage: doc.processingStage ?? null,
         duplicateMatchCount: doc.duplicateMatchCount ?? 0,
         duplicateOfId: doc.duplicateOfId ?? null,
         pageCount: doc.pageCount ?? 0,
         ingestedAt: doc.ingestedAt?.toISOString?.() ?? null,
+        metaJson: doc.metaJson ?? null,
+        providerCandidate: providerCandidate ?? undefined,
       },
       recognition: rec
         ? {
@@ -5566,12 +11056,620 @@ app.get("/documents/:id/recognition", auth, requireRole(Role.STAFF), async (req,
             lastRunAt: rec.updated_at,
             matchConfidence: rec.match_confidence != null ? Number(rec.match_confidence) : null,
             matchReason: rec.match_reason ?? null,
+            unmatchedReason: rec.unmatched_reason ?? null,
+            suggestedCaseId: rec.suggested_case_id ?? null,
+            classificationReason: rec.classification_reason ?? null,
+            classificationSignals: rec.classification_signals_json ?? null,
+            classificationStatus: rec.classification_status ?? null,
+            suggestedDocType: rec.suggested_doc_type ?? null,
+            facilityName: rec.facility_name ?? null,
             risks: rec.risks != null ? (Array.isArray(rec.risks) ? rec.risks : (rec.risks as any)?.risks ?? []) : [],
             insights: rec.insights != null ? (Array.isArray(rec.insights) ? rec.insights : (rec.insights as any)?.insights ?? []) : [],
             insuranceFields: rec.insurance_fields ?? null,
             courtFields: rec.court_fields ?? null,
+            pageTextsJson: rec.page_texts_json ?? null,
+            extractedJson: rec.extracted_json ?? null,
+            qualityScore: rec.quality_score != null ? Number(rec.quality_score) : null,
+            issuesJson: rec.issues_json ?? null,
+            pageCountDetected: rec.page_count_detected ?? null,
+            providerName: rec.provider_name ?? null,
+            providerNameNormalized: rec.provider_name_normalized ?? null,
+            providerResolutionStatus: rec.provider_resolution_status ?? null,
+            detectedLanguage: rec.detected_language ?? null,
+            possibleLanguages: rec.possible_languages ?? null,
+            ocrEngine: rec.ocr_engine ?? null,
+            ocrConfidence: rec.ocr_confidence != null ? Number(rec.ocr_confidence) : null,
+            hasHandwriting: rec.has_handwriting ?? null,
+            handwritingHeavy: rec.handwriting_heavy ?? null,
+            handwritingConfidence: rec.handwriting_confidence != null ? Number(rec.handwriting_confidence) : null,
+            pageDiagnostics: rec.page_diagnostics ?? null,
+            extractionStrictMode: rec.extraction_strict_mode ?? null,
           }
         : null,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Update recognition (manual correction): doc_type, provider_name, client_name, case_number
+app.patch("/documents/:id/recognition", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+
+    const body = (req.body ?? {}) as { docType?: string; providerName?: string; clientName?: string; caseNumber?: string; incidentDate?: string };
+    const updates: string[] = [];
+    const values: unknown[] = [];
+    let idx = 1;
+    if (body.docType !== undefined) {
+      updates.push(`doc_type = $${idx++}`);
+      values.push(String(body.docType).trim() || null);
+    }
+    if (body.providerName !== undefined) {
+      const raw = typeof body.providerName === "string" ? body.providerName.trim() || null : null;
+      updates.push(`provider_name = $${idx++}`);
+      values.push(raw);
+      if (raw) {
+        const resolution = await resolveProvider(firmId, raw);
+        updates.push(`provider_name_normalized = $${idx++}`);
+        values.push(resolution.normalizedName || null);
+        updates.push(`provider_resolution_status = $${idx++}`);
+        values.push(resolution.resolved ? "resolved" : "unresolved");
+        updates.push(`suggested_provider_id = $${idx++}`);
+        values.push(resolution.resolved ? resolution.providerId : null);
+      } else {
+        updates.push(`provider_name_normalized = $${idx++}`);
+        values.push(null);
+        updates.push(`provider_resolution_status = $${idx++}`);
+        values.push(null);
+        updates.push(`suggested_provider_id = $${idx++}`);
+        values.push(null);
+      }
+    }
+    if (body.clientName !== undefined) {
+      updates.push(`client_name = $${idx++}`);
+      values.push(typeof body.clientName === "string" ? body.clientName.trim() || null : null);
+    }
+    if (body.caseNumber !== undefined) {
+      updates.push(`case_number = $${idx++}`);
+      values.push(typeof body.caseNumber === "string" ? body.caseNumber.trim() || null : null);
+    }
+    if (body.incidentDate !== undefined) {
+      const v = typeof body.incidentDate === "string" ? body.incidentDate.trim() || null : null;
+      updates.push(`incident_date = $${idx++}`);
+      values.push(v);
+    }
+    if (updates.length === 0) {
+      return res.status(400).json({ ok: false, error: "Provide at least one of docType, providerName, clientName, caseNumber, incidentDate" });
+    }
+    const correctedFields = Object.keys(body).filter((k) => body[k as keyof typeof body] !== undefined) as string[];
+    updates.push("updated_at = now()");
+    values.push(documentId);
+    await pgPool.query(
+      `update document_recognition set ${updates.join(", ")} where document_id = $${idx}`,
+      values
+    );
+    const actor = (req as any).apiKeyPrefix || "staff";
+    await addDocumentAuditEvent({
+      firmId,
+      documentId,
+      actor,
+      action: AUDIT_ACTIONS.RECOGNITION_CORRECTED,
+      metaJson: { correction: true, fields: correctedFields },
+    });
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Export/filing preview: final file name and folder path for this document (used by naming rules + overrides).
+app.get("/documents/:id/export-preview", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true, originalName: true, routedCaseId: true, metaJson: true, extractedFields: true },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+
+    const meta = (doc.metaJson ?? {}) as Record<string, unknown>;
+    const exportFileNameOverride = meta.exportFileNameOverride != null ? String(meta.exportFileNameOverride).trim() || null : null;
+    const exportFolderPathOverride = meta.exportFolderPathOverride != null ? String(meta.exportFolderPathOverride).trim() || null : null;
+
+    if (!doc.routedCaseId) {
+      return res.json({
+        ok: true,
+        needsRouting: true,
+        message: "Assign a case to this document to see export file name and folder.",
+        fileName: null,
+        folderPath: null,
+        context: null,
+      });
+    }
+
+    const legalCase = await prisma.legalCase.findFirst({
+      where: { id: doc.routedCaseId, firmId },
+      select: { caseNumber: true, clientName: true, title: true },
+    });
+    if (!legalCase) {
+      return res.json({
+        ok: true,
+        needsRouting: true,
+        message: "Case not found.",
+        fileName: null,
+        folderPath: null,
+        context: null,
+      });
+    }
+
+    const recognition = await getRecognitionForDocument(documentId);
+    const exportedAt = new Date().toISOString();
+    const caseData = { caseNumber: legalCase.caseNumber, clientName: legalCase.clientName, title: legalCase.title };
+    const growthPrimary =
+      doc.extractedFields != null && typeof doc.extractedFields === "object" && "growthExtraction" in doc.extractedFields
+        ? ((doc.extractedFields as Record<string, unknown>).growthExtraction as { serviceDates?: { primaryServiceDate?: string | null } | null })?.serviceDates?.primaryServiceDate ?? undefined
+        : undefined;
+    const ctx = buildDocumentNamingContext(caseData, doc, recognition, exportedAt, growthPrimary);
+
+    const rules = await getFirmExportNamingRules(firmId);
+    const ext = (doc.originalName ?? "").split(".").pop()?.toLowerCase() || "pdf";
+    let fileName: string;
+    let folderPath: string;
+    if (exportFileNameOverride) {
+      fileName = exportFileNameOverride.includes(".") ? exportFileNameOverride : `${exportFileNameOverride}.${ext}`;
+    } else {
+      const baseName = rules ? applyFilePattern(rules, ctx) : (doc.originalName ?? "document").replace(/\.[^.]+$/, "") || "document";
+      fileName = `${baseName}.${ext}`;
+    }
+    if (exportFolderPathOverride !== null && exportFolderPathOverride !== undefined) {
+      folderPath = exportFolderPathOverride;
+    } else {
+      const caseCtx = buildDocumentNamingContext(caseData, { id: doc.id, originalName: doc.originalName }, null, exportedAt);
+      const caseLevelFolder = rules ? applyFolderPattern(rules, caseCtx) : "";
+      const docTypeFolder = rules ? getFolderForDocType(rules, ctx.documentType) : "";
+      folderPath = [caseLevelFolder, docTypeFolder].filter(Boolean).join("/");
+    }
+
+    res.json({
+      ok: true,
+      needsRouting: false,
+      fileName,
+      folderPath: folderPath || null,
+      context: {
+        caseNumber: ctx.caseNumber,
+        clientName: ctx.clientName,
+        caseTitle: ctx.caseTitle,
+        documentType: ctx.documentType,
+        providerName: ctx.providerName,
+        serviceDate: ctx.serviceDate,
+        originalName: ctx.originalName,
+      },
+      exportFileNameOverride: exportFileNameOverride ?? undefined,
+      exportFolderPathOverride: exportFolderPathOverride ?? undefined,
+    });
+  } catch (e: any) {
+    console.error("[documents/export-preview]", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Route explainability: why routed / needs_review, confidence, threshold, extracted fields, candidate match, signals, matched patterns
+app.get("/documents/:id/route-explainer", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: {
+        id: true,
+        routedCaseId: true,
+        routingStatus: true,
+        routedSystem: true,
+        status: true,
+        confidence: true,
+        extractedFields: true,
+        originalName: true,
+        source: true,
+      },
+    });
+    if (!doc) {
+      return res.status(404).json({ ok: false, error: "document not found" });
+    }
+
+    const [recRows, rule, suggestedCase, extracted, textRows] = await Promise.all([
+      pgPool.query(
+        `select match_confidence, match_reason, suggested_case_id, case_number, client_name, doc_type
+         from document_recognition where document_id = $1`,
+        [documentId]
+      ),
+      prisma.routingRule.findUnique({
+        where: { firmId },
+        select: { minAutoRouteConfidence: true, autoRouteEnabled: true },
+      }),
+      doc.routedCaseId
+        ? prisma.legalCase.findFirst({
+            where: { id: doc.routedCaseId, firmId },
+            select: { id: true, caseNumber: true, title: true, clientName: true },
+          })
+        : Promise.resolve(null),
+      getExtractedForRouting(documentId),
+      pgPool.query<{ text_excerpt: string | null }>(
+        `select text_excerpt from document_recognition where document_id = $1`,
+        [documentId]
+      ),
+    ]);
+
+    const rec = (recRows as { rows: { match_confidence: unknown; match_reason: string | null; suggested_case_id: string | null; case_number: string | null; client_name: string | null; doc_type: string | null }[] }).rows[0] ?? null;
+    const matchConfidence = rec?.match_confidence != null ? Number(rec.match_confidence) : doc.confidence ?? null;
+    const threshold = rule?.minAutoRouteConfidence ?? 0.9;
+    const autoRouteEnabled = rule?.autoRouteEnabled ?? false;
+
+    const extractedFieldsUsed = {
+      caseNumber: rec?.case_number ?? null,
+      clientName: rec?.client_name ?? null,
+      docType: rec?.doc_type ?? null,
+    };
+
+    let scoreResult: RoutingScoreResult | null = null;
+    try {
+      scoreResult = await scoreDocumentRouting(
+        {
+          id: documentId,
+          firmId,
+          originalName: doc.originalName,
+          source: doc.source,
+          routedCaseId: doc.routedCaseId,
+          status: doc.status,
+        },
+        {
+          caseNumber: extracted?.caseNumber ?? rec?.case_number,
+          clientName: extracted?.clientName ?? rec?.client_name,
+          docType: extracted?.docType ?? rec?.doc_type,
+        },
+        (textRows as { rows: { text_excerpt: string | null }[] }).rows[0]?.text_excerpt ?? null
+      );
+    } catch (_) {
+      // scorer may fail if patterns/feedback tables missing
+    }
+
+    const candidateMatches: { caseId: string; caseNumber: string | null; caseTitle: string | null; confidence: number; reason: string; source?: string }[] = [];
+    if (scoreResult && scoreResult.candidates.length > 0) {
+      candidateMatches.push(
+        ...scoreResult.candidates.map((c) => ({
+          caseId: c.caseId,
+          caseNumber: c.caseNumber,
+          caseTitle: c.caseTitle,
+          confidence: c.confidence,
+          reason: c.reason,
+          source: c.source,
+        }))
+      );
+    } else if (rec?.suggested_case_id && matchConfidence != null && matchConfidence > 0) {
+      const caseRow = await prisma.legalCase.findFirst({
+        where: { id: rec.suggested_case_id, firmId },
+        select: { id: true, caseNumber: true, title: true, clientName: true },
+      });
+      candidateMatches.push({
+        caseId: rec.suggested_case_id,
+        caseNumber: caseRow?.caseNumber ?? null,
+        caseTitle: caseRow?.title ?? null,
+        confidence: matchConfidence,
+        reason: rec?.match_reason ?? "Matched",
+      });
+    }
+
+    const whyPassed =
+      doc.routingStatus === "routed" && doc.routedCaseId
+        ? doc.routedSystem === "auto"
+          ? `Auto-routed: match confidence ${matchConfidence != null ? (matchConfidence * 100).toFixed(0) : "—"}% ≥ threshold ${(threshold * 100).toFixed(0)}%. ${rec?.match_reason ?? ""}`
+          : "Manually routed by user."
+        : null;
+    const whyFailed =
+      doc.routingStatus === "needs_review" || !doc.routedCaseId
+        ? !rec?.suggested_case_id && (!scoreResult || scoreResult.candidates.length === 0)
+          ? "No matching case found."
+          : matchConfidence != null && matchConfidence < threshold
+            ? `Match confidence ${(matchConfidence * 100).toFixed(0)}% below auto-route threshold ${(threshold * 100).toFixed(0)}%. ${rec?.match_reason ?? ""}`
+            : !autoRouteEnabled
+              ? "Auto-route is disabled."
+              : "Needs review."
+        : null;
+
+    res.json({
+      ok: true,
+      routedCaseId: doc.routedCaseId ?? null,
+      routingStatus: doc.routingStatus ?? null,
+      routedSystem: doc.routedSystem ?? null,
+      confidence: scoreResult?.confidence ?? matchConfidence,
+      chosenCaseId: scoreResult?.chosenCaseId ?? null,
+      chosenDocType: scoreResult?.chosenDocType ?? null,
+      signals: scoreResult?.signals ?? {
+        caseNumber: extractedFieldsUsed.caseNumber,
+        clientName: extractedFieldsUsed.clientName,
+        docType: extractedFieldsUsed.docType,
+        fileName: doc.originalName,
+        source: doc.source,
+        baseMatchReason: rec?.match_reason ?? null,
+      },
+      matchedPatterns: scoreResult?.matchedPatterns ?? [],
+      extractedFieldsUsed,
+      extractedFields: doc.extractedFields,
+      threshold,
+      autoRouteEnabled,
+      candidateMatches,
+      whyPassed,
+      whyFailed,
+      routedCase: suggestedCase
+        ? { id: suggestedCase.id, caseNumber: suggestedCase.caseNumber, title: suggestedCase.title, clientName: suggestedCase.clientName }
+        : null,
+    });
+  } catch (e: any) {
+    console.error("[documents/route-explainer]", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Submit routing feedback (was this correct? / correction)
+app.post("/documents/:id/routing-feedback", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const actor = (req as any).apiKeyPrefix ?? (req as any).userId ?? "api";
+    const body = (req.body ?? {}) as {
+      finalCaseId?: string | null;
+      finalStatus?: string | null;
+      finalDocType?: string | null;
+      correctedBy?: string | null;
+    };
+
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true, routedCaseId: true, status: true, originalName: true, source: true },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+
+    const { rows: recRows } = await pgPool.query<{ suggested_case_id: string | null; match_confidence: number | null; doc_type: string | null; case_number: string | null; client_name: string | null; provider_name?: string | null }>(
+      `select suggested_case_id, match_confidence, doc_type, case_number, client_name, provider_name from document_recognition where document_id = $1`,
+      [documentId]
+    );
+    const rec = recRows[0];
+    const predictedCaseId = doc.routedCaseId ?? rec?.suggested_case_id ?? null;
+    const predictedStatus = doc.status ?? null;
+    const predictedDocType = rec?.doc_type ?? null;
+    const predictedConfidence = rec?.match_confidence != null ? Number(rec.match_confidence) : null;
+
+    const finalCaseId = body.finalCaseId !== undefined ? body.finalCaseId : doc.routedCaseId;
+    const finalStatus = body.finalStatus !== undefined ? body.finalStatus : doc.status;
+    const finalDocType = body.finalDocType !== undefined ? body.finalDocType : predictedDocType;
+
+    const features = {
+      caseNumber: rec?.case_number ?? null,
+      clientName: rec?.client_name ?? null,
+      docType: predictedDocType,
+      fileName: doc.originalName,
+      source: doc.source,
+      providerName: rec?.provider_name ?? null,
+    };
+
+    await recordRoutingFeedback(
+      {
+        firmId,
+        documentId,
+        finalCaseId,
+        finalStatus,
+        finalDocType,
+        correctedBy: body.correctedBy ?? actor,
+      },
+      {
+        caseId: predictedCaseId,
+        status: predictedStatus,
+        docType: predictedDocType,
+        confidence: predictedConfidence,
+      },
+      features
+    );
+
+    res.json({ ok: true, message: "Routing feedback recorded" });
+  } catch (e: any) {
+    console.error("[documents/routing-feedback]", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Submit extraction feedback (corrected value for a field)
+app.post("/documents/:id/extraction-feedback", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const actor = (req as any).apiKeyPrefix ?? (req as any).userId ?? "api";
+    const body = (req.body ?? {}) as {
+      firmId?: string;
+      fieldKey?: string;
+      correctedValue?: string | null;
+      wasCorrect?: boolean;
+      correctedBy?: string | null;
+    };
+    const fieldKey = typeof body.fieldKey === "string" ? body.fieldKey.trim() : "";
+    if (!fieldKey) return res.status(400).json({ ok: false, error: "fieldKey is required" });
+
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true, extractedFields: true },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+
+    const extracted = (doc.extractedFields as Record<string, unknown>) || {};
+    const predictedValue = (extracted[fieldKey] as string) ?? null;
+    const correctedValue = body.correctedValue !== undefined ? body.correctedValue : null;
+    const wasCorrect = body.wasCorrect === true;
+
+    await prisma.extractionFeedback.create({
+      data: {
+        firmId,
+        documentId,
+        fieldKey,
+        predictedValue,
+        correctedValue,
+        wasCorrect,
+        correctedBy: body.correctedBy ?? actor,
+      },
+    });
+
+    await addDocumentAuditEvent({
+      firmId,
+      documentId,
+      actor: body.correctedBy ?? actor,
+      action: "extraction_feedback",
+      fromCaseId: null,
+      toCaseId: null,
+      metaJson: { fieldKey, wasCorrect, correctedValue },
+    });
+
+    res.json({ ok: true, message: "Extraction feedback recorded" });
+  } catch (e: any) {
+    console.error("[documents/extraction-feedback]", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// ----- Routing patterns (firm-scoped) -----
+app.get("/routing/patterns", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const list = await prisma.routingPattern.findMany({
+      where: { firmId },
+      orderBy: [{ priority: "asc" }, { createdAt: "desc" }],
+    });
+    res.json({ ok: true, items: list });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/routing/patterns", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body ?? {}) as {
+      name?: string;
+      docType?: string | null;
+      providerName?: string | null;
+      source?: string | null;
+      fileNamePattern?: string | null;
+      keywordsJson?: string[] | null;
+      targetCaseId?: string | null;
+      targetFolder?: string | null;
+      priority?: number;
+      active?: boolean;
+    };
+    const name = body.name?.trim();
+    if (!name) return res.status(400).json({ ok: false, error: "name required" });
+    const pattern = await prisma.routingPattern.create({
+      data: {
+        firmId,
+        name,
+        docType: body.docType ?? null,
+        providerName: body.providerName ?? null,
+        source: body.source ?? null,
+        fileNamePattern: body.fileNamePattern ?? null,
+        keywordsJson: body.keywordsJson != null ? (body.keywordsJson as Prisma.InputJsonValue) : Prisma.JsonNull,
+        targetCaseId: body.targetCaseId ?? null,
+        targetFolder: body.targetFolder ?? null,
+        priority: body.priority ?? 100,
+        active: body.active !== false,
+      },
+    });
+    res.status(201).json({ ok: true, item: pattern });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/routing/patterns/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const id = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as {
+      name?: string;
+      docType?: string | null;
+      providerName?: string | null;
+      source?: string | null;
+      fileNamePattern?: string | null;
+      keywordsJson?: string[] | null;
+      targetCaseId?: string | null;
+      targetFolder?: string | null;
+      priority?: number;
+      active?: boolean;
+    };
+    const existing = await prisma.routingPattern.findFirst({ where: { id, firmId } });
+    if (!existing) return res.status(404).json({ ok: false, error: "pattern not found" });
+    const pattern = await prisma.routingPattern.update({
+      where: { id },
+      data: {
+        ...(body.name !== undefined && { name: body.name.trim() }),
+        ...(body.docType !== undefined && { docType: body.docType }),
+        ...(body.providerName !== undefined && { providerName: body.providerName }),
+        ...(body.source !== undefined && { source: body.source }),
+        ...(body.fileNamePattern !== undefined && { fileNamePattern: body.fileNamePattern }),
+        ...(body.keywordsJson !== undefined && { keywordsJson: body.keywordsJson != null ? (body.keywordsJson as Prisma.InputJsonValue) : Prisma.JsonNull }),
+        ...(body.targetCaseId !== undefined && { targetCaseId: body.targetCaseId }),
+        ...(body.targetFolder !== undefined && { targetFolder: body.targetFolder }),
+        ...(body.priority !== undefined && { priority: body.priority }),
+        ...(body.active !== undefined && { active: body.active }),
+      },
+    });
+    res.json({ ok: true, item: pattern });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.delete("/routing/patterns/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const id = String(req.params.id ?? "");
+    const existing = await prisma.routingPattern.findFirst({ where: { id, firmId } });
+    if (!existing) return res.status(404).json({ ok: false, error: "pattern not found" });
+    await prisma.routingPattern.delete({ where: { id } });
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Routing learning stats: accepted vs corrected, top wins, top misses
+app.get("/routing/learning-stats", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const [acceptedCount, correctedCount, recentAccepted, recentCorrected] = await Promise.all([
+      prisma.routingFeedback.count({ where: { firmId, wasAccepted: true } }),
+      prisma.routingFeedback.count({ where: { firmId, wasAccepted: false } }),
+      prisma.routingFeedback.findMany({
+        where: { firmId, wasAccepted: true },
+        take: 10,
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.routingFeedback.findMany({
+        where: { firmId, wasAccepted: false },
+        take: 10,
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+    res.json({
+      ok: true,
+      acceptedCount,
+      correctedCount,
+      topWins: recentAccepted.map((f) => ({ documentId: f.documentId, finalCaseId: f.finalCaseId, createdAt: f.createdAt })),
+      topMisses: recentCorrected.map((f) => ({ documentId: f.documentId, predictedCaseId: f.predictedCaseId, finalCaseId: f.finalCaseId, createdAt: f.createdAt })),
     });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });

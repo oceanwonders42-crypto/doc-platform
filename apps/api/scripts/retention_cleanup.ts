@@ -2,7 +2,8 @@
 /**
  * Retention cleanup: delete documents older than firm.retentionDays.
  * Run manually: pnpm cleanup:run
- * Can be scheduled as a nightly cron.
+ * Nightly cron: 0 2 * * * cd apps/api && pnpm cleanup:run
+ * Or trigger via POST /admin/cron/retention-cleanup (enqueues job for job runner).
  */
 import "dotenv/config";
 import { runRetentionCleanup } from "../src/services/retentionCleanup";

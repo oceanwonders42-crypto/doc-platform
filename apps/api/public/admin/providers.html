@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin – Providers</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    .nav { margin-bottom: 0.5rem; }
+    .nav a { margin-right: 1rem; color: #0066cc; }
+    h1 { margin: 0 0 1rem; font-size: 1.25rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .api-key-wrap button { padding: 0.5rem 0.75rem; margin-left: 0.25rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    table { border-collapse: collapse; background: #fff; width: 100%; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-weight: 600; }
+    .badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; }
+    .badge.active { background: #d4edda; color: #155724; }
+    .badge.inactive { background: #f8d7da; color: #721c24; }
+    .badge.expired { background: #fff3cd; color: #856404; }
+    select { padding: 0.25rem 0.5rem; }
+    .toggle { cursor: pointer; }
+    .loading { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Admin – Providers</h1>
+  <div class="nav">
+    <a href="/admin/provider-management">Provider management (map &amp; aliases)</a>
+  </div>
+  <div class="api-key-wrap">
+    <label>API key (Bearer):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+    <button type="button" id="loadBtn">Load providers</button>
+  </div>
+  <div id="error" class="error" aria-live="polite"></div>
+  <div id="content">
+    <p class="loading">Enter API key and click Load providers. Use a key with STAFF or FIRM_ADMIN for your firm's list.</p>
+  </div>
+
+  <script>
+    (function () {
+      const API_BASE = '';
+      const keyInput = document.getElementById('apiKey');
+      const loadBtn = document.getElementById('loadBtn');
+      const errorEl = document.getElementById('error');
+      const contentEl = document.getElementById('content');
+
+      function getAuth() {
+        const key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) {
+        errorEl.textContent = msg || '';
+      }
+
+      function listProviders() {
+        const headers = { ...getAuth(), Accept: 'application/json' };
+        return fetch(API_BASE + '/providers', { headers, credentials: 'include' })
+          .then(function (r) {
+            if (r.ok) return r.json();
+            if (r.status === 401) throw new Error('Invalid or missing API key');
+            return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function patchVerify(id, verified) {
+        const headers = { ...getAuth(), 'Content-Type': 'application/json' };
+        return fetch(API_BASE + '/providers/' + encodeURIComponent(id) + '/verify', {
+          method: 'PATCH',
+          headers,
+          credentials: 'include',
+          body: JSON.stringify({ verified: !!verified }),
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        });
+      }
+
+      function patchSubscription(id, subscriptionTier) {
+        const headers = { ...getAuth(), 'Content-Type': 'application/json' };
+        return fetch(API_BASE + '/providers/' + encodeURIComponent(id) + '/subscription', {
+          method: 'PATCH',
+          headers,
+          credentials: 'include',
+          body: JSON.stringify({ subscriptionTier: subscriptionTier }),
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        });
+      }
+
+      function statusBadge(p) {
+        const now = new Date();
+        const expired = p.expiresAt && new Date(p.expiresAt) <= now;
+        if (expired) return '<span class="badge expired">Expired</span>';
+        if (p.listingActive) return '<span class="badge active">Active</span>';
+        return '<span class="badge inactive">Inactive</span>';
+      }
+
+      function renderTable(items) {
+        const tiers = ['free', 'basic', 'premium', 'enterprise'];
+        let html = '<table><thead><tr><th>Name</th><th>Verified</th><th>Tier</th><th>Status</th><th>Expires</th></tr></thead><tbody>';
+        items.forEach(function (p) {
+          const expiresStr = p.expiresAt ? new Date(p.expiresAt).toLocaleDateString() : '—';
+          html += '<tr data-id="' + (p.id || '') + '">';
+          html += '<td><a href="/providers/' + encodeURIComponent(p.id) + '">' + (p.name || '') + '</a> <small>' + (p.city || '') + ', ' + (p.state || '') + '</small></td>';
+          html += '<td><label class="toggle"><input type="checkbox" ' + (p.verified ? 'checked' : '') + ' data-verify /> Verify</label></td>';
+          html += '<td><select data-tier>';
+          tiers.forEach(function (t) {
+            html += '<option value="' + t + '"' + (p.subscriptionTier === t ? ' selected' : '') + '>' + t + '</option>';
+          });
+          html += '</select></td>';
+          html += '<td>' + statusBadge(p) + '</td>';
+          html += '<td>' + expiresStr + '</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        return html;
+      }
+
+      function bindRow(id, row) {
+        const verifyCb = row.querySelector('[data-verify]');
+        const tierSel = row.querySelector('[data-tier]');
+        if (verifyCb) {
+          verifyCb.addEventListener('change', function () {
+            patchVerify(id, verifyCb.checked).catch(function (e) { setError(e.message); });
+          });
+        }
+        if (tierSel) {
+          tierSel.addEventListener('change', function () {
+            patchSubscription(id, tierSel.value).catch(function (e) { setError(e.message); });
+          });
+        }
+      }
+
+      loadBtn.addEventListener('click', function () {
+        setError('');
+        contentEl.innerHTML = '<p class="loading">Loading…</p>';
+        listProviders()
+          .then(function (items) {
+            if (keyInput && keyInput.value.trim()) {
+              try { sessionStorage.setItem('providerApiKey', keyInput.value.trim()); } catch (e) {}
+            }
+            contentEl.innerHTML = items.length ? renderTable(items) : '<p>No providers found.</p>';
+            items.forEach(function (p) {
+              var row = contentEl.querySelector('[data-id="' + p.id + '"]');
+              if (row) bindRow(p.id, row);
+            });
+          })
+          .catch(function (e) {
+            contentEl.innerHTML = '';
+            setError(e.message);
+          });
+      });
+    })();
+  </script>
+</body>
+</html>

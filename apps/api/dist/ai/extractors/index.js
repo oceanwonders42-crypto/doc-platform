@@ -29,7 +29,7 @@ function runExtractors(text, docType, base = {}) {
         if (insurance.offerAmount)
             merged.offerAmount = insurance.offerAmount;
     }
-    if (docType === "medical_record" || docType === "medical" || docType === "police_report") {
+    if (docType === "medical_record" || docType === "medical" || docType === "police_report" || docType === "billing_statement") {
         const medical = (0, medicalRecord_1.extractMedicalRecord)(text);
         merged.medicalRecord = medical;
         if (medical.visitDate)

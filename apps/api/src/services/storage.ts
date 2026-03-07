@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const endpoint = process.env.S3_ENDPOINT!;
@@ -6,6 +6,12 @@ const accessKeyId = process.env.S3_ACCESS_KEY!;
 const secretAccessKey = process.env.S3_SECRET_KEY!;
 const region = process.env.S3_REGION || "us-east-1";
 export const bucket = process.env.S3_BUCKET!;
+
+/**
+ * Tenant isolation: All object keys MUST be tenant-prefixed by firmId.
+ * Use patterns like: `${firmId}/...` or `firms/${firmId}/cases/${caseId}/documents/${docId}`.
+ * Never use global bucket paths (no firmId) so Firm A cannot access Firm B's objects by key.
+ */
 
 if (!endpoint || !accessKeyId || !secretAccessKey || !bucket) {
   throw new Error("Missing S3 env vars. Check apps/api/.env");
@@ -61,4 +67,21 @@ export async function deleteObject(key: string): Promise<void> {
       Key: key,
     })
   );
+}
+
+/** Check if an object exists (for collision detection). Returns false on 404. */
+export async function objectExists(key: string): Promise<boolean> {
+  try {
+    await s3.send(
+      new HeadObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      })
+    );
+    return true;
+  } catch (e: unknown) {
+    const code = (e as { name?: string }).name;
+    if (code === "NotFound" || (e as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode === 404) return false;
+    throw e;
+  }
 }

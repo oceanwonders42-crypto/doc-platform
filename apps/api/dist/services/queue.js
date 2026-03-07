@@ -11,6 +11,7 @@ exports.enqueueCaseMatchJob = enqueueCaseMatchJob;
 exports.enqueueDocumentJob = enqueueDocumentJob;
 exports.enqueueTimelineRebuildJob = enqueueTimelineRebuildJob;
 exports.popJob = popJob;
+exports.getRedisQueueLength = getRedisQueueLength;
 exports.popDocumentJob = popDocumentJob;
 const ioredis_1 = __importDefault(require("ioredis"));
 const url = process.env.REDIS_URL || "redis://localhost:6379";
@@ -38,6 +39,11 @@ async function enqueueTimelineRebuildJob(payload) {
 async function popJob() {
     const raw = await exports.redis.rpop(QUEUE_KEY);
     return raw ? JSON.parse(raw) : null;
+}
+/** Number of jobs waiting in the document pipeline queue (pending). */
+async function getRedisQueueLength() {
+    const n = await exports.redis.llen(QUEUE_KEY);
+    return typeof n === "number" ? n : 0;
 }
 /** @deprecated Use popJob */
 async function popDocumentJob() {

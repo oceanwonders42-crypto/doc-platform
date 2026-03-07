@@ -1,0 +1,1693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Case – Detail</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    a { color: #0066cc; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    h2 { margin: 1rem 0 0.5rem; font-size: 1rem; color: #444; }
+    .back { margin-bottom: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .api-key-wrap button { padding: 0.5rem 0.75rem; margin-left: 0.25rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+    .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+    .tabs a { padding: 0.5rem 1rem; background: #e0e0e0; border-radius: 4px; text-decoration: none; color: #333; }
+    .tabs a.active { background: #fff; font-weight: 600; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    table { border-collapse: collapse; background: #fff; width: 100%; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-weight: 600; font-size: 0.9rem; }
+    .badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; }
+    .badge.treating { background: #cce5ff; color: #004085; }
+    .badge.referral { background: #d4edda; color: #155724; }
+    .badge.lien { background: #fff3cd; color: #856404; }
+    .badge.records_only { background: #e2e3e5; color: #383d41; }
+    .loading { color: #666; }
+    .empty { color: #888; font-style: italic; }
+    .search-wrap { margin-bottom: 1rem; }
+    .search-wrap input { width: 20rem; padding: 0.5rem; margin-right: 0.5rem; }
+    .search-results { margin-top: 0.5rem; }
+    .search-results li { list-style: none; padding: 0.5rem; background: #f9f9f9; margin-bottom: 0.25rem; border-radius: 4px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
+    .search-results select { padding: 0.25rem 0.5rem; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+    .btn.danger { border-color: #dc3545; color: #dc3545; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 10; }
+    .modal-overlay.open { display: flex; }
+    .modal { background: #fff; padding: 1.5rem; border-radius: 8px; min-width: 360px; max-width: 90vw; max-height: 80vh; overflow: auto; }
+    .modal h2 { margin: 0 0 1rem; font-size: 1rem; }
+    .modal-actions { margin-top: 1rem; display: flex; gap: 0.5rem; justify-content: flex-end; }
+    .attach-list { list-style: none; padding: 0; margin: 0; }
+    .attach-list li { padding: 0.5rem; border-bottom: 1px solid #eee; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+    .attach-list li button { flex-shrink: 0; }
+    .task-row.overdue { background: #fef2f2; border-left: 3px solid #dc2626; }
+    .task-row.overdue .task-due { color: #dc2626; font-weight: 600; }
+    .badge.sent { background: #cce5ff; color: #004085; }
+    .badge.accepted { background: #d4edda; color: #155724; }
+    .badge.declined { background: #f8d7da; color: #721c24; }
+    .badge.pending { background: #fff3cd; color: #856404; }
+    .summary-body { white-space: pre-wrap; font-size: 0.9rem; line-height: 1.4; max-height: 24rem; overflow: auto; border: 1px solid #eee; padding: 0.75rem; border-radius: 4px; background: #fafafa; }
+    .checklist-progress { height: 8px; background: #e0e0e0; border-radius: 4px; overflow: hidden; margin-bottom: 0.75rem; }
+    .checklist-progress-fill { height: 100%; background: #0066cc; border-radius: 4px; transition: width 0.2s; }
+    .checklist-list { list-style: none; padding: 0; margin: 0; }
+    .checklist-list li { padding: 0.4rem 0; display: flex; align-items: center; gap: 0.5rem; }
+    .checklist-list li.completed { color: #666; }
+    .checklist-list li.completed .checklist-label { text-decoration: line-through; }
+    .activity-feed { list-style: none; padding: 0; margin: 0; font-size: 0.9rem; }
+    .activity-feed li { padding: 0.4rem 0; border-bottom: 1px solid #eee; display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline; }
+    .activity-feed li:last-child { border-bottom: none; }
+    .activity-feed .activity-time { color: #888; font-size: 0.85rem; }
+    .activity-feed .activity-type { color: #666; }
+    .financial-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem 1.5rem; align-items: end; margin-top: 0.5rem; }
+    .financial-grid label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 0.25rem; }
+    .financial-grid input { width: 100%; padding: 0.4rem 0.5rem; }
+    .financial-grid .net-row { grid-column: 1 / -1; font-weight: 600; padding-top: 0.5rem; border-top: 1px solid #eee; }
+    .financial-grid .net-row input { font-weight: 600; }
+    .doc-tag { display: inline-block; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.75rem; margin: 0.1rem 0.1rem 0 0; }
+  </style>
+</head>
+<body>
+  <div class="back"><a href="/admin/cases" id="backLink">← Cases</a></div>
+  <h1 id="caseTitle">Case</h1>
+  <div class="api-key-wrap">
+    <label>API key (Bearer):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+    <button type="button" id="loadCaseBtn">Load case</button>
+  </div>
+  <div id="error" class="error" aria-live="polite"></div>
+  <div id="content" style="display:none;">
+    <div class="tabs">
+      <a href="#overview" data-tab="overview" class="active">Overview</a>
+      <a href="#providers" data-tab="providers">Providers</a>
+      <a href="#documents" data-tab="documents">Documents</a>
+      <a href="#timeline" data-tab="timeline">Timeline</a>
+      <a href="#tasks" data-tab="tasks">Tasks</a>
+      <a href="#contacts" data-tab="contacts">Contacts</a>
+      <a href="#" id="demandPackageTab">Demand Package</a>
+    </div>
+    <div id="panel-overview" class="tab-panel active">
+      <div class="card" id="caseCard"></div>
+      <div class="card" id="financialCard">
+        <h2>Financials</h2>
+        <div id="financialLoading" class="loading">Loading…</div>
+        <div id="financialForm" style="display:none;">
+          <div class="financial-grid">
+            <div><label>Medical bills total</label><input type="number" id="finMedicalBills" step="0.01" min="0" placeholder="0" /></div>
+            <div><label>Liens total</label><input type="number" id="finLiens" step="0.01" min="0" placeholder="0" /></div>
+            <div><label>Settlement offer</label><input type="number" id="finSettlementOffer" step="0.01" min="0" placeholder="—" /></div>
+            <div><label>Settlement accepted</label><input type="number" id="finSettlementAccepted" step="0.01" min="0" placeholder="—" /></div>
+            <div><label>Attorney fees</label><input type="number" id="finAttorneyFees" step="0.01" min="0" placeholder="—" /></div>
+            <div><label>Costs</label><input type="number" id="finCosts" step="0.01" min="0" placeholder="—" /></div>
+            <div class="net-row"><label>Net to client</label><input type="number" id="finNetToClient" step="0.01" placeholder="Auto-calculated" readonly /></div>
+          </div>
+          <p style="margin:0.75rem 0 0;">
+            <button type="button" id="saveFinancialBtn" class="btn primary">Save</button>
+            <span id="financialStatus"></span>
+          </p>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Case summary</h2>
+        <p style="margin:0.5rem 0;">
+          <button type="button" id="regenerateSummaryBtn" class="btn primary">Regenerate</button>
+          <button type="button" id="copySummaryBtn" class="btn">Copy</button>
+          <span id="summaryStatus"></span>
+        </p>
+        <div id="summaryBody" class="summary-body"><p class="loading">Loading…</p></div>
+      </div>
+      <div class="card">
+        <h2>Demand package checklist</h2>
+        <div id="checklistProgress" class="checklist-progress" style="display:none;"><div class="checklist-progress-fill" id="checklistProgressFill" style="width:0%;"></div></div>
+        <ul id="checklistList" class="checklist-list"><p class="loading">Loading…</p></ul>
+      </div>
+      <div class="card">
+        <h2>Referrals</h2>
+        <p style="margin:0.5rem 0;">
+          <button type="button" id="sendReferralBtn" class="btn primary">Send Referral</button>
+        </p>
+        <div id="referralsList"><p class="loading">Loading…</p></div>
+      </div>
+      <div class="card">
+        <h2>Export case packet</h2>
+        <p style="margin:0.5rem 0;">
+          <button type="button" id="exportPacketBtn" class="btn primary">Export packet</button>
+        </p>
+        <h3 style="margin:0.75rem 0 0.25rem; font-size:0.95rem;">Packet generation history</h3>
+        <ul id="exportHistoryList" class="attach-list"><p class="loading">Loading…</p></ul>
+      </div>
+      <div class="card">
+        <h2>Recent activity</h2>
+        <ul id="caseActivityFeed" class="activity-feed"><p class="loading">Loading…</p></ul>
+      </div>
+    </div>
+    <div id="panel-providers" class="tab-panel">
+      <div class="card">
+        <h2>Case providers</h2>
+        <div id="providersList"></div>
+        <h2 style="margin-top:1rem;">Generate Intake Packet</h2>
+        <p style="margin:0.5rem 0;">
+          <button type="button" id="generatePacketBtn" class="btn primary">Generate Intake Packet</button>
+          <span id="packetStatus"></span>
+        </p>
+        <div id="generatedPacketLink" style="margin-top:0.5rem;"></div>
+        <h2 style="margin-top:1rem;">Attach provider</h2>
+        <div class="search-wrap">
+          <input type="text" id="providerSearch" placeholder="Search by name, city, specialty…" />
+          <button type="button" id="searchBtn" class="btn primary">Search</button>
+        </div>
+        <ul id="searchResults" class="search-results"></ul>
+      </div>
+    </div>
+    <div id="panel-documents" class="tab-panel">
+      <div class="card">
+        <h2>Case documents</h2>
+        <p style="margin:0.5rem 0;">
+          <button type="button" id="uploadDocBtn" class="btn primary">Upload</button>
+          <input type="file" id="uploadFileInput" accept=".pdf,application/pdf" style="display:none;" />
+          <button type="button" id="attachDocBtn" class="btn primary" style="margin-left:0.25rem;">Attach existing</button>
+        </p>
+        <div id="documentsList"><p class="loading">No documents.</p></div>
+      </div>
+    </div>
+    <div id="panel-timeline" class="tab-panel">
+      <div class="card">
+        <h2>Timeline (medical chronology)</h2>
+        <p style="margin:0.5rem 0;">
+          <button type="button" id="timelineRebuildBtn" class="btn">Rebuild</button>
+          <button type="button" id="timelineExportPdfBtn" class="btn primary">Export as PDF</button>
+          <button type="button" id="timelineExportDocxBtn" class="btn" style="margin-left:0.25rem;">Export as DOCX</button>
+          <span id="timelineExportStatus"></span>
+        </p>
+        <div id="timelineList"><p class="loading">Loading…</p></div>
+      </div>
+    </div>
+    <div id="panel-tasks" class="tab-panel">
+      <div class="card">
+        <h2>Case tasks</h2>
+        <p style="margin:0.5rem 0;">
+          <input type="text" id="newTaskTitle" placeholder="Task title" style="padding:0.35rem 0.5rem; width:20rem; margin-right:0.5rem;" />
+          <input type="date" id="newTaskDue" style="padding:0.35rem 0.5rem; margin-right:0.5rem;" />
+          <button type="button" id="addTaskBtn" class="btn primary">Add task</button>
+        </p>
+        <div id="tasksList"><p class="loading">Loading…</p></div>
+      </div>
+    </div>
+    <div id="panel-contacts" class="tab-panel">
+      <div class="card">
+        <h2>Case contacts</h2>
+        <p style="margin:0.5rem 0;">
+          <button type="button" id="addContactBtn" class="btn primary">Add contact</button>
+        </p>
+        <div id="contactsList"><p class="loading">Loading…</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="attachDocModal" class="modal-overlay" aria-hidden="true">
+    <div class="modal">
+      <h2>Attach existing document</h2>
+      <p class="empty">Load documents to see options not yet linked to this case.</p>
+      <ul id="attachDocList" class="attach-list"></ul>
+      <div class="modal-actions">
+        <button type="button" id="attachDocModalClose" class="btn">Close</button>
+      </div>
+    </div>
+  </div>
+  <div id="sendReferralModal" class="modal-overlay" aria-hidden="true">
+    <div class="modal">
+      <h2>Send Referral</h2>
+      <p>Choose a provider to refer this case to.</p>
+      <div class="search-wrap">
+        <input type="text" id="referralProviderSearch" placeholder="Search provider by name, city, specialty…" />
+        <button type="button" id="referralSearchBtn" class="btn primary">Search</button>
+      </div>
+      <ul id="referralSearchResults" class="search-results"></ul>
+      <p style="margin-top:0.75rem;"><label>Notes (optional):</label></p>
+      <textarea id="referralNotes" rows="3" style="width:100%; max-width: 24rem; padding: 0.5rem;"></textarea>
+      <div class="modal-actions">
+        <button type="button" id="sendReferralModalClose" class="btn">Cancel</button>
+      </div>
+    </div>
+  </div>
+  <div id="packetModal" class="modal-overlay" aria-hidden="true">
+    <div class="modal">
+      <h2>Generate Intake Packet</h2>
+      <p>Create a PDF packet for a provider with cover sheet, client/case info, and optional document summaries.</p>
+      <p style="margin-top:0.5rem;"><label>Provider:</label></p>
+      <select id="packetProviderSelect" style="padding:0.35rem 0.5rem; min-width:16rem; margin-bottom:0.5rem;"></select>
+      <p style="margin-top:0.75rem;"><label>Include document summaries (optional):</label></p>
+      <div id="packetDocumentsList" class="attach-list" style="max-height:12rem; overflow:auto;"></div>
+      <div class="modal-actions" style="margin-top:1rem;">
+        <button type="button" id="packetModalClose" class="btn">Cancel</button>
+        <button type="button" id="packetGenerateBtn" class="btn primary">Generate PDF</button>
+      </div>
+    </div>
+  </div>
+  <div id="exportPacketModal" class="modal-overlay" aria-hidden="true">
+    <div class="modal">
+      <h2>Export case packet</h2>
+      <p>Create a ZIP with selected documents and optional timeline and summary.</p>
+      <p style="margin-top:0.5rem;"><label>Documents to include:</label></p>
+      <div id="exportPacketDocList" class="attach-list" style="max-height:10rem; overflow:auto;"></div>
+      <p style="margin-top:0.75rem;"><label><input type="checkbox" id="exportIncludeTimeline" checked> Include timeline</label></p>
+      <p><label><input type="checkbox" id="exportIncludeSummary" checked> Include case summary</label></p>
+      <div class="modal-actions" style="margin-top:1rem;">
+        <button type="button" id="exportPacketModalClose" class="btn">Cancel</button>
+        <button type="button" id="exportPacketCreateBtn" class="btn primary">Create ZIP</button>
+      </div>
+      <p id="exportPacketResult" style="margin-top:0.75rem;"></p>
+    </div>
+  </div>
+  <div id="contactModal" class="modal-overlay" aria-hidden="true">
+    <div class="modal">
+      <h2 id="contactModalTitle">Add contact</h2>
+      <p style="margin:0.5rem 0;"><label>Name</label><br /><input type="text" id="contactName" required style="width:100%; max-width:24rem; padding:0.4rem 0.5rem;" /></p>
+      <p style="margin:0.5rem 0;"><label>Role</label><br /><input type="text" id="contactRole" placeholder="e.g. Client, Opposing counsel" style="width:100%; max-width:24rem; padding:0.4rem 0.5rem;" /></p>
+      <p style="margin:0.5rem 0;"><label>Phone</label><br /><input type="text" id="contactPhone" style="width:100%; max-width:24rem; padding:0.4rem 0.5rem;" /></p>
+      <p style="margin:0.5rem 0;"><label>Email</label><br /><input type="email" id="contactEmail" style="width:100%; max-width:24rem; padding:0.4rem 0.5rem;" /></p>
+      <p style="margin:0.5rem 0;"><label>Notes</label><br /><textarea id="contactNotes" rows="2" style="width:100%; max-width:24rem; padding:0.4rem 0.5rem;"></textarea></p>
+      <div class="modal-actions">
+        <button type="button" id="contactModalClose" class="btn">Cancel</button>
+        <button type="button" id="contactModalSave" class="btn primary">Save</button>
+      </div>
+    </div>
+  </div>
+  <div id="loadingState">
+    <p class="loading">Enter API key and click Load case, or open /cases/CASE_ID with API key set.</p>
+  </div>
+
+  <script>
+    (function () {
+      const API_BASE = '';
+      const keyInput = document.getElementById('apiKey');
+      const loadCaseBtn = document.getElementById('loadCaseBtn');
+      const errorEl = document.getElementById('error');
+      const contentEl = document.getElementById('content');
+      const loadingState = document.getElementById('loadingState');
+      const caseTitleEl = document.getElementById('caseTitle');
+      const caseCardEl = document.getElementById('caseCard');
+      const providersListEl = document.getElementById('providersList');
+      const providerSearchEl = document.getElementById('providerSearch');
+      const searchBtn = document.getElementById('searchBtn');
+      const searchResultsEl = document.getElementById('searchResults');
+      const documentsListEl = document.getElementById('documentsList');
+      const uploadDocBtn = document.getElementById('uploadDocBtn');
+      const uploadFileInput = document.getElementById('uploadFileInput');
+      const attachDocBtn = document.getElementById('attachDocBtn');
+      const attachDocModal = document.getElementById('attachDocModal');
+      const attachDocList = document.getElementById('attachDocList');
+      const attachDocModalClose = document.getElementById('attachDocModalClose');
+      const tasksListEl = document.getElementById('tasksList');
+      const newTaskTitleEl = document.getElementById('newTaskTitle');
+      const newTaskDueEl = document.getElementById('newTaskDue');
+      const addTaskBtn = document.getElementById('addTaskBtn');
+      const referralsListEl = document.getElementById('referralsList');
+      const sendReferralBtn = document.getElementById('sendReferralBtn');
+      const sendReferralModal = document.getElementById('sendReferralModal');
+      const referralProviderSearch = document.getElementById('referralProviderSearch');
+      const referralSearchBtn = document.getElementById('referralSearchBtn');
+      const referralSearchResults = document.getElementById('referralSearchResults');
+      const referralNotes = document.getElementById('referralNotes');
+      const sendReferralModalClose = document.getElementById('sendReferralModalClose');
+      const generatePacketBtn = document.getElementById('generatePacketBtn');
+      const packetModal = document.getElementById('packetModal');
+      const packetProviderSelect = document.getElementById('packetProviderSelect');
+      const packetDocumentsList = document.getElementById('packetDocumentsList');
+      const packetModalClose = document.getElementById('packetModalClose');
+      const packetGenerateBtn = document.getElementById('packetGenerateBtn');
+      const generatedPacketLink = document.getElementById('generatedPacketLink');
+      const packetStatus = document.getElementById('packetStatus');
+      const summaryBody = document.getElementById('summaryBody');
+      const regenerateSummaryBtn = document.getElementById('regenerateSummaryBtn');
+      const copySummaryBtn = document.getElementById('copySummaryBtn');
+      const summaryStatus = document.getElementById('summaryStatus');
+      const checklistList = document.getElementById('checklistList');
+      const checklistProgress = document.getElementById('checklistProgress');
+      const checklistProgressFill = document.getElementById('checklistProgressFill');
+      const exportPacketBtn = document.getElementById('exportPacketBtn');
+      const exportHistoryList = document.getElementById('exportHistoryList');
+      const caseActivityFeed = document.getElementById('caseActivityFeed');
+      const exportPacketModal = document.getElementById('exportPacketModal');
+      const exportPacketDocList = document.getElementById('exportPacketDocList');
+      const exportIncludeTimeline = document.getElementById('exportIncludeTimeline');
+      const exportIncludeSummary = document.getElementById('exportIncludeSummary');
+      const exportPacketModalClose = document.getElementById('exportPacketModalClose');
+      const exportPacketCreateBtn = document.getElementById('exportPacketCreateBtn');
+      const exportPacketResult = document.getElementById('exportPacketResult');
+      const financialLoading = document.getElementById('financialLoading');
+      const financialForm = document.getElementById('financialForm');
+      const finMedicalBills = document.getElementById('finMedicalBills');
+      const finLiens = document.getElementById('finLiens');
+      const finSettlementOffer = document.getElementById('finSettlementOffer');
+      const finSettlementAccepted = document.getElementById('finSettlementAccepted');
+      const finAttorneyFees = document.getElementById('finAttorneyFees');
+      const finCosts = document.getElementById('finCosts');
+      const finNetToClient = document.getElementById('finNetToClient');
+      const saveFinancialBtn = document.getElementById('saveFinancialBtn');
+      const financialStatus = document.getElementById('financialStatus');
+      const timelineList = document.getElementById('timelineList');
+      const timelineExportPdfBtn = document.getElementById('timelineExportPdfBtn');
+      const timelineExportDocxBtn = document.getElementById('timelineExportDocxBtn');
+      const timelineExportStatus = document.getElementById('timelineExportStatus');
+
+      function getCaseId() {
+        var path = (window.location.pathname || '').replace(/\/$/, '');
+        var parts = path.split('/');
+        var idx = parts.indexOf('cases');
+        if (idx >= 0 && parts[idx + 1]) return parts[idx + 1];
+        var q = (window.location.search || '').slice(1).split('&').filter(Boolean);
+        for (var i = 0; i < q.length; i++) {
+          var kv = q[i].split('=');
+          if (kv[0] === 'id') return decodeURIComponent(kv[1] || '');
+        }
+        return '';
+      }
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) {
+        errorEl.textContent = msg || '';
+      }
+
+      function getCase() {
+        var id = getCaseId();
+        if (!id) return Promise.reject(new Error('No case ID in URL'));
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id), { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.item; });
+      }
+
+      function getCaseProviders() {
+        var id = getCaseId();
+        if (!id) return Promise.resolve({ items: [] });
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/providers', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function getCaseDocuments() {
+        var id = getCaseId();
+        if (!id) return Promise.resolve([]);
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/documents', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function getCaseTasks() {
+        var id = getCaseId();
+        if (!id) return Promise.resolve([]);
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/tasks', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function getCaseContacts() {
+        var id = getCaseId();
+        if (!id) return Promise.resolve([]);
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/contacts', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function getCaseReferrals() {
+        var id = getCaseId();
+        if (!id) return Promise.resolve([]);
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/referrals', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function getCaseSummary() {
+        var id = getCaseId();
+        if (!id) return Promise.resolve(null);
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/summary', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.summary; });
+      }
+
+      function renderSummaryBody(summary) {
+        if (!summaryBody) return;
+        if (!summary || !summary.body) {
+          summaryBody.innerHTML = '<p class="empty">No summary yet. Click Regenerate to generate an auto-generated case summary.</p>';
+          return;
+        }
+        summaryBody.textContent = summary.body;
+      }
+
+      function refreshSummary() {
+        getCaseSummary().then(function (s) {
+          renderSummaryBody(s);
+        }).catch(function (e) {
+          if (summaryBody) summaryBody.innerHTML = '<p class="empty">Could not load summary.</p>';
+          setError(e.message);
+        });
+      }
+
+      function getCaseChecklist() {
+        var id = getCaseId();
+        if (!id) return Promise.resolve([]);
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/checklist', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function setChecklistItemCompleted(itemId, completed) {
+        return fetch(API_BASE + '/cases/checklist-items/' + encodeURIComponent(itemId), {
+          method: 'PATCH',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({ completed: completed }),
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        });
+      }
+
+      function renderChecklist(items) {
+        if (!checklistList) return;
+        if (!items || items.length === 0) {
+          checklistList.innerHTML = '<p class="empty">No checklist items.</p>';
+          if (checklistProgress) checklistProgress.style.display = 'none';
+          return;
+        }
+        var completed = items.filter(function (i) { return i.completed; }).length;
+        var total = items.length;
+        if (checklistProgress) {
+          checklistProgress.style.display = 'block';
+          if (checklistProgressFill) checklistProgressFill.style.width = (total ? (100 * completed / total) : 0) + '%';
+        }
+        var html = '';
+        items.forEach(function (i) {
+          var cls = i.completed ? 'completed' : '';
+          html += '<li class="' + cls + '" data-item-id="' + (i.id || '') + '">';
+          html += '<input type="checkbox" class="checklist-cb" ' + (i.completed ? 'checked' : '') + ' data-item-id="' + (i.id || '') + '" aria-label="' + (i.label || '').replace(/"/g, '&quot;') + '">';
+          html += '<span class="checklist-label">' + (i.label || i.key || '') + '</span>';
+          html += '</li>';
+        });
+        checklistList.innerHTML = html;
+        checklistList.querySelectorAll('.checklist-cb').forEach(function (cb) {
+          cb.addEventListener('change', function () {
+            var id = cb.getAttribute('data-item-id');
+            if (!id) return;
+            var completed = cb.checked;
+            setChecklistItemCompleted(id, completed).then(function () {
+              var li = cb.closest('li');
+              if (li) li.classList.toggle('completed', completed);
+              li.querySelector('.checklist-label').style.textDecoration = completed ? 'line-through' : '';
+              var total = items.length;
+              var newCompleted = total ? (document.querySelectorAll('#checklistList .checklist-cb:checked').length) : 0;
+              if (checklistProgressFill) checklistProgressFill.style.width = (100 * newCompleted / total) + '%';
+            }).catch(function (e) { setError(e.message); cb.checked = !completed; });
+          });
+        });
+      }
+
+      function refreshChecklist() {
+        getCaseChecklist().then(function (items) {
+          renderChecklist(items);
+        }).catch(function (e) {
+          if (checklistList) checklistList.innerHTML = '<p class="empty">Could not load checklist.</p>';
+          setError(e.message);
+        });
+      }
+
+      function getExportHistory() {
+        var id = getCaseId();
+        if (!id) return Promise.resolve([]);
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/export-packet/history', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function renderExportHistory(items) {
+        if (!exportHistoryList) return;
+        if (!items || items.length === 0) {
+          exportHistoryList.innerHTML = '<p class="empty">No packet exports yet.</p>';
+          return;
+        }
+        var html = '';
+        items.forEach(function (e) {
+          var dateStr = e.createdAt ? new Date(e.createdAt).toLocaleString() : '';
+          var downloadUrl = API_BASE + '/packet-exports/' + encodeURIComponent(e.id) + '/download';
+          html += '<li><span>' + (e.fileName || 'packet.zip') + ' — ' + dateStr + '</span><a href="' + downloadUrl + '" target="_blank" rel="noopener" class="btn primary">Download</a></li>';
+        });
+        exportHistoryList.innerHTML = html;
+      }
+
+      function refreshExportHistory() {
+        getExportHistory().then(renderExportHistory).catch(function () {
+          if (exportHistoryList) exportHistoryList.innerHTML = '<p class="empty">Could not load history.</p>';
+        });
+      }
+
+      function escapeHtml(s) {
+        if (s == null) return '';
+        var div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function formatActivityTime(iso) {
+        if (!iso) return '';
+        try {
+          var d = new Date(iso);
+          var now = new Date();
+          var diff = (now - d) / 60000;
+          if (diff < 60) return 'Just now';
+          if (diff < 1440) return Math.floor(diff / 60) + 'm ago';
+          return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch (e) { return iso; }
+      }
+
+      function renderCaseActivityFeed(items) {
+        if (!caseActivityFeed) return;
+        if (!items || items.length === 0) {
+          caseActivityFeed.innerHTML = '<li class="empty">No recent activity for this case.</li>';
+          return;
+        }
+        var html = '';
+        items.forEach(function (i) {
+          var time = formatActivityTime(i.createdAt);
+          var docLink = i.documentId ? ('<a href="/documents/' + escapeHtml(i.documentId) + '">Document</a>') : '';
+          html += '<li><span class="activity-time">' + escapeHtml(time) + '</span> <span class="activity-type">' + escapeHtml(i.type) + '</span> ' + escapeHtml(i.title) + (docLink ? ' — ' + docLink : '') + '</li>';
+        });
+        caseActivityFeed.innerHTML = html;
+      }
+
+      function refreshActivityFeed() {
+        var caseId = getCaseId();
+        if (!caseId || !caseActivityFeed) return;
+        caseActivityFeed.innerHTML = '<p class="loading">Loading…</p>';
+        fetch(API_BASE + '/activity-feed?caseId=' + encodeURIComponent(caseId) + '&limit=30', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        }).then(function (data) {
+          if (data && data.ok && data.items) renderCaseActivityFeed(data.items);
+          else renderCaseActivityFeed([]);
+        }).catch(function () {
+          caseActivityFeed.innerHTML = '<li class="empty">Could not load activity.</li>';
+        });
+      }
+
+      function parseFinNum(val) {
+        if (val === '' || val === null || val === undefined) return null;
+        var n = parseFloat(val);
+        return isNaN(n) ? null : n;
+      }
+
+      function recalcNetToClient() {
+        if (!finNetToClient) return;
+        var accepted = parseFinNum(finSettlementAccepted && finSettlementAccepted.value);
+        if (accepted == null) {
+          finNetToClient.value = '';
+          return;
+        }
+        var fees = parseFinNum(finAttorneyFees && finAttorneyFees.value) || 0;
+        var costs = parseFinNum(finCosts && finCosts.value) || 0;
+        var medical = parseFinNum(finMedicalBills && finMedicalBills.value) || 0;
+        var liens = parseFinNum(finLiens && finLiens.value) || 0;
+        var net = accepted - fees - costs - medical - liens;
+        finNetToClient.value = net.toFixed(2);
+      }
+
+      function refreshFinancial() {
+        var caseId = getCaseId();
+        if (!caseId || !financialLoading || !financialForm) return;
+        financialLoading.style.display = 'block';
+        financialForm.style.display = 'none';
+        fetch(API_BASE + '/cases/' + encodeURIComponent(caseId) + '/financial', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        }).then(function (data) {
+          financialLoading.style.display = 'none';
+          financialForm.style.display = 'block';
+          var item = (data && data.item) ? data.item : {};
+          if (finMedicalBills) finMedicalBills.value = item.medicalBillsTotal != null ? item.medicalBillsTotal : '';
+          if (finLiens) finLiens.value = item.liensTotal != null ? item.liensTotal : '';
+          if (finSettlementOffer) finSettlementOffer.value = item.settlementOffer != null ? item.settlementOffer : '';
+          if (finSettlementAccepted) finSettlementAccepted.value = item.settlementAccepted != null ? item.settlementAccepted : '';
+          if (finAttorneyFees) finAttorneyFees.value = item.attorneyFees != null ? item.attorneyFees : '';
+          if (finCosts) finCosts.value = item.costs != null ? item.costs : '';
+          if (finNetToClient) finNetToClient.value = item.netToClient != null ? item.netToClient : '';
+          recalcNetToClient();
+        }).catch(function () {
+          financialLoading.style.display = 'none';
+          financialForm.style.display = 'block';
+          financialLoading.textContent = 'Could not load financials.';
+        });
+      }
+
+      function saveFinancial() {
+        var caseId = getCaseId();
+        if (!caseId || !saveFinancialBtn || !financialStatus) return;
+        setError('');
+        financialStatus.textContent = 'Saving…';
+        saveFinancialBtn.disabled = true;
+        var payload = {
+          medicalBillsTotal: parseFinNum(finMedicalBills && finMedicalBills.value) ?? 0,
+          liensTotal: parseFinNum(finLiens && finLiens.value) ?? 0,
+          settlementOffer: parseFinNum(finSettlementOffer && finSettlementOffer.value),
+          settlementAccepted: parseFinNum(finSettlementAccepted && finSettlementAccepted.value),
+          attorneyFees: parseFinNum(finAttorneyFees && finAttorneyFees.value),
+          costs: parseFinNum(finCosts && finCosts.value),
+          netToClient: parseFinNum(finNetToClient && finNetToClient.value),
+        };
+        fetch(API_BASE + '/cases/' + encodeURIComponent(caseId) + '/financial', {
+          method: 'PATCH',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify(payload),
+        }).then(function (r) {
+          return r.json().then(function (data) {
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            financialStatus.textContent = 'Saved.';
+            setTimeout(function () { financialStatus.textContent = ''; }, 2000);
+            if (data.item && data.item.netToClient != null && finNetToClient) finNetToClient.value = data.item.netToClient;
+          });
+        }).catch(function (e) {
+          financialStatus.textContent = '';
+          setError(e.message);
+        }).finally(function () {
+          saveFinancialBtn.disabled = false;
+        });
+      }
+
+      function referralStatusBadgeClass(status) {
+        if (!status) return 'sent';
+        var s = (status + '').toLowerCase();
+        if (s === 'accepted' || s === 'declined' || s === 'pending') return s;
+        return 'sent';
+      }
+
+      function isOverdue(task) {
+        if (!task || task.completedAt) return false;
+        if (!task.dueDate) return false;
+        var due = new Date(task.dueDate);
+        var today = new Date();
+        today.setHours(0, 0, 0, 0);
+        due.setHours(0, 0, 0, 0);
+        return due < today;
+      }
+
+      function renderTasksList(items) {
+        if (!tasksListEl) return;
+        if (!items || items.length === 0) {
+          tasksListEl.innerHTML = '<p class="empty">No tasks. Add one above.</p>';
+          return;
+        }
+        var today = new Date();
+        today.setHours(0, 0, 0, 0);
+        var html = '<table><thead><tr><th>Title</th><th>Due</th><th>Done</th><th></th></tr></thead><tbody>';
+        items.forEach(function (t) {
+          var dueStr = t.dueDate ? new Date(t.dueDate).toLocaleDateString() : '—';
+          var overdue = isOverdue(t);
+          var rowClass = overdue ? 'task-row overdue' : 'task-row';
+          var dueClass = overdue ? 'task-due' : '';
+          html += '<tr class="' + rowClass + '"><td>' + (t.title || '—') + '</td>';
+          html += '<td class="' + dueClass + '">' + dueStr + (overdue ? ' (overdue)' : '') + '</td>';
+          html += '<td>' + (t.completedAt ? new Date(t.completedAt).toLocaleDateString() : '<button type="button" class="btn complete-task-btn" data-task-id="' + (t.id || '') + '">Mark done</button>') + '</td>';
+          html += '<td></td></tr>';
+        });
+        html += '</tbody></table>';
+        tasksListEl.innerHTML = html;
+        tasksListEl.querySelectorAll('.complete-task-btn').forEach(function (btn) {
+          var tid = btn.getAttribute('data-task-id');
+          if (!tid) return;
+          btn.addEventListener('click', function () {
+            setError('');
+            fetch(API_BASE + '/cases/tasks/' + encodeURIComponent(tid), {
+              method: 'PATCH',
+              headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+              credentials: 'include',
+              body: JSON.stringify({ completed: true }),
+            }).then(function (r) {
+              if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+              return r.json();
+            }).then(function () { refreshTasks(); }).catch(function (e) { setError(e.message); });
+          });
+        });
+      }
+
+      function refreshTasks() {
+        getCaseTasks().then(function (items) {
+          renderTasksList(items);
+        }).catch(function (e) {
+          if (tasksListEl) tasksListEl.innerHTML = '<p class="empty">Could not load tasks.</p>';
+          setError(e.message);
+        });
+      }
+
+      function renderContactsList(items) {
+        var contactsListEl = document.getElementById('contactsList');
+        if (!contactsListEl) return;
+        if (!items || items.length === 0) {
+          contactsListEl.innerHTML = '<p class="empty">No contacts yet. Click Add contact to add one.</p>';
+          return;
+        }
+        var html = '<table><thead><tr><th>Name</th><th>Role</th><th>Phone</th><th>Email</th><th>Notes</th><th></th></tr></thead><tbody>';
+        items.forEach(function (c) {
+          var name = (c.name || '—').replace(/</g, '&lt;');
+          var role = (c.role || '—').replace(/</g, '&lt;');
+          var phone = (c.phone || '—').replace(/</g, '&lt;');
+          var email = (c.email || '—').replace(/</g, '&lt;');
+          var notes = (c.notes || '—').replace(/</g, '&lt;');
+          if (notes.length > 60) notes = notes.substring(0, 60) + '…';
+          html += '<tr data-contact-id="' + (c.id || '').replace(/"/g, '&quot;') + '"><td>' + name + '</td><td>' + role + '</td><td>' + phone + '</td><td>' + email + '</td><td>' + notes + '</td><td><button type="button" class="btn contact-edit-btn" data-id="' + (c.id || '').replace(/"/g, '&quot;') + '">Edit</button> <button type="button" class="btn danger contact-delete-btn" data-id="' + (c.id || '').replace(/"/g, '&quot;') + '">Delete</button></td></tr>';
+        });
+        html += '</tbody></table>';
+        contactsListEl.innerHTML = html;
+        contactsListEl.querySelectorAll('.contact-edit-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () { openContactModal(btn.getAttribute('data-id')); });
+        });
+        contactsListEl.querySelectorAll('.contact-delete-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            if (!confirm('Delete this contact?')) return;
+            var contactId = btn.getAttribute('data-id');
+            fetch(API_BASE + '/case-contacts/' + encodeURIComponent(contactId), { method: 'DELETE', headers: getAuth(), credentials: 'include' })
+              .then(function (r) { if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); }); return r.json(); })
+              .then(function () { refreshContacts(); })
+              .catch(function (e) { setError(e.message); });
+          });
+        });
+      }
+
+      function refreshContacts() {
+        var contactsListEl = document.getElementById('contactsList');
+        getCaseContacts().then(function (items) {
+          renderContactsList(items);
+        }).catch(function (e) {
+          if (contactsListEl) contactsListEl.innerHTML = '<p class="empty">Could not load contacts.</p>';
+          setError(e.message);
+        });
+      }
+
+      var editingContactId = null;
+      function openContactModal(contactId) {
+        var modal = document.getElementById('contactModal');
+        var titleEl = document.getElementById('contactModalTitle');
+        var nameEl = document.getElementById('contactName');
+        var roleEl = document.getElementById('contactRole');
+        var phoneEl = document.getElementById('contactPhone');
+        var emailEl = document.getElementById('contactEmail');
+        var notesEl = document.getElementById('contactNotes');
+        if (!modal || !titleEl || !nameEl || !roleEl) return;
+        editingContactId = contactId || null;
+        titleEl.textContent = editingContactId ? 'Edit contact' : 'Add contact';
+        nameEl.value = '';
+        roleEl.value = '';
+        if (phoneEl) phoneEl.value = '';
+        if (emailEl) emailEl.value = '';
+        if (notesEl) notesEl.value = '';
+        if (editingContactId) {
+          getCaseContacts().then(function (items) {
+            var c = items.filter(function (x) { return x.id === editingContactId; })[0];
+            if (c) {
+              nameEl.value = c.name || '';
+              roleEl.value = c.role || '';
+              if (phoneEl) phoneEl.value = c.phone || '';
+              if (emailEl) emailEl.value = c.email || '';
+              if (notesEl) notesEl.value = c.notes || '';
+            }
+          }).catch(function () {});
+        }
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+      }
+
+      function closeContactModal() {
+        var modal = document.getElementById('contactModal');
+        if (modal) {
+          modal.classList.remove('open');
+          modal.setAttribute('aria-hidden', 'true');
+        }
+        editingContactId = null;
+      }
+
+      function saveContactFromModal() {
+        var nameEl = document.getElementById('contactName');
+        var roleEl = document.getElementById('contactRole');
+        var phoneEl = document.getElementById('contactPhone');
+        var emailEl = document.getElementById('contactEmail');
+        var notesEl = document.getElementById('contactNotes');
+        if (!nameEl || !roleEl) return;
+        var name = nameEl.value.trim();
+        var role = roleEl.value.trim();
+        if (!name) { setError('Name is required'); return; }
+        if (!role) { setError('Role is required'); return; }
+        setError('');
+        var saveBtn = document.getElementById('contactModalSave');
+        if (saveBtn) saveBtn.disabled = true;
+        if (editingContactId) {
+          fetch(API_BASE + '/case-contacts/' + encodeURIComponent(editingContactId), {
+            method: 'PATCH',
+            headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+            credentials: 'include',
+            body: JSON.stringify({
+              name: name,
+              role: role,
+              phone: phoneEl ? phoneEl.value.trim() || null : null,
+              email: emailEl ? emailEl.value.trim() || null : null,
+              notes: notesEl ? notesEl.value.trim() || null : null,
+            }),
+          }).then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          }).then(function () { closeContactModal(); refreshContacts(); }).catch(function (e) { setError(e.message); }).finally(function () { if (saveBtn) saveBtn.disabled = false; });
+        } else {
+          var caseId = getCaseId();
+          if (!caseId) { setError('No case ID'); if (saveBtn) saveBtn.disabled = false; return; }
+          fetch(API_BASE + '/cases/' + encodeURIComponent(caseId) + '/contacts', {
+            method: 'POST',
+            headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+            credentials: 'include',
+            body: JSON.stringify({
+              name: name,
+              role: role,
+              phone: phoneEl ? phoneEl.value.trim() || null : null,
+              email: emailEl ? emailEl.value.trim() || null : null,
+              notes: notesEl ? notesEl.value.trim() || null : null,
+            }),
+          }).then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          }).then(function () { closeContactModal(); refreshContacts(); }).catch(function (e) { setError(e.message); }).finally(function () { if (saveBtn) saveBtn.disabled = false; });
+        }
+      }
+        if (!referralsListEl) return;
+        if (!items || items.length === 0) {
+          referralsListEl.innerHTML = '<p class="empty">No referrals yet. Click Send Referral to refer this case to a provider.</p>';
+          return;
+        }
+        var html = '<table><thead><tr><th>Provider</th><th>Date</th><th>Status</th><th>Notes</th></tr></thead><tbody>';
+        items.forEach(function (r) {
+          var p = r.provider || {};
+          var name = p.name || r.providerId || '—';
+          var loc = [p.city, p.state].filter(Boolean).join(', ');
+          var dateStr = r.referredAt ? new Date(r.referredAt).toLocaleDateString() : '—';
+          var statusClass = referralStatusBadgeClass(r.status);
+          var statusLabel = (r.status || 'sent');
+          html += '<tr><td>' + name + (loc ? ' <small>' + loc + '</small>' : '') + '</td>';
+          html += '<td>' + dateStr + '</td>';
+          html += '<td><span class="badge ' + statusClass + '">' + statusLabel + '</span></td>';
+          html += '<td>' + (r.notes ? String(r.notes).replace(/</g, '&lt;').substring(0, 80) + (r.notes.length > 80 ? '…' : '') : '—') + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        referralsListEl.innerHTML = html;
+      }
+
+      function refreshReferrals() {
+        getCaseReferrals().then(function (items) {
+          renderReferralsList(items);
+        }).catch(function (e) {
+          if (referralsListEl) referralsListEl.innerHTML = '<p class="empty">Could not load referrals.</p>';
+          setError(e.message);
+        });
+      }
+
+      function sendReferral(providerId, notes) {
+        var id = getCaseId();
+        if (!id) return Promise.reject(new Error('No case ID'));
+        var body = { providerId: providerId };
+        if (notes && notes.trim()) body.notes = notes.trim();
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/referrals', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify(body),
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        });
+      }
+
+      function renderDocumentsList(items) {
+        if (!items || items.length === 0) {
+          documentsListEl.innerHTML = '<p class="empty">No documents linked to this case. Upload or attach existing.</p>';
+          return;
+        }
+        function tagStyle(c) {
+          if (c && /^#[0-9a-fA-F]{3,8}$/.test(c)) return 'background:' + c + ';color:#fff;';
+          return 'background:#e5e7eb;color:#374151;';
+        }
+        function tagsHtml(tags) {
+          if (!tags || tags.length === 0) return '—';
+          return (tags || []).map(function (t) {
+            return '<span class="doc-tag" style="' + tagStyle(t.color) + '">' + (t.name || t.id || '').replace(/</g, '&lt;') + '</span>';
+          }).join(' ');
+        }
+        var html = '<table><thead><tr><th>Name</th><th>Tags</th><th>Status</th><th>Pages</th><th>Created</th><th></th></tr></thead><tbody>';
+        items.forEach(function (d) {
+          var dateStr = d.createdAt ? new Date(d.createdAt).toLocaleDateString() : '—';
+          var openUrl = API_BASE ? (API_BASE + '/documents/' + encodeURIComponent(d.id) + '/download') : ('/documents/' + encodeURIComponent(d.id) + '/download');
+          var docLink = '<a href="/documents/' + (d.id || '').replace(/"/g, '&quot;') + '">' + (d.originalName || d.id).replace(/</g, '&lt;') + '</a>';
+          html += '<tr><td>' + docLink + '</td><td>' + tagsHtml(d.tags) + '</td><td>' + (d.status || '—') + '</td><td>' + (d.pageCount != null ? d.pageCount : '—') + '</td><td>' + dateStr + '</td><td><a href="' + openUrl + '" target="_blank" rel="noopener">Open</a></td></tr>';
+        });
+        html += '</tbody></table>';
+        documentsListEl.innerHTML = html;
+      }
+
+      function refreshDocuments() {
+        getCaseDocuments().then(renderDocumentsList).catch(function (e) {
+          documentsListEl.innerHTML = '<p class="empty">Could not load documents.</p>';
+          setError(e.message);
+        });
+      }
+
+      function formatTimelineDate(d) {
+        if (!d) return '—';
+        try { return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }); } catch (e) { return '—'; }
+      }
+
+      function refreshTimeline() {
+        var id = getCaseId();
+        if (!timelineList || !id) return;
+        timelineList.innerHTML = '<p class="loading">Loading…</p>';
+        fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/timeline', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        }).then(function (data) {
+          var items = (data && data.items) ? data.items : [];
+          if (items.length === 0) {
+            timelineList.innerHTML = '<p class="empty">No timeline events. Rebuild timeline from documents to populate.</p>';
+            return;
+          }
+          var html = '<table><thead><tr><th>Date</th><th>Type</th><th>Provider</th><th>Diagnosis</th><th>Procedure</th><th>Document</th></tr></thead><tbody>';
+          items.forEach(function (e) {
+            var docLink = e.documentId ? '<a href="/documents/' + e.documentId + '">' + (e.documentId.slice(0, 8) + '…') + '</a>' : '—';
+            html += '<tr><td>' + formatTimelineDate(e.eventDate) + '</td><td>' + (e.eventType || e.track || '—') + '</td><td>' + (e.provider || '—') + '</td><td>' + (e.diagnosis || '—') + '</td><td>' + (e.procedure || '—') + '</td><td>' + docLink + '</td></tr>';
+          });
+          html += '</tbody></table>';
+          timelineList.innerHTML = html;
+        }).catch(function (e) {
+          timelineList.innerHTML = '<p class="empty">Could not load timeline.</p>';
+          setError(e.message);
+        });
+      }
+
+      function doTimelineExport(format) {
+        var id = getCaseId();
+        if (!id) { setError('No case ID'); return; }
+        var statusEl = timelineExportStatus;
+        var pdfBtn = timelineExportPdfBtn;
+        var docxBtn = timelineExportDocxBtn;
+        if (statusEl) statusEl.textContent = 'Exporting…';
+        if (pdfBtn) pdfBtn.disabled = true;
+        if (docxBtn) docxBtn.disabled = true;
+        setError('');
+        fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/timeline/export', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({ format: format }),
+        }).then(function (r) {
+          return r.json().then(function (data) {
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            return data;
+          });
+        }).then(function (data) {
+          if (statusEl) statusEl.textContent = 'Saved as document. ';
+          var docId = data.documentId;
+          if (docId) {
+            var a = document.createElement('a');
+            a.href = '/documents/' + docId;
+            a.textContent = 'Open document';
+            a.target = '_blank';
+            a.rel = 'noopener';
+            if (statusEl) statusEl.appendChild(a);
+          }
+          setTimeout(function () {
+            if (statusEl) { statusEl.textContent = ''; statusEl.innerHTML = ''; }
+            if (pdfBtn) pdfBtn.disabled = false;
+            if (docxBtn) docxBtn.disabled = false;
+          }, 8000);
+        }).catch(function (e) {
+          setError(e.message);
+          if (statusEl) statusEl.textContent = '';
+          if (pdfBtn) pdfBtn.disabled = false;
+          if (docxBtn) docxBtn.disabled = false;
+        });
+      }
+
+      function searchProviders(q) {
+        if (!q || !q.trim()) return Promise.resolve([]);
+        var url = API_BASE + '/providers?q=' + encodeURIComponent(q.trim());
+        return fetch(url, { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function attachProvider(providerId, relationship) {
+        var id = getCaseId();
+        if (!id) return Promise.reject(new Error('No case ID'));
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/providers', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({ providerId: providerId, relationship: relationship || 'treating' }),
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        });
+      }
+
+      function detachProvider(providerId) {
+        var id = getCaseId();
+        if (!id) return Promise.reject(new Error('No case ID'));
+        return fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/providers/' + encodeURIComponent(providerId), {
+          method: 'DELETE',
+          headers: getAuth(),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return;
+        });
+      }
+
+      function relationshipBadgeClass(rel) {
+        if (!rel) return '';
+        var r = (rel + '').toLowerCase();
+        if (r === 'treating' || r === 'referral' || r === 'lien' || r === 'records_only') return r;
+        return 'treating';
+      }
+
+      function renderCaseCard(c) {
+        if (!c) return '';
+        var html = '<dl>';
+        html += '<dt>Title</dt><dd>' + (c.title || '—') + '</dd>';
+        html += '<dt>Case number</dt><dd>' + (c.caseNumber || '—') + '</dd>';
+        html += '<dt>Client</dt><dd>' + (c.clientName || '—') + '</dd>';
+        html += '<dt>Created</dt><dd>' + (c.createdAt ? new Date(c.createdAt).toLocaleDateString() : '—') + '</dd>';
+        html += '</dl>';
+        return html;
+      }
+
+      function renderProvidersList(items) {
+        if (!items || items.length === 0) {
+          return '<p class="empty">No providers attached. Use the search below to attach one.</p>';
+        }
+        var html = '<table><thead><tr><th>Provider</th><th>Relationship</th><th></th></tr></thead><tbody>';
+        items.forEach(function (link) {
+          var p = link.provider || {};
+          var name = p.name || p.providerId || '—';
+          var loc = [p.city, p.state].filter(Boolean).join(', ');
+          var rel = link.relationship || 'treating';
+          var badgeClass = relationshipBadgeClass(rel);
+          html += '<tr><td>' + name + (loc ? ' <small>' + loc + '</small>' : '') + '</td>';
+          html += '<td><span class="badge ' + badgeClass + '">' + rel + '</span></td>';
+          html += '<td><button type="button" class="btn danger detach-btn" data-provider-id="' + (link.providerId || '') + '">Detach</button></td></tr>';
+        });
+        html += '</tbody></table>';
+        return html;
+      }
+
+      function bindDetachButtons() {
+        providersListEl.querySelectorAll('.detach-btn').forEach(function (btn) {
+          var pid = btn.getAttribute('data-provider-id');
+          if (!pid) return;
+          btn.addEventListener('click', function () {
+            if (!confirm('Detach this provider from the case?')) return;
+            detachProvider(pid).then(refreshProviders).catch(function (e) { setError(e.message); });
+          });
+        });
+      }
+
+      function refreshProviders() {
+        getCaseProviders().then(function (items) {
+          providersListEl.innerHTML = renderProvidersList(items);
+          bindDetachButtons();
+        }).catch(function (e) { setError(e.message); });
+      }
+
+      function renderSearchResults(providers, attachedIds) {
+        attachedIds = attachedIds || [];
+        if (!providers || providers.length === 0) {
+          searchResultsEl.innerHTML = '<li class="empty">No providers found. Try a different search.</li>';
+          return;
+        }
+        var html = '';
+        var relOpts = ['treating', 'referral', 'lien', 'records_only'];
+        providers.forEach(function (p) {
+          var isAttached = attachedIds.indexOf(p.id) >= 0;
+          html += '<li>';
+          html += '<span>' + (p.name || p.id) + ' <small>' + (p.city || '') + ', ' + (p.state || '') + ' ' + (p.specialty || '') + '</small></span>';
+          if (isAttached) {
+            html += '<span class="empty">Already attached</span>';
+          } else {
+            html += '<span><select class="rel-select" data-provider-id="' + p.id + '">';
+            relOpts.forEach(function (r) { html += '<option value="' + r + '">' + r + '</option>'; });
+            html += '</select> <button type="button" class="btn primary attach-btn" data-provider-id="' + p.id + '">Attach</button></span>';
+          }
+          html += '</li>';
+        });
+        searchResultsEl.innerHTML = html;
+        searchResultsEl.querySelectorAll('.attach-btn').forEach(function (btn) {
+          var pid = btn.getAttribute('data-provider-id');
+          var row = btn.closest('li');
+          var sel = row ? row.querySelector('.rel-select') : null;
+          var rel = sel ? sel.value : 'treating';
+          btn.addEventListener('click', function () {
+            attachProvider(pid, rel).then(function () {
+              refreshProviders();
+              providerSearchEl.value = '';
+              searchResultsEl.innerHTML = '';
+            }).catch(function (e) { setError(e.message); });
+          });
+        });
+      }
+
+      loadCaseBtn.addEventListener('click', function () {
+        setError('');
+        loadingState.style.display = 'block';
+        contentEl.style.display = 'none';
+        getCase().then(function (c) {
+          loadingState.style.display = 'none';
+          contentEl.style.display = 'block';
+          caseTitleEl.textContent = (c.title || c.caseNumber || c.id) || 'Case';
+          var demandPackageTab = document.getElementById('demandPackageTab');
+          if (demandPackageTab) demandPackageTab.href = (API_BASE || '') + '/cases/' + encodeURIComponent(getCaseId()) + '/demand-packages';
+          caseCardEl.innerHTML = renderCaseCard(c);
+          return getCaseProviders();
+        }).then(function (items) {
+          providersListEl.innerHTML = renderProvidersList(items);
+          bindDetachButtons();
+          return getCaseDocuments();
+        }).then(function (docItems) {
+          renderDocumentsList(docItems);
+          return getCaseReferrals();
+        }).then(function (refItems) {
+          renderReferralsList(refItems);
+          return getCaseSummary();
+        }).then(function (s) {
+          renderSummaryBody(s);
+          return getCaseChecklist();
+        }).then(function (checklistItems) {
+          renderChecklist(checklistItems);
+          return getExportHistory();
+        }).then(function (historyItems) {
+          renderExportHistory(historyItems);
+          refreshActivityFeed();
+          refreshFinancial();
+        }).catch(function (e) {
+          loadingState.style.display = 'block';
+          contentEl.style.display = 'none';
+          setError(e.message);
+        });
+      });
+
+      [finSettlementAccepted, finAttorneyFees, finCosts, finMedicalBills, finLiens].forEach(function (el) {
+        if (el) {
+          el.addEventListener('input', recalcNetToClient);
+          el.addEventListener('change', recalcNetToClient);
+        }
+      });
+      if (saveFinancialBtn) saveFinancialBtn.addEventListener('click', saveFinancial);
+
+      searchBtn.addEventListener('click', function () {
+        var q = providerSearchEl.value;
+        if (!q || !q.trim()) return;
+        setError('');
+        searchResultsEl.innerHTML = '<li class="loading">Searching…</li>';
+        getCaseProviders().then(function (attached) {
+          var ids = (attached || []).map(function (l) { return l.providerId; });
+          return searchProviders(q).then(function (list) {
+            renderSearchResults(list, ids);
+          });
+        }).catch(function (e) {
+          searchResultsEl.innerHTML = '';
+          setError(e.message);
+        });
+      });
+
+      document.querySelectorAll('.tabs a').forEach(function (a) {
+        a.addEventListener('click', function (e) {
+          e.preventDefault();
+          var t = a.getAttribute('data-tab');
+          document.querySelectorAll('.tabs a').forEach(function (x) { x.classList.remove('active'); });
+          document.querySelectorAll('.tab-panel').forEach(function (x) { x.classList.remove('active'); });
+          a.classList.add('active');
+          var panel = document.getElementById('panel-' + t);
+          if (panel) panel.classList.add('active');
+          if (t === 'documents') refreshDocuments();
+          if (t === 'timeline') refreshTimeline();
+          if (t === 'tasks') refreshTasks();
+          if (t === 'contacts') refreshContacts();
+          if (t === 'overview') { refreshReferrals(); refreshSummary(); refreshChecklist(); refreshExportHistory(); refreshActivityFeed(); refreshFinancial(); }
+        });
+      });
+
+      if (timelineExportPdfBtn) {
+        timelineExportPdfBtn.addEventListener('click', function () { doTimelineExport('pdf'); });
+      }
+      if (timelineExportDocxBtn) {
+        timelineExportDocxBtn.addEventListener('click', function () { doTimelineExport('docx'); });
+      }
+      var timelineRebuildBtn = document.getElementById('timelineRebuildBtn');
+      if (timelineRebuildBtn) {
+        timelineRebuildBtn.addEventListener('click', function () {
+          var id = getCaseId();
+          if (!id) { setError('No case ID'); return; }
+          setError('');
+          var statusEl = timelineExportStatus;
+          if (statusEl) statusEl.textContent = 'Rebuilding…';
+          timelineRebuildBtn.disabled = true;
+          fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/timeline/rebuild', {
+            method: 'POST',
+            headers: getAuth(),
+            credentials: 'include',
+          }).then(function (r) {
+            return r.json().then(function (data) {
+              if (!r.ok) throw new Error(data.error || r.statusText);
+              return data;
+            });
+          }).then(function (data) {
+            if (statusEl) statusEl.textContent = data.queued ? 'Rebuild queued. Refreshing…' : 'Rebuild started. Refreshing…';
+            setTimeout(function () {
+              refreshTimeline();
+              if (statusEl) statusEl.textContent = '';
+              timelineRebuildBtn.disabled = false;
+            }, 2500);
+          }).catch(function (e) {
+            if (statusEl) statusEl.textContent = '';
+            timelineRebuildBtn.disabled = false;
+            setError(e.message);
+          });
+        });
+      }
+
+      regenerateSummaryBtn.addEventListener('click', function () {
+        var caseId = getCaseId();
+        if (!caseId) { setError('No case ID'); return; }
+        setError('');
+        summaryStatus.textContent = 'Generating…';
+        regenerateSummaryBtn.disabled = true;
+        fetch(API_BASE + '/cases/' + encodeURIComponent(caseId) + '/summary/generate', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({}),
+        }).then(function (r) {
+          return r.json().then(function (data) {
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            return data;
+          });
+        }).then(function (data) {
+          summaryStatus.textContent = 'Done.';
+          setTimeout(function () { summaryStatus.textContent = ''; }, 2000);
+          if (data.summary && data.summary.body) renderSummaryBody(data.summary);
+          else refreshSummary();
+        }).catch(function (e) {
+          summaryStatus.textContent = '';
+          setError(e.message);
+        }).finally(function () { regenerateSummaryBtn.disabled = false; });
+      });
+
+      copySummaryBtn.addEventListener('click', function () {
+        var text = summaryBody && summaryBody.textContent ? summaryBody.textContent : '';
+        if (!text || text.indexOf('No summary yet') >= 0) {
+          setError('Nothing to copy. Generate a summary first.');
+          return;
+        }
+        setError('');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () {
+            summaryStatus.textContent = 'Copied to clipboard.';
+            setTimeout(function () { summaryStatus.textContent = ''; }, 2000);
+          }).catch(function () {
+            setError('Could not copy to clipboard.');
+          });
+        } else {
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'absolute';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          try {
+            document.execCommand('copy');
+            summaryStatus.textContent = 'Copied to clipboard.';
+            setTimeout(function () { summaryStatus.textContent = ''; }, 2000);
+          } catch (err) {
+            setError('Could not copy to clipboard.');
+          }
+          document.body.removeChild(ta);
+        }
+      });
+
+      sendReferralBtn.addEventListener('click', function () {
+        sendReferralModal.classList.add('open');
+        sendReferralModal.setAttribute('aria-hidden', 'false');
+        referralProviderSearch.value = '';
+        referralNotes.value = '';
+        referralSearchResults.innerHTML = '<li class="empty">Search for a provider above.</li>';
+      });
+      sendReferralModalClose.addEventListener('click', function () {
+        sendReferralModal.classList.remove('open');
+        sendReferralModal.setAttribute('aria-hidden', 'true');
+      });
+      sendReferralModal.addEventListener('click', function (e) {
+        if (e.target === sendReferralModal) sendReferralModalClose.click();
+      });
+      generatePacketBtn.addEventListener('click', function () {
+        var caseId = getCaseId();
+        if (!caseId) { setError('No case ID'); return; }
+        setError('');
+        packetStatus.textContent = '';
+        generatedPacketLink.innerHTML = '';
+        packetModal.classList.add('open');
+        packetModal.setAttribute('aria-hidden', 'false');
+        packetProviderSelect.innerHTML = '<option value="">— Select provider —</option>';
+        packetDocumentsList.innerHTML = '<p class="loading">Loading…</p>';
+        Promise.all([getCaseProviders(), getCaseDocuments()]).then(function (results) {
+          var providers = results[0] || [];
+          var docs = results[1] || [];
+          providers.forEach(function (link) {
+            var p = link.provider || {};
+            var label = (p.name || link.providerId || '') + (p.city || p.state ? ' — ' + [p.city, p.state].filter(Boolean).join(', ') : '');
+            var opt = document.createElement('option');
+            opt.value = link.providerId || '';
+            opt.textContent = label || link.providerId;
+            packetProviderSelect.appendChild(opt);
+          });
+          if (docs.length === 0) {
+            packetDocumentsList.innerHTML = '<p class="empty">No case documents. Packet will include only cover sheet and case info.</p>';
+          } else {
+            var html = '';
+            docs.forEach(function (d) {
+              html += '<label style="display:block; padding:0.35rem 0;"><input type="checkbox" class="packet-doc-cb" value="' + (d.id || '') + '"> ' + (d.originalName || d.id) + '</label>';
+            });
+            packetDocumentsList.innerHTML = html;
+          }
+        }).catch(function (e) {
+          packetDocumentsList.innerHTML = '<p class="empty">Could not load providers or documents.</p>';
+          setError(e.message);
+        });
+      });
+      packetModalClose.addEventListener('click', function () {
+        packetModal.classList.remove('open');
+        packetModal.setAttribute('aria-hidden', 'true');
+      });
+      packetModal.addEventListener('click', function (e) {
+        if (e.target === packetModal) packetModalClose.click();
+      });
+      packetGenerateBtn.addEventListener('click', function () {
+        var caseId = getCaseId();
+        var providerId = packetProviderSelect && packetProviderSelect.value ? packetProviderSelect.value : '';
+        if (!caseId || !providerId) { setError('Select a provider'); return; }
+        var includeDocuments = [];
+        packetDocumentsList.querySelectorAll('.packet-doc-cb:checked').forEach(function (cb) {
+          if (cb.value) includeDocuments.push(cb.value);
+        });
+        setError('');
+        packetStatus.textContent = 'Generating…';
+        packetGenerateBtn.disabled = true;
+        fetch(API_BASE + '/cases/' + encodeURIComponent(caseId) + '/provider-packet', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({ providerId: providerId, includeDocuments: includeDocuments }),
+        }).then(function (r) {
+          return r.json().then(function (data) {
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            return data;
+          });
+        }).then(function (data) {
+          packetStatus.textContent = '';
+          var docId = data.documentId || (data.item && data.item.id);
+          if (docId) {
+            var openUrl = API_BASE + '/documents/' + encodeURIComponent(docId) + '/download';
+            generatedPacketLink.innerHTML = 'Generated: <a href="' + openUrl + '" target="_blank" rel="noopener">Open packet</a>';
+          }
+          packetModal.classList.remove('open');
+          packetModal.setAttribute('aria-hidden', 'true');
+        }).catch(function (e) {
+          packetStatus.textContent = '';
+          setError(e.message);
+        }).finally(function () {
+          packetGenerateBtn.disabled = false;
+        });
+      });
+      exportPacketBtn.addEventListener('click', function () {
+        var caseId = getCaseId();
+        if (!caseId) { setError('No case ID'); return; }
+        setError('');
+        exportPacketResult.textContent = '';
+        exportPacketModal.classList.add('open');
+        exportPacketModal.setAttribute('aria-hidden', 'false');
+        exportPacketDocList.innerHTML = '<p class="loading">Loading documents…</p>';
+        getCaseDocuments().then(function (docs) {
+          if (!docs || docs.length === 0) {
+            exportPacketDocList.innerHTML = '<p class="empty">No case documents. You can still include timeline and summary.</p>';
+            return;
+          }
+          var html = '';
+          docs.forEach(function (d) {
+            html += '<label style="display:block; padding:0.35rem 0;"><input type="checkbox" class="export-doc-cb" value="' + (d.id || '') + '"> ' + (d.originalName || d.id) + '</label>';
+          });
+          exportPacketDocList.innerHTML = html;
+        }).catch(function () {
+          exportPacketDocList.innerHTML = '<p class="empty">Could not load documents.</p>';
+        });
+      });
+      exportPacketModalClose.addEventListener('click', function () {
+        exportPacketModal.classList.remove('open');
+        exportPacketModal.setAttribute('aria-hidden', 'true');
+      });
+      exportPacketModal.addEventListener('click', function (e) {
+        if (e.target === exportPacketModal) exportPacketModalClose.click();
+      });
+      exportPacketCreateBtn.addEventListener('click', function () {
+        var caseId = getCaseId();
+        if (!caseId) { setError('No case ID'); return; }
+        var documentIds = [];
+        exportPacketDocList.querySelectorAll('.export-doc-cb:checked').forEach(function (cb) {
+          if (cb.value) documentIds.push(cb.value);
+        });
+        var includeTimeline = exportIncludeTimeline && exportIncludeTimeline.checked;
+        var includeSummary = exportIncludeSummary && exportIncludeSummary.checked;
+        setError('');
+        exportPacketResult.textContent = 'Creating ZIP…';
+        exportPacketCreateBtn.disabled = true;
+        fetch(API_BASE + '/cases/' + encodeURIComponent(caseId) + '/export-packet', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({ documentIds: documentIds, includeTimeline: includeTimeline, includeSummary: includeSummary }),
+        }).then(function (r) {
+          return r.json().then(function (data) {
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            return data;
+          });
+        }).then(function (data) {
+          exportPacketResult.innerHTML = 'Created. <a href="' + (data.downloadUrl || '') + '" target="_blank" rel="noopener">Download ZIP</a>';
+          refreshExportHistory();
+        }).catch(function (e) {
+          exportPacketResult.textContent = '';
+          setError(e.message);
+        }).finally(function () { exportPacketCreateBtn.disabled = false; });
+      });
+      referralSearchBtn.addEventListener('click', function () {
+        var q = referralProviderSearch.value;
+        if (!q || !q.trim()) return;
+        setError('');
+        referralSearchResults.innerHTML = '<li class="loading">Searching…</li>';
+        searchProviders(q).then(function (list) {
+          if (!list || list.length === 0) {
+            referralSearchResults.innerHTML = '<li class="empty">No providers found.</li>';
+            return;
+          }
+          var html = '';
+          list.forEach(function (p) {
+            html += '<li><span>' + (p.name || p.id) + ' <small>' + (p.city || '') + ', ' + (p.state || '') + ' ' + (p.specialty || '') + '</small></span>';
+            html += '<button type="button" class="btn primary send-referral-pick-btn" data-provider-id="' + p.id + '">Send referral</button></li>';
+          });
+          referralSearchResults.innerHTML = html;
+          referralSearchResults.querySelectorAll('.send-referral-pick-btn').forEach(function (btn) {
+            var pid = btn.getAttribute('data-provider-id');
+            if (!pid) return;
+            btn.addEventListener('click', function () {
+              btn.disabled = true;
+              var notes = referralNotes && referralNotes.value ? referralNotes.value : '';
+              sendReferral(pid, notes).then(function () {
+                sendReferralModal.classList.remove('open');
+                sendReferralModal.setAttribute('aria-hidden', 'true');
+                refreshReferrals();
+              }).catch(function (e) { setError(e.message); }).finally(function () { btn.disabled = false; });
+            });
+          });
+        }).catch(function (e) {
+          referralSearchResults.innerHTML = '';
+          setError(e.message);
+        });
+      });
+
+      uploadDocBtn.addEventListener('click', function () { uploadFileInput.click(); });
+      uploadFileInput.addEventListener('change', function () {
+        var id = getCaseId();
+        var file = uploadFileInput.files && uploadFileInput.files[0];
+        if (!id || !file) return;
+        setError('');
+        var fd = new FormData();
+        fd.append('file', file);
+        uploadDocBtn.disabled = true;
+        fetch(API_BASE + '/cases/' + encodeURIComponent(id) + '/documents/upload', {
+          method: 'POST',
+          headers: getAuth(),
+          credentials: 'include',
+          body: fd,
+        }).then(function (r) {
+          return r.json().then(function (data) {
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            return data;
+          });
+        }).then(function () {
+          uploadFileInput.value = '';
+          refreshDocuments();
+        }).catch(function (e) { setError(e.message); }).finally(function () { uploadDocBtn.disabled = false; });
+      });
+
+      attachDocBtn.addEventListener('click', function () {
+        var caseId = getCaseId();
+        if (!caseId) return;
+        attachDocModal.classList.add('open');
+        attachDocModal.setAttribute('aria-hidden', 'false');
+        attachDocList.innerHTML = '<li class="loading">Loading…</li>';
+        fetch(API_BASE + '/me/documents?limit=50', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('Failed to load documents')); })
+          .then(function (data) {
+            var items = (data.items || data) || [];
+            if (!Array.isArray(items)) items = [];
+            var available = items.filter(function (d) { return d.routedCaseId !== caseId; });
+            if (available.length === 0) {
+              attachDocList.innerHTML = '<li class="empty">No other documents to attach. All listed documents are already on this case.</li>';
+              return;
+            }
+            var html = '';
+            available.forEach(function (d) {
+              html += '<li><span>' + (d.originalName || d.id) + ' <small>' + (d.status || '') + '</small></span><button type="button" class="btn primary attach-doc-btn" data-doc-id="' + (d.id || '') + '">Attach</button></li>';
+            });
+            attachDocList.innerHTML = html;
+            attachDocList.querySelectorAll('.attach-doc-btn').forEach(function (btn) {
+              var docId = btn.getAttribute('data-doc-id');
+              if (!docId) return;
+              btn.addEventListener('click', function () {
+                btn.disabled = true;
+                fetch(API_BASE + '/cases/' + encodeURIComponent(caseId) + '/documents/attach', {
+                  method: 'POST',
+                  headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+                  credentials: 'include',
+                  body: JSON.stringify({ documentId: docId }),
+                }).then(function (r) {
+                  if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+                  return r.json();
+                }).then(function () {
+                  attachDocModal.classList.remove('open');
+                  attachDocModal.setAttribute('aria-hidden', 'true');
+                  refreshDocuments();
+                }).catch(function (e) { setError(e.message); }).finally(function () { btn.disabled = false; });
+              });
+            });
+          })
+          .catch(function () {
+            attachDocList.innerHTML = '<li class="empty">Could not load documents.</li>';
+          });
+      });
+      attachDocModalClose.addEventListener('click', function () {
+        attachDocModal.classList.remove('open');
+        attachDocModal.setAttribute('aria-hidden', 'true');
+      });
+      attachDocModal.addEventListener('click', function (e) {
+        if (e.target === attachDocModal) attachDocModalClose.click();
+      });
+
+      addTaskBtn.addEventListener('click', function () {
+        var caseId = getCaseId();
+        var title = newTaskTitleEl && newTaskTitleEl.value ? newTaskTitleEl.value.trim() : '';
+        if (!caseId || !title) { setError('Enter a task title'); return; }
+        setError('');
+        var due = newTaskDueEl && newTaskDueEl.value ? newTaskDueEl.value : null;
+        var body = { title: title };
+        if (due) body.dueDate = due;
+        addTaskBtn.disabled = true;
+        fetch(API_BASE + '/cases/' + encodeURIComponent(caseId) + '/tasks', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify(body),
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        }).then(function () {
+          newTaskTitleEl.value = '';
+          if (newTaskDueEl) newTaskDueEl.value = '';
+          refreshTasks();
+        }).catch(function (e) { setError(e.message); }).finally(function () { addTaskBtn.disabled = false; });
+      });
+
+      var addContactBtn = document.getElementById('addContactBtn');
+      var contactModalClose = document.getElementById('contactModalClose');
+      var contactModalSave = document.getElementById('contactModalSave');
+      var contactModal = document.getElementById('contactModal');
+      if (addContactBtn) addContactBtn.addEventListener('click', function () { openContactModal(); });
+      if (contactModalClose) contactModalClose.addEventListener('click', closeContactModal);
+      if (contactModalSave) contactModalSave.addEventListener('click', saveContactFromModal);
+      if (contactModal) contactModal.addEventListener('click', function (e) { if (e.target === contactModal) closeContactModal(); });
+
+      try {
+        var saved = sessionStorage.getItem('providerApiKey');
+        if (saved && keyInput) keyInput.value = saved;
+      } catch (e) {}
+      if (getCaseId() && keyInput && keyInput.value.trim()) loadCaseBtn.click();
+    })();
+  </script>
+</body>
+</html>

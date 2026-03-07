@@ -22,6 +22,7 @@ async function matchDocumentToCase(firmId, signals, existingRoutedCaseId) {
                     caseTitle: rows[0].title,
                     matchConfidence: 1,
                     matchReason: "Already routed to this case",
+                    unmatchedReason: null,
                 };
             }
         }
@@ -35,6 +36,7 @@ async function matchDocumentToCase(firmId, signals, existingRoutedCaseId) {
                     caseTitle: byNumber[0].title,
                     matchConfidence: 0.95,
                     matchReason: "Case number match",
+                    unmatchedReason: null,
                 };
             }
             const { rows: partial } = await pg_1.pgPool.query(`SELECT id, "caseNumber", title FROM "Case" WHERE "firmId" = $1 AND LOWER("caseNumber") LIKE LOWER($2) LIMIT 1`, [firmId, `%${signals.caseNumber.trim()}%`]);
@@ -45,32 +47,31 @@ async function matchDocumentToCase(firmId, signals, existingRoutedCaseId) {
                     caseTitle: partial[0].title,
                     matchConfidence: 0.8,
                     matchReason: "Partial case number match",
+                    unmatchedReason: null,
                 };
             }
         }
         const clientName = normalize(signals.clientName);
         if (clientName.length >= 2 && signals.clientName) {
-            const { rows: clients } = await pg_1.pgPool.query(`SELECT c.id, c.title, c."caseNumber", cl.name as client_name
-         FROM "Case" c
-         LEFT JOIN "Client" cl ON cl.id = c."clientId"
-         WHERE c."firmId" = $1 LIMIT 100`, [firmId]);
+            const { rows: cases } = await pg_1.pgPool.query(`SELECT id, "caseNumber", title, "clientName" FROM "Case" WHERE "firmId" = $1 LIMIT 100`, [firmId]);
             const docNameNorm = clientName.replace(/\s+/g, " ");
-            for (const row of clients) {
-                const cn = (row.client_name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+            for (const row of cases) {
+                const cn = (row.clientName ?? row.client_name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
                 if (cn.length >= 2 && (docNameNorm.includes(cn) || cn.includes(docNameNorm))) {
                     return {
                         caseId: row.id,
                         caseNumber: row.caseNumber,
                         caseTitle: row.title,
                         matchConfidence: 0.75,
-                        matchReason: `Client name match: ${row.client_name}`,
+                        matchReason: `Client name match: ${row.clientName ?? row.client_name}`,
+                        unmatchedReason: null,
                     };
                 }
             }
         }
     }
     catch (_) {
-        // Case/Client tables may not exist
+        // ignore
     }
     return {
         caseId: null,
@@ -78,5 +79,6 @@ async function matchDocumentToCase(firmId, signals, existingRoutedCaseId) {
         caseTitle: null,
         matchConfidence: 0,
         matchReason: "No matching case found",
+        unmatchedReason: "No case number or client name match",
     };
 }

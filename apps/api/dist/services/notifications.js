@@ -5,6 +5,7 @@ exports.getUnreadCount = getUnreadCount;
 exports.listNotifications = listNotifications;
 exports.markNotificationRead = markNotificationRead;
 exports.markAllNotificationsRead = markAllNotificationsRead;
+const client_1 = require("@prisma/client");
 const prisma_1 = require("../db/prisma");
 async function createNotification(firmId, type, title, message, meta) {
     await prisma_1.prisma.notification.create({
@@ -13,7 +14,7 @@ async function createNotification(firmId, type, title, message, meta) {
             type,
             title,
             message: message ?? null,
-            meta: meta ? JSON.parse(JSON.stringify(meta)) : null,
+            meta: meta != null ? JSON.parse(JSON.stringify(meta)) : client_1.Prisma.JsonNull,
         },
     });
 }
@@ -24,8 +25,13 @@ async function getUnreadCount(firmId) {
 }
 async function listNotifications(firmId, options) {
     const limit = Math.min(options?.limit ?? 50, 100);
+    const where = { firmId };
+    if (options?.unreadOnly)
+        where.read = false;
+    if (options?.type && options.type.trim())
+        where.type = options.type.trim();
     const items = await prisma_1.prisma.notification.findMany({
-        where: { firmId, ...(options?.unreadOnly ? { read: false } : {}) },
+        where,
         orderBy: { createdAt: "desc" },
         take: limit,
         select: { id: true, type: true, title: true, message: true, meta: true, read: true, createdAt: true },

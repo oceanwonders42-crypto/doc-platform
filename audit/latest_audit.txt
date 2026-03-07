@@ -1,0 +1,14 @@
+FULL PROJECT AUDIT (summary from full_audit.js)
+Generated: 2026-03-06T21:37:51.695Z
+
+Git branch: — | Status: clean
+Web: pages=3 apiRoutes=1
+API: files=99
+DB: models=49 enums=8 migrations=65 pending=0
+Build: web=OK apiTypecheck=OK
+TODO markers: 80 | Duplicate basenames: 22 | Suspicious partials: 3
+
+Top issues:
+  [PARTIAL] RecordsRequest model may have no API route
+  [PARTIAL] Provider model — check admin/providers or providers page
+  [PARTIAL] DemandPackage model — check demand or case UI

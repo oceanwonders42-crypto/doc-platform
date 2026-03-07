@@ -9,6 +9,7 @@ import { prisma } from "../../db/prisma";
 import type { CrmProvider } from "./index";
 import type { CrmPushMessage } from "./index";
 import webhookAdapter from "./webhookAdapter";
+import { getClioAccessToken } from "../../services/clioConfig";
 
 export type CrmCaseRef = {
   externalMatterId: string;
@@ -59,10 +60,11 @@ export async function fetchCasesFromCRM(firmId: string): Promise<FetchCasesResul
   const { provider, settings } = await getFirmCrmSettings(firmId);
 
   if (provider === "clio") {
-    const token = settings.clioAccessToken as string | undefined;
-    if (!token || typeof token !== "string") {
-      return { ok: false, error: "Clio access token not configured" };
+    const tokenResult = await getClioAccessToken(firmId);
+    if (!tokenResult.configured) {
+      return { ok: false, error: tokenResult.error ?? "Clio access token not configured" };
     }
+    const token = tokenResult.accessToken;
     try {
       const res = await fetch(`${CLIO_API_BASE}/matters?limit=100`, {
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -182,9 +184,11 @@ export async function pushCaseUpdate(params: PushCaseUpdateParams): Promise<Push
   }
 
   if (provider === "clio") {
-    const { settings } = await getFirmCrmSettings(firmId);
-    const token = settings.clioAccessToken as string | undefined;
-    if (!token) return { ok: false, error: "Clio access token not configured" };
+    const tokenResult = await getClioAccessToken(firmId);
+    if (!tokenResult.configured) {
+      return { ok: false, error: tokenResult.error ?? "Clio access token not configured" };
+    }
+    const token = tokenResult.accessToken;
     try {
       const res = await fetch(`${CLIO_API_BASE}/notes`, {
         method: "POST",

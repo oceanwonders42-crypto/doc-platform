@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin – Cases</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #f5f5f5; }
+    a { color: #0066cc; }
+    .header-bar { background: #fff; padding: 0.5rem 1rem; border-bottom: 1px solid #e0e0e0; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .header-bar a { text-decoration: none; color: #333; }
+    .header-bar a:hover { color: #0066cc; }
+    .header-bar .spacer { flex: 1; }
+    .bell-wrap { position: relative; }
+    .bell-btn { background: none; border: none; cursor: pointer; padding: 0.25rem; font-size: 1.2rem; line-height: 1; }
+    .bell-badge { position: absolute; top: -4px; right: -4px; background: #c00; color: #fff; font-size: 0.65rem; padding: 0.1rem 0.35rem; border-radius: 10px; min-width: 1.2em; text-align: center; }
+    .bell-dropdown-panel { display: none; position: absolute; top: 100%; right: 0; margin-top: 0.25rem; background: #fff; border: 1px solid #ddd; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 280px; z-index: 100; max-height: 360px; overflow: auto; }
+    .bell-dropdown-panel.open { display: block; }
+    .bell-dropdown-panel .notif-item { padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+    .bell-dropdown-panel .notif-item:last-child { border-bottom: none; }
+    .bell-dropdown-panel .notif-item a { text-decoration: none; color: #333; }
+    .bell-dropdown-panel .view-all { display: block; padding: 0.5rem 0.75rem; text-align: center; background: #f5f5f5; font-weight: 600; }
+    h1 { margin: 0 0 1rem; font-size: 1.25rem; }
+    .main { padding: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .api-key-wrap button { padding: 0.5rem 0.75rem; margin-left: 0.25rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    table { border-collapse: collapse; background: #fff; width: 100%; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-weight: 600; }
+    .loading { color: #666; }
+  </style>
+</head>
+<body>
+  <div class="header-bar">
+    <a href="/admin/cases">Cases</a>
+    <a href="/search">Search</a>
+    <a href="/notifications">Notifications</a>
+    <a href="/dashboard">Dashboard</a>
+    <span class="spacer"></span>
+    <div class="bell-wrap" id="headerBell">
+      <a href="/notifications" style="font-size:1.2rem;">🔔</a>
+    </div>
+  </div>
+  <div class="main">
+  <h1>Admin – Cases</h1>
+  <div class="api-key-wrap">
+    <label>API key (Bearer):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+    <button type="button" id="loadBtn">Load cases</button>
+  </div>
+  <div id="error" class="error" aria-live="polite"></div>
+  <div id="content">
+    <p class="loading">Enter API key and click Load cases.</p>
+  </div>
+  <script>
+    (function () {
+      var API_BASE = '';
+      var keyInput = document.getElementById('apiKey');
+      var loadBtn = document.getElementById('loadBtn');
+      var errorEl = document.getElementById('error');
+      var contentEl = document.getElementById('content');
+      var headerBell = document.getElementById('headerBell');
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) { errorEl.textContent = msg || ''; }
+
+      function refreshHeaderBell() {
+        if (!headerBell) return;
+        fetch(API_BASE + '/notifications?limit=5', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return;
+          return r.json();
+        }).then(function (data) {
+          if (!data) return;
+          var count = data.unreadCount || 0;
+          var items = (data.items || []).slice(0, 5);
+          var html = '<div class="bell-wrap" style="position:relative;">';
+          html += '<button type="button" class="bell-btn" id="bellBtn" aria-label="Notifications">🔔</button>';
+          if (count > 0) html += '<span class="bell-badge">' + (count > 99 ? '99+' : count) + '</span>';
+          html += '<div class="bell-dropdown-panel" id="bellPanel">';
+          items.forEach(function (n) {
+            var meta = n.meta || {};
+            var caseId = meta.caseId;
+            var link = caseId ? ('/cases/' + caseId) : '/notifications';
+            html += '<div class="notif-item"><a href="' + link + '">' + (n.title || n.type || '') + '</a></div>';
+          });
+          html += '<a href="/notifications" class="view-all">View all notifications</a></div></div>';
+          headerBell.innerHTML = html;
+          var btn = document.getElementById('bellBtn');
+          var panel = document.getElementById('bellPanel');
+          if (btn && panel) {
+            btn.addEventListener('click', function (e) { e.preventDefault(); panel.classList.toggle('open'); });
+            document.addEventListener('click', function (e) {
+              if (!headerBell.contains(e.target)) panel.classList.remove('open');
+            });
+          }
+        }).catch(function () {
+          headerBell.innerHTML = '<a href="/notifications" style="font-size:1.2rem;">🔔</a>';
+        });
+      }
+
+      loadBtn.addEventListener('click', function () {
+        setError('');
+        contentEl.innerHTML = '<p class="loading">Loading…</p>';
+        fetch('/cases', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            var items = (data && data.items) || [];
+            if (items.length === 0) {
+              contentEl.innerHTML = '<p>No cases found.</p>';
+              return;
+            }
+            var html = '<table><thead><tr><th>Case</th><th>Client</th><th>Created</th></tr></thead><tbody>';
+            items.forEach(function (c) {
+              var title = c.title || c.caseNumber || c.id;
+              var link = '/cases/' + encodeURIComponent(c.id);
+              html += '<tr><td><a href="' + link + '">' + (title || '—') + '</a></td><td>' + (c.clientName || '—') + '</td><td>' + (c.createdAt ? new Date(c.createdAt).toLocaleDateString() : '—') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+            contentEl.innerHTML = html;
+            refreshHeaderBell();
+          })
+          .catch(function (e) {
+            contentEl.innerHTML = '';
+            setError(e.message);
+          });
+      });
+
+      try {
+        var saved = sessionStorage.getItem('providerApiKey');
+        if (saved && keyInput) keyInput.value = saved;
+      } catch (e) {}
+      refreshHeaderBell();
+    })();
+  </script>
+</body>
+</html>

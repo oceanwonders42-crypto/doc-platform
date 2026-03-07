@@ -75,6 +75,7 @@ This report summarizes all major features, backend and frontend components, data
   - POST /cases/:id/rebuild-timeline — Rebuild case timeline from documents.
   - POST /cases/:id/records-requests — Create records request.
   - GET /cases/:id/records-requests — List records requests for case.
+  - GET /cases/:id/bill-line-items — Bill line items for case (MedicalBillLineItem rows; auth, firm-scoped).
   - PATCH /records-requests/:id — Update records request.
   - GET /records-requests/:id/letter — Generated letter for request.
 
@@ -91,8 +92,41 @@ This report summarizes all major features, backend and frontend components, data
 
 ### Background workers
 
-- **Document job worker** (apps/api/src/workers/worker.ts) — Pops jobs from queue; downloads file from storage; counts pages; updates Document (pageCount, status UPLOADED, processedAt); upserts UsageMonthly (pagesProcessed, docsProcessed); runs recognition for PDFs (extract text, classify, run extractors, case match); upserts document_recognition; increments insuranceDocsExtracted/courtDocsExtracted when features on; enqueues case timeline rebuild when applicable.
+- **Document job worker** (apps/api/src/workers/worker.ts) — Pops jobs from queue; downloads file from storage; counts pages; runs OCR pipeline (digital PDF text first, image OCR fallback); upserts document_recognition (text_excerpt, page_count_detected, extraction_method, extraction_confidence); updates Document status: RECEIVED → PROCESSING → SCANNED (after recognition) → CLASSIFIED (after classification) → ROUTED or NEEDS_REVIEW (after case match); on failure sets FAILED + metaJson (pipelineError, pipelineStage) + logSystemError; never throws so one doc failure does not crash the loop. Upserts UsageMonthly; enqueues timeline rebuild when applicable.
 - **Email ingest runner** (apps/api/src/email/emailIngestRunner.ts) — Polls IMAP for active mailboxes; fetches new messages; extracts attachments; dedupes by SHA256 per message; ingests via internal API or direct DB/storage; updates last UID per mailbox.
+
+### Queue 1 (Onyx Intel pipeline foundation)
+
+- **Statuses** — DocumentStatus: RECEIVED, PROCESSING, SCANNED, CLASSIFIED, ROUTED, NEEDS_REVIEW, FAILED. Worker sets SCANNED after recognition save, CLASSIFIED after classification, ROUTED when routed successfully; FAILED + metaJson (pipelineError, pipelineStage) on any stage failure.
+- **Ingestion** — ingestHelpers: normalizeFilename, buildOriginalMetadata. Ingest stores metaJson; queues doc for processing.
+- **OCR** — runOcrPipeline uses embedded PDF text first; image OCR fallback stub when missing/low text; onOcrFailure for structured logging. Saves text, page count, extraction method, confidence to document_recognition.
+- **Recognition persistence** — document_recognition upsert (ON CONFLICT document_id); idempotent; POST /documents/:id/recognize to re-run safely.
+- **Error handling** — Worker try/catch per stage; FAILED + logSystemError; no throw. Run-loop catch marks doc FAILED if handler throws.
+- **Files changed** — schema (DocumentStatus); migration 20260607000000; ingestHelpers.ts; ocr/imageOcrFallback.ts; ocr/index.ts; server.ts; worker.ts (SCANNED, CLASSIFIED, ROUTED, FAILED handling).
+- **Gaps** — Image OCR fallback is stub only; other TS errors in records-requests/systemHealth (pre-existing).
+
+### Queue 2 (Onyx Intel — classification, provider, case matching, duplicates, review)
+
+- **Document classification** — Onyx classifier (onyxClassifier.ts): doc types er_record, imaging_report, physician_notes, pcp_notes, therapy_pt_notes, operative_report, medical_bill, ledger_statement, insurance_correspondence, miscellaneous. Stores docType (legacy for extractors), confidence, classification_reason, classification_signals_json in document_recognition.
+- **Provider detection** — providerExtraction.ts: extractProviderFromText (name, facility, specialty, phone, fax, address); normalizeProviderNameForMatch; matchProvider(firmId, extracted); createProviderSuggestion when unmatched. document_recognition: provider_name, facility_name, provider_phone, provider_fax, provider_address, provider_specialty, suggested_provider_id. document_provider_suggestion table for unmatched suggestions.
+- **Case matching** — caseMatching.ts: MatchSignals extended with dob, dateOfLoss, claimNumber, providerRefs; match uses LegalCase.clientName; returns unmatchedReason. Worker: writes suggested_case_id, match_confidence, match_reason, unmatched_reason; sets status UNMATCHED when matchConfidence === 0 and no suggested case; auto-route (ROUTED) when high confidence, NEEDS_REVIEW when medium.
+- **Duplicate detection** — After classification: findDuplicateCandidates(text); on "likely" or original sets Document.duplicateOfId and Document.duplicateConfidence (0.9 or 1). normalized_text_hash stored in document_recognition at classification.
+- **Review queue** — GET /me/review-queue includes status UNMATCHED; returns unmatchedReason, classificationReason, classificationSignals for low-confidence classification and routing review.
+- **Files changed** — Migration 20260608000000 (document_recognition columns, Document.duplicate_confidence, document_provider_suggestion); schema (duplicateConfidence); onyxClassifier.ts; providerExtraction.ts; caseMatching.ts (MatchSignals, unmatchedReason, clientName from Case); worker.ts (Onyx, provider, duplicate, unmatched_reason, UNMATCHED); server.ts (review-queue UNMATCHED, rec fields).
+- **Gaps** — Timeline and billing extraction not built; provider matching is name-only (no DOB/claim in case matching yet); classification_signals_json stored as array; other pre-existing TS errors elsewhere.
+
+### Queue 3 (Onyx Intel — timeline, billing, review/case/doc UIs, admin quality, errors)
+
+- **Timeline extraction** — caseTimeline.ts: document_recognition query extended with provider_name, facility_name, summary; medical track uses these when extractedFields lack provider/facility; summary (from rec.summary.summary) in metadataJson. DOC_TYPE_LABELS extended with Onyx doc types (er_record, imaging_report, physician_notes, pcp_notes, therapy_pt_notes, operative_report, medical_bill, ledger_statement, insurance_correspondence, miscellaneous).
+- **Billing extraction** — Migration 20260609000000: MedicalBillLineItem (id, firmId, caseId, documentId, providerName, serviceDate, cptCode, procedureDescription, amountCharged, amountPaid, balance, lineTotal). billingExtraction.ts: extractBillFromText, persistBillingForDocument, extractAndPersistBillingIfBill (bill doc types: medical_bill, ledger_statement, billing_statement, medical_record). rebuildCaseTimeline calls extractAndPersistBillingIfBill per document; recalculates CaseFinancial.medicalBillsTotal.
+- **API** — GET /documents/:id/recognition extended with unmatchedReason, suggestedCaseId, classificationReason, classificationSignals, facilityName. GET /cases/:id/bill-line-items returns items (bill line rows). GET /me/review-queue includes provider_name/providerName.
+- **Review queue UI** — /dashboard/review: ReviewItem has docTypeConfidence, classificationReason, classificationSignals, providerName, unmatchedReason; Confirm route (POST /documents/:id/route), Reject (POST /documents/:id/reject); table: document, doc type, provider, confidence, reason, suggested case, actions.
+- **Case detail UI** — /dashboard/cases/[id]: fetches /cases/:id/bill-line-items; Bill line items card with table (provider, date, total) and billing summary.
+- **Document detail UI** — /dashboard/documents/[id]: fetches /documents/:id/recognition; duplicate card; classification & routing card (doc type, confidence, reason, provider, facility, match confidence/reason, case link); billing table for document when routedCaseId set (filters bill-line-items by document).
+- **Admin quality** — /admin/quality: GET /admin/quality/analytics (firmId, dateFrom, dateTo); docs by status (RECEIVED, PROCESSING, SCANNED, CLASSIFIED, ROUTED, NEEDS_REVIEW, UPLOADED, UNMATCHED, FAILED); total docs, auto-route %, unmatched %, duplicate %, avg latency, top failure reasons, per-firm breakdown.
+- **Error observability** — /admin/errors: area filter (All, OCR/pipeline, Classification, Routing); API supports area param.
+- **Files changed** — apps/api: prisma/schema (MedicalBillLineItem, relations), migrations/20260609000000_queue3_medical_bill_line_items; caseTimeline.ts; billingExtraction.ts; server.ts (bill-line-items, recognition/review-queue extensions). apps/web: dashboard/review/page.tsx; dashboard/cases/[id]/page.tsx; dashboard/documents/[id]/page.tsx; admin/quality/page.tsx; admin/errors/page.tsx; admin/layout.tsx (Quality link).
+- **Remaining gaps** — Run `pnpm exec prisma generate` in apps/api after pull so Prisma client includes medicalBillLineItem; fix any new-code TS issues (e.g. map callback typed in bill-line-items handler). Consider including ROUTED (and SCANNED/CLASSIFIED) in admin analytics “processed”/“auto_routed” for quality metrics. Web app may have path/tsconfig issues (e.g. ../../lib/api) in admin/dashboard pages—pre-existing.
 
 ### AI modules
 
@@ -144,6 +178,7 @@ This report summarizes all major features, backend and frontend components, data
 - **app/dashboard/email/page.tsx** — Email intake UI; recent ingests; link to mailboxes.
 - **app/documents/[id]/page.tsx** — Document detail: preview image, DocumentActions (recognize, route, etc.), key fields (court/insurance), activity (audit); duplicate badge when duplicateMatchCount > 0.
 - **app/cases/[id]/page.tsx** — Case overview (if present).
+- **app/dashboard/cases/[id]/page.tsx** — Case detail: timeline, providers, bill line items table and billing summary (GET /cases/:id/bill-line-items).
 - **app/cases/[id]/timeline/page.tsx** — Case timeline view.
 - **app/cases/[id]/narrative/page.tsx** — Narrative assistant UI: type, tone, notes; generate; display result (NarrativeClient).
 - **app/cases/[id]/records-requests/page.tsx** — List records requests for case.
@@ -153,6 +188,8 @@ This report summarizes all major features, backend and frontend components, data
 - **app/mailboxes/page.tsx** — Mailboxes list; link to recent ingests per mailbox.
 - **app/mailboxes/[id]/recent-ingests/page.tsx** — Recent ingests for one mailbox.
 - **app/admin/debug/page.tsx** — Admin debug; IngestTest component (upload test PDF, poll status, duplicate message).
+- **app/admin/quality/page.tsx** — Admin quality analytics: docs by status, auto-route/unmatched/duplicate rates, avg latency, top failure reasons, per-firm breakdown (GET /admin/quality/analytics).
+- **app/admin/errors/page.tsx** — Error observability: failed OCR/classification/routing; area filter (All, OCR, Classification, Routing).
 
 ### Dashboard modules
 
@@ -212,10 +249,11 @@ This report summarizes all major features, backend and frontend components, data
 - **RecordsRequest** — id, firmId, caseId, providerId, providerName, providerContact, dateFrom, dateTo, notes, status, createdAt, updatedAt.
 - **CaseTimelineEvent** — id, caseId, firmId, eventDate, eventType, track (default medical), facilityId, provider, diagnosis, procedure, amount, documentId, metadataJson, createdAt.
 - **CaseTimelineRebuild** — id, caseId, firmId, rebuiltAt (unique on caseId, firmId).
+- **MedicalBillLineItem** — id, firmId, caseId, documentId, providerName, serviceDate, cptCode, procedureDescription, amountCharged, amountPaid, balance, lineTotal, createdAt. Relations: firm, case (LegalCase), document.
 
 **Raw SQL tables (not in Prisma schema):**
 
-- **document_recognition** — document_id (PK), text_excerpt, doc_type, client_name, case_number, incident_date, confidence, created_at, updated_at; application code also uses match_confidence, match_reason (and possibly ocr_*, facility_id in some paths).
+- **document_recognition** — Created by migration `20260304500000_document_recognition_create`; base columns: document_id (PK), text_excerpt, doc_type, client_name, case_number, incident_date, confidence, created_at, updated_at, match_confidence, match_reason. Later migrations add OCR quality, insurance_fields, court_fields, summary, risks, insights, classification_*, provider_*, suggested_case_id, duplicate hashes, etc. Worker and API read/write via pgPool. The legacy script `create_recognition_table.js` is deprecated (run `pnpm exec prisma migrate deploy` instead).
 - **mailbox_connections** — Mailbox config and status.
 - **email_messages** — Email metadata.
 - **email_attachments** — Attachment metadata and link to ingest document.

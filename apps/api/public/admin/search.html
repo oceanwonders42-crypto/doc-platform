@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Search</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    a { color: #0066cc; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    h2 { margin: 1rem 0 0.5rem; font-size: 1rem; color: #444; }
+    .back { margin-bottom: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .search-form { margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .search-form input[type="search"] { width: 24rem; max-width: 100%; padding: 0.5rem; }
+    .search-form button { padding: 0.5rem 1rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+    .section { margin-bottom: 1.25rem; }
+    .section-title { font-weight: 600; margin-bottom: 0.5rem; color: #333; }
+    .section-count { color: #666; font-weight: normal; font-size: 0.9rem; }
+    .result-list { list-style: none; padding: 0; margin: 0; }
+    .result-list li { padding: 0.4rem 0; border-bottom: 1px solid #eee; }
+    .result-list li:last-child { border-bottom: none; }
+    .result-list a { text-decoration: none; }
+    .result-list a:hover { text-decoration: underline; }
+    .empty-state { color: #666; padding: 2rem; text-align: center; }
+    .empty-state.no-query { font-style: italic; }
+    .loading { color: #666; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .header-bar { background: #fff; padding: 0.5rem 1rem; border-bottom: 1px solid #e0e0e0; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .header-bar a { text-decoration: none; color: #333; }
+    .header-bar a:hover { color: #0066cc; }
+    .header-bar .spacer { flex: 1; }
+    .bell-wrap { position: relative; }
+    .bell-btn { background: none; border: none; cursor: pointer; padding: 0.25rem; font-size: 1.2rem; line-height: 1; }
+    .bell-badge { position: absolute; top: -4px; right: -4px; background: #c00; color: #fff; font-size: 0.65rem; padding: 0.1rem 0.35rem; border-radius: 10px; min-width: 1.2em; text-align: center; }
+    .bell-dropdown-panel { display: none; position: absolute; top: 100%; right: 0; margin-top: 0.25rem; background: #fff; border: 1px solid #ddd; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 280px; z-index: 100; max-height: 360px; overflow: auto; }
+    .bell-dropdown-panel.open { display: block; }
+    .bell-dropdown-panel .notif-item { padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+    .bell-dropdown-panel .notif-item a { text-decoration: none; color: #333; }
+    .bell-dropdown-panel .view-all { display: block; padding: 0.5rem 0.75rem; text-align: center; background: #f5f5f5; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="header-bar">
+    <a href="/admin/cases">Cases</a>
+    <a href="/search">Search</a>
+    <a href="/notifications">Notifications</a>
+    <a href="/dashboard">Dashboard</a>
+    <span class="spacer"></span>
+    <div class="bell-wrap" id="headerBell">
+      <a href="/notifications" style="font-size:1.2rem;">🔔</a>
+    </div>
+  </div>
+  <div style="padding:1rem;">
+  <div class="back"><a href="/admin/cases">← Cases</a></div>
+  <h1>Search</h1>
+  <div class="api-key-wrap">
+    <label>API key (Bearer):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+  </div>
+  <form id="searchForm" class="search-form">
+    <input type="search" id="queryInput" name="q" placeholder="Search cases, documents, providers…" autocomplete="off" />
+    <button type="submit" class="btn primary">Search</button>
+  </form>
+  <div id="error" class="error" aria-live="polite"></div>
+  <div id="content">
+    <div id="emptyState" class="empty-state no-query">Enter a search term and click Search.</div>
+    <div id="results" class="card" style="display:none;"></div>
+  </div>
+  </div>
+  <script>
+    (function () {
+      var API_BASE = '';
+      var keyInput = document.getElementById('apiKey');
+      var searchForm = document.getElementById('searchForm');
+      var queryInput = document.getElementById('queryInput');
+      var errorEl = document.getElementById('error');
+      var emptyState = document.getElementById('emptyState');
+      var resultsEl = document.getElementById('results');
+      var headerBell = document.getElementById('headerBell');
+
+      function getQ() {
+        var params = new URLSearchParams(window.location.search);
+        return (params.get('q') || '').trim();
+      }
+
+      function setQ(q) {
+        var url = new URL(window.location.href);
+        url.searchParams.set('q', q);
+        window.history.replaceState({}, '', url);
+        queryInput.value = q;
+      }
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) { errorEl.textContent = msg || ''; }
+
+      function refreshHeaderBell() {
+        if (!headerBell) return;
+        fetch(API_BASE + '/notifications?limit=5', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return;
+          return r.json();
+        }).then(function (data) {
+          if (!data) return;
+          var count = data.unreadCount || 0;
+          var items = (data.items || []).slice(0, 5);
+          var html = '<div class="bell-wrap" style="position:relative;">';
+          html += '<button type="button" class="bell-btn" id="bellBtn" aria-label="Notifications">🔔</button>';
+          if (count > 0) html += '<span class="bell-badge">' + (count > 99 ? '99+' : count) + '</span>';
+          html += '<div class="bell-dropdown-panel" id="bellPanel">';
+          items.forEach(function (n) {
+            var meta = n.meta || {};
+            var caseId = meta.caseId;
+            var link = caseId ? ('/cases/' + caseId) : '/notifications';
+            html += '<div class="notif-item"><a href="' + link + '">' + (n.title || n.type || '') + '</a></div>';
+          });
+          html += '<a href="/notifications" class="view-all">View all notifications</a></div></div>';
+          headerBell.innerHTML = html;
+          var btn = document.getElementById('bellBtn');
+          var panel = document.getElementById('bellPanel');
+          if (btn && panel) {
+            btn.addEventListener('click', function (e) { e.preventDefault(); panel.classList.toggle('open'); });
+            document.addEventListener('click', function (e) {
+              if (!headerBell.contains(e.target)) panel.classList.remove('open');
+            });
+          }
+        }).catch(function () {
+          headerBell.innerHTML = '<a href="/notifications" style="font-size:1.2rem;">🔔</a>';
+        });
+      }
+
+      function renderSection(title, count, items, linkFn, labelFn) {
+        var html = '<div class="section"><div class="section-title">' + title + ' <span class="section-count">(' + count + ')</span></div>';
+        if (count === 0) {
+          html += '<p class="empty-state" style="padding:0.5rem 0;margin:0;font-size:0.9rem;">None</p>';
+        } else {
+          html += '<ul class="result-list">';
+          (items || []).forEach(function (item) {
+            var href = linkFn(item);
+            var label = labelFn(item);
+            html += '<li><a href="' + href + '">' + escapeHtml(label) + '</a></li>';
+          });
+          html += '</ul>';
+        }
+        html += '</div>';
+        return html;
+      }
+
+      function escapeHtml(s) {
+        if (s == null) return '';
+        var div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function runSearch() {
+        var q = getQ();
+        if (!q) {
+          emptyState.className = 'empty-state no-query';
+          emptyState.textContent = 'Enter a search term and click Search.';
+          emptyState.style.display = 'block';
+          resultsEl.style.display = 'none';
+          return;
+        }
+
+        emptyState.style.display = 'none';
+        resultsEl.style.display = 'block';
+        resultsEl.innerHTML = '<p class="loading">Searching…</p>';
+        setError('');
+
+        fetch(API_BASE + '/search?q=' + encodeURIComponent(q), {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Search failed');
+
+            var c = data.cases || { count: 0, items: [] };
+            var d = data.documents || { count: 0, items: [] };
+            var p = data.providers || { count: 0, items: [] };
+            var rr = data.recordsRequests || { count: 0, items: [] };
+            var notes = data.notes || { count: 0, items: [] };
+            var tasks = data.tasks || { count: 0, items: [] };
+
+            var total = c.count + d.count + p.count + rr.count + notes.count + tasks.count;
+
+            if (total === 0) {
+              emptyState.className = 'empty-state';
+              emptyState.textContent = 'No results for “‘ + escapeHtml(q) + '”.';
+              emptyState.style.display = 'block';
+              resultsEl.style.display = 'none';
+              return;
+            }
+
+            try { sessionStorage.setItem('providerApiKey', (keyInput && keyInput.value) ? keyInput.value.trim() : ''); } catch (e) {}
+
+            var html = '';
+            html += renderSection('Cases', c.count, c.items, function (x) { return '/cases/' + x.id; }, function (x) {
+              return [x.caseNumber, x.title, x.clientName].filter(Boolean).join(' — ') || x.id;
+            });
+            html += renderSection('Documents', d.count, d.items, function (x) { return '/documents/' + x.id; }, function (x) {
+              return x.originalName || x.id;
+            });
+            html += renderSection('Providers', p.count, p.items, function (x) { return '/providers/' + x.id; }, function (x) {
+              return [x.name, x.city, x.state].filter(Boolean).join(', ') || x.id;
+            });
+            html += renderSection('Records requests', rr.count, rr.items, function (x) { return '/records-requests/' + x.id; }, function (x) {
+              return (x.providerName || 'Records request') + (x.status ? ' (' + x.status + ')' : '');
+            });
+            html += renderSection('Case notes', notes.count, notes.items, function (x) { return '/cases/' + (x.caseId || ''); }, function (x) {
+              var body = (x.body || '').slice(0, 60);
+              if ((x.body || '').length > 60) body += '…';
+              return body || 'Note';
+            });
+            html += renderSection('Case tasks', tasks.count, tasks.items, function (x) { return '/cases/' + (x.caseId || ''); }, function (x) {
+              return (x.title || 'Task') + (x.completedAt ? ' (done)' : '');
+            });
+
+            resultsEl.innerHTML = html;
+            refreshHeaderBell();
+          })
+          .catch(function (e) {
+            setError(e.message);
+            emptyState.className = 'empty-state no-query';
+            emptyState.textContent = 'Enter a search term and click Search.';
+            emptyState.style.display = 'block';
+            resultsEl.style.display = 'none';
+          });
+      }
+
+      searchForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var q = (queryInput && queryInput.value) ? queryInput.value.trim() : '';
+        setQ(q);
+        runSearch();
+      });
+
+      queryInput.addEventListener('input', function () {
+        setQ(queryInput.value.trim());
+      });
+
+      // Initial: read q from URL and run search if present
+      (function init() {
+        var q = getQ();
+        if (queryInput) queryInput.value = q;
+        if (q) runSearch();
+      })();
+
+      try {
+        var saved = sessionStorage.getItem('providerApiKey');
+        if (saved && keyInput) keyInput.value = saved;
+      } catch (e) {}
+      refreshHeaderBell();
+    })();
+  </script>
+</body>
+</html>

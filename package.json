@@ -5,9 +5,14 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "test:tenant": "pnpm --filter api test:tenant",
     "snapshot": "bash scripts/snapshot.sh",
     "smoke": "bash scripts/smoke_test.sh",
-    "cleanup:run": "pnpm --filter api cleanup:run"
+    "cleanup:run": "pnpm --filter api cleanup:run",
+    "autosync": "bash scripts/git-auto-sync.sh",
+    "audit:full": "bash scripts/full_audit.sh",
+    "audit:json": "node scripts/full_audit.js",
+    "audit": "node scripts/full_audit.js"
   },
   "keywords": [],
   "author": "",

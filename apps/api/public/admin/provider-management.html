@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin – Provider Management</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    .nav { margin-bottom: 1rem; }
+    .nav a { margin-right: 1rem; color: #0066cc; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .api-key-wrap button { padding: 0.5rem 0.75rem; margin-left: 0.25rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .section { background: #fff; padding: 1rem; margin-bottom: 1rem; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    .section h2 { margin: 0 0 0.75rem; font-size: 1.1rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-weight: 600; }
+    .loading { color: #666; }
+    button, .btn { padding: 0.35rem 0.6rem; cursor: pointer; font-size: 0.9rem; }
+    button.secondary { background: #e9ecef; border: 1px solid #dee2e6; }
+    button.danger { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    input[type="text"], select { padding: 0.35rem 0.5rem; min-width: 12rem; }
+    .add-alias-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.75rem; }
+    .add-alias-form label { display: flex; align-items: center; gap: 0.25rem; }
+    .status-resolved { color: #155724; }
+    .status-unresolved { color: #856404; }
+    .status-none { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Admin – Provider Management</h1>
+  <div class="nav">
+    <a href="/admin/providers">← Providers list</a>
+    <a href="/admin/provider-management">Provider management</a>
+  </div>
+  <div class="api-key-wrap">
+    <label>API key (Bearer):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key (STAFF)" />
+    <button type="button" id="loadBtn">Load all</button>
+  </div>
+  <div id="error" class="error" aria-live="polite"></div>
+
+  <div id="content">
+    <p class="loading">Enter API key and click Load all to view provider list, provider map, and aliases.</p>
+  </div>
+
+  <script>
+    (function () {
+      const API_BASE = '';
+      const keyInput = document.getElementById('apiKey');
+      const loadBtn = document.getElementById('loadBtn');
+      const errorEl = document.getElementById('error');
+      const contentEl = document.getElementById('content');
+
+      function getAuth() {
+        const key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) {
+        errorEl.textContent = msg || '';
+      }
+
+      function fetchJson(url, opts) {
+        const headers = { ...getAuth(), Accept: 'application/json', ...(opts && opts.headers) };
+        return fetch(API_BASE + url, { ...opts, headers, credentials: 'include' }).then(function (r) {
+          if (r.ok) return r.json();
+          if (r.status === 401) throw new Error('Invalid or missing API key');
+          return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+        });
+      }
+
+      function loadProviders() {
+        return fetchJson('/providers').then(function (data) { return data.items || []; });
+      }
+
+      function loadProviderMap() {
+        return fetchJson('/me/provider-map?limit=300').then(function (data) { return data.items || []; });
+      }
+
+      function loadAliases() {
+        return fetchJson('/me/provider-aliases').then(function (data) { return data.items || []; });
+      }
+
+      function addAlias(providerId, aliasNormalized) {
+        return fetch(API_BASE + '/me/provider-aliases', {
+          method: 'POST',
+          headers: { ...getAuth(), 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ providerId: providerId, aliasNormalized: aliasNormalized }),
+        }).then(function (r) {
+          if (r.status === 201) return r.json();
+          return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+        });
+      }
+
+      function deleteAlias(id) {
+        return fetch(API_BASE + '/me/provider-aliases/' + encodeURIComponent(id), {
+          method: 'DELETE',
+          headers: getAuth(),
+          credentials: 'include',
+        }).then(function (r) {
+          if (r.ok) return;
+          return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+        });
+      }
+
+      function renderProviders(providers) {
+        let html = '<div class="section"><h2>Providers</h2><table><thead><tr><th>Name</th><th>City</th><th>State</th><th>Phone</th><th>Fax</th><th>Email</th><th>Aliases</th><th></th></tr></thead><tbody>';
+        (providers || []).forEach(function (p) {
+          html += '<tr>';
+          html += '<td><a href="/providers/' + encodeURIComponent(p.id) + '">' + (p.name || '—') + '</a></td>';
+          html += '<td>' + (p.city || '—') + '</td>';
+          html += '<td>' + (p.state || '—') + '</td>';
+          html += '<td>' + (p.phone || '—') + '</td>';
+          html += '<td>' + (p.fax || '—') + '</td>';
+          html += '<td>' + (p.email || '—') + '</td>';
+          html += '<td>' + (p.aliasCount != null ? p.aliasCount : '—') + '</td>';
+          html += '<td><a href="/providers/' + encodeURIComponent(p.id) + '">View</a></td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+        return html;
+      }
+
+      function renderMap(items, providers) {
+        let html = '<div class="section"><h2>Provider map (raw → normalized → resolved)</h2>';
+        html += '<p class="loading">Shows raw provider names from documents with normalized form and resolved provider. Add an alias to map a raw/normalized name to a provider (correction).</p>';
+        html += '<table><thead><tr><th>Raw name</th><th>Normalized</th><th>Status</th><th>Resolved provider</th><th>Docs</th><th>Action</th></tr></thead><tbody>';
+        (items || []).forEach(function (r) {
+          const statusClass = r.resolutionStatus === 'resolved' ? 'status-resolved' : (r.resolutionStatus ? 'status-unresolved' : 'status-none');
+          html += '<tr data-raw="' + (r.rawName || '').replace(/"/g, '&quot;') + '" data-normalized="' + (r.normalized || '').replace(/"/g, '&quot;') + '">';
+          html += '<td>' + (r.rawName || '—') + '</td>';
+          html += '<td>' + (r.normalized || '—') + '</td>';
+          html += '<td class="' + statusClass + '">' + (r.resolutionStatus || '—') + '</td>';
+          html += '<td>' + (r.suggestedProviderName || '—') + '</td>';
+          html += '<td>' + (r.docCount != null ? r.docCount : '—') + '</td>';
+          html += '<td><button type="button" class="btn secondary add-alias-map">Add alias</button></td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+        return html;
+      }
+
+      function renderAliases(items) {
+        let html = '<div class="section"><h2>Provider aliases</h2>';
+        html += '<p>Map a normalized name to a provider. After adding, recognition will resolve that name to the provider.</p>';
+        html += '<table><thead><tr><th>Provider</th><th>Alias (normalized)</th><th>Added</th><th></th></tr></thead><tbody>';
+        (items || []).forEach(function (a) {
+          html += '<tr data-alias-id="' + (a.id || '') + '">';
+          html += '<td>' + (a.providerName || a.providerId || '—') + '</td>';
+          html += '<td>' + (a.aliasNormalized || '—') + '</td>';
+          html += '<td>' + (a.createdAt ? new Date(a.createdAt).toLocaleDateString() : '—') + '</td>';
+          html += '<td><button type="button" class="btn danger delete-alias">Delete</button></td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        html += '<div id="addAliasStandalone" class="add-alias-form"></div>';
+        html += '</div>';
+        return html;
+      }
+
+      function renderAddAliasForm(providers, defaultNormalized) {
+        let opts = (providers || []).map(function (p) {
+          return '<option value="' + (p.id || '') + '">' + (p.name || p.id) + '</option>';
+        }).join('');
+        return '<div class="add-alias-form">' +
+          '<label>Provider: <select id="addAliasProvider">' + opts + '</select></label>' +
+          '<label>Alias (normalized): <input type="text" id="addAliasText" placeholder="e.g. raw or normalized name" value="' + (defaultNormalized || '').replace(/"/g, '&quot;') + '" /></label>' +
+          '<button type="button" id="addAliasSubmit">Add alias</button>' +
+          '<button type="button" id="addAliasCancel" class="secondary">Cancel</button>' +
+          '</div>';
+      }
+
+      function bindMapAddAlias(contentEl, providers) {
+        contentEl.querySelectorAll('.add-alias-map').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            const row = btn.closest('tr');
+            const raw = row.getAttribute('data-raw') || '';
+            const normalized = row.getAttribute('data-normalized') || raw;
+            const form = document.createElement('div');
+            form.innerHTML = renderAddAliasForm(providers, normalized);
+            form.className = 'section';
+            row.after(form);
+            const cancelBtn = form.querySelector('#addAliasCancel');
+            const submitBtn = form.querySelector('#addAliasSubmit');
+            const textInput = form.querySelector('#addAliasText');
+            cancelBtn.addEventListener('click', function () { form.remove(); });
+            submitBtn.addEventListener('click', function () {
+              const providerId = form.querySelector('#addAliasProvider').value;
+              const aliasNormalized = (textInput && textInput.value) ? textInput.value.trim() : '';
+              if (!aliasNormalized) { setError('Enter alias (normalized)'); return; }
+              addAlias(providerId, aliasNormalized).then(function () {
+                setError('');
+                form.remove();
+                loadAll();
+              }).catch(function (e) { setError(e.message); });
+            });
+          });
+        });
+      }
+
+      function bindAliasDelete(contentEl) {
+        contentEl.querySelectorAll('.delete-alias').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            const row = btn.closest('tr');
+            const id = row.getAttribute('data-alias-id');
+            if (!id) return;
+            if (!confirm('Delete this alias?')) return;
+            deleteAlias(id).then(function () {
+              setError('');
+              loadAll();
+            }).catch(function (e) { setError(e.message); });
+          });
+        });
+      }
+
+      function bindStandaloneAddAlias(contentEl, providers) {
+        const wrap = contentEl.querySelector('#addAliasStandalone');
+        if (!wrap) return;
+        wrap.innerHTML = renderAddAliasForm(providers, '');
+        const submitBtn = wrap.querySelector('#addAliasSubmit');
+        const cancelBtn = wrap.querySelector('#addAliasCancel');
+        const textInput = wrap.querySelector('#addAliasText');
+        if (cancelBtn) cancelBtn.style.display = 'none';
+        if (submitBtn) {
+          submitBtn.addEventListener('click', function () {
+            const providerId = wrap.querySelector('#addAliasProvider').value;
+            const aliasNormalized = (textInput && textInput.value) ? textInput.value.trim() : '';
+            if (!aliasNormalized) { setError('Enter alias (normalized)'); return; }
+            addAlias(providerId, aliasNormalized).then(function () {
+              setError('');
+              loadAll();
+            }).catch(function (e) { setError(e.message); });
+          });
+        }
+      }
+
+      function loadAll() {
+        setError('');
+        contentEl.innerHTML = '<p class="loading">Loading…</p>';
+        Promise.all([loadProviders(), loadProviderMap(), loadAliases()]).then(function (arr) {
+          const providers = arr[0];
+          const mapItems = arr[1];
+          const aliases = arr[2];
+          const aliasCountByProvider = {};
+          (aliases || []).forEach(function (a) {
+            const id = a.providerId;
+            aliasCountByProvider[id] = (aliasCountByProvider[id] || 0) + 1;
+          });
+          const providersWithCount = (providers || []).map(function (p) {
+            return { ...p, aliasCount: aliasCountByProvider[p.id] || 0 };
+          });
+          if (keyInput && keyInput.value.trim()) {
+            try { sessionStorage.setItem('providerApiKey', keyInput.value.trim()); } catch (e) {}
+          }
+          contentEl.innerHTML = renderProviders(providersWithCount) + renderMap(mapItems, providers) + renderAliases(aliases);
+          bindMapAddAlias(contentEl, providers);
+          bindAliasDelete(contentEl);
+          bindStandaloneAddAlias(contentEl, providers);
+        }).catch(function (e) {
+          contentEl.innerHTML = '';
+          setError(e.message);
+        });
+      }
+
+      loadBtn.addEventListener('click', loadAll);
+
+      try {
+        const saved = sessionStorage.getItem('providerApiKey');
+        if (saved && keyInput) keyInput.value = saved;
+      } catch (e) {}
+    })();
+  </script>
+</body>
+</html>

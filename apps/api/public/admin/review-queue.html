@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Review queue</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #f5f5f5; }
+    a { color: #0066cc; }
+    .header-bar { background: #fff; padding: 0.5rem 1rem; border-bottom: 1px solid #e0e0e0; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .header-bar a { text-decoration: none; color: #333; }
+    .header-bar a:hover { color: #0066cc; }
+    .header-bar .spacer { flex: 1; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    .main { padding: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; border: 1px solid #e5e5e5; }
+    .filters { margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .filters label { margin-right: 0.25rem; }
+    .filters input, .filters select { padding: 0.35rem 0.5rem; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; font-size: 0.9rem; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .saved-views-wrap { margin-bottom: 1rem; }
+    .saved-views-list { list-style: none; padding: 0; margin: 0.5rem 0 0; font-size: 0.9rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    .saved-views-list li { display: flex; align-items: center; gap: 0.35rem; }
+    .saved-views-list .btn-link { background: none; border: none; color: #0066cc; cursor: pointer; padding: 0; text-decoration: underline; font-size: inherit; }
+    .saved-views-list .btn-link.danger { color: #c00; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-weight: 600; }
+    .loading { color: #666; }
+    .empty-state { color: #666; padding: 2rem; text-align: center; }
+    .badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; }
+    .badge.route { background: #d4edda; color: #155724; }
+    .badge.reject { background: #f8d7da; color: #721c24; }
+    .badge.review_manually { background: #fff3cd; color: #856404; }
+    .load-more { margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="header-bar">
+    <a href="/admin/cases">Cases</a>
+    <a href="/search">Search</a>
+    <a href="/notifications">Notifications</a>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/review-queue">Review queue</a>
+    <span class="spacer"></span>
+  </div>
+  <div class="main">
+    <h1>Review queue</h1>
+    <div class="api-key-wrap">
+      <label>API key (Bearer):</label>
+      <input type="password" id="apiKey" placeholder="Paste API key" />
+    </div>
+    <div id="error" class="error" aria-live="polite"></div>
+    <div class="card">
+      <div class="filters">
+        <label>Limit:</label>
+        <input type="number" id="limitInput" min="1" max="100" value="50" style="width:5rem;" />
+        <button type="button" id="loadQueueBtn" class="btn primary">Load queue</button>
+      </div>
+      <div class="saved-views-wrap">
+        <span>Saved views:</span>
+        <button type="button" id="saveViewBtn" class="btn primary">Save current view</button>
+        <ul id="savedViewsList" class="saved-views-list"><li class="loading">Loading…</li></ul>
+      </div>
+      <div id="listWrap">
+        <p class="loading">Enter API key and click Load queue.</p>
+      </div>
+      <div id="loadMoreWrap" class="load-more" style="display:none;">
+        <button type="button" id="loadMoreBtn" class="btn">Load more</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var API_BASE = '';
+      var keyInput = document.getElementById('apiKey');
+      var limitInput = document.getElementById('limitInput');
+      var loadQueueBtn = document.getElementById('loadQueueBtn');
+      var saveViewBtn = document.getElementById('saveViewBtn');
+      var savedViewsList = document.getElementById('savedViewsList');
+      var listWrap = document.getElementById('listWrap');
+      var loadMoreWrap = document.getElementById('loadMoreWrap');
+      var loadMoreBtn = document.getElementById('loadMoreBtn');
+      var errorEl = document.getElementById('error');
+      var nextCursor = null;
+      var limit = 50;
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) { errorEl.textContent = msg || ''; }
+
+      function escapeHtml(s) {
+        if (s == null) return '';
+        var div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function getCurrentFilters() {
+        var n = parseInt(limitInput && limitInput.value ? limitInput.value : 50, 10);
+        return { limit: Math.min(100, Math.max(1, isNaN(n) ? 50 : n)) };
+      }
+
+      function applyFilters(filters) {
+        if (filters && typeof filters.limit === 'number' && filters.limit >= 1) {
+          limit = Math.min(100, Math.max(1, filters.limit));
+          if (limitInput) limitInput.value = limit;
+        }
+      }
+
+      function fetchQueue(cursor) {
+        setError('');
+        if (!cursor) listWrap.innerHTML = '<p class="loading">Loading…</p>';
+        var qs = '?limit=' + (limitInput ? parseInt(limitInput.value, 10) || 50 : 50);
+        if (cursor) qs += '&cursor=' + encodeURIComponent(cursor);
+        fetch(API_BASE + '/me/review-queue' + qs, {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        }).then(function (data) {
+          var items = (data && data.items) || [];
+          nextCursor = data.nextCursor || null;
+          if (!cursor) {
+            if (items.length === 0) {
+              listWrap.innerHTML = '<p class="empty-state">No documents in review queue.</p>';
+              loadMoreWrap.style.display = 'none';
+              return;
+            }
+            var html = '<table><thead><tr><th>Document</th><th>Client</th><th>Recommendation</th><th>Suggested case</th><th>Routed to</th></tr></thead><tbody>';
+            items.forEach(function (d) {
+              var rec = (d.routingRecommendation || 'review_manually').replace(/-/g, '_');
+              html += '<tr><td><a href="/documents/' + escapeHtml(d.id) + '">' + escapeHtml(d.fileName || d.id) + '</a></td>';
+              html += '<td>' + escapeHtml(d.clientName || '—') + '</td>';
+              html += '<td><span class="badge ' + escapeHtml(rec) + '">' + escapeHtml(d.routingRecommendation || '') + '</span></td>';
+              html += '<td>' + (d.suggestedCaseId ? '<a href="/cases/' + escapeHtml(d.suggestedCaseId) + '">' + escapeHtml(d.suggestedCaseId) + '</a>' : '—') + '</td>';
+              html += '<td>' + (d.routedCaseId ? '<a href="/cases/' + escapeHtml(d.routedCaseId) + '">' + escapeHtml(d.routedCaseId) + '</a>' : '—') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+            listWrap.innerHTML = html;
+          } else {
+            var tbody = listWrap.querySelector('tbody');
+            if (tbody) {
+              items.forEach(function (d) {
+                var rec = (d.routingRecommendation || 'review_manually').replace(/-/g, '_');
+                var tr = document.createElement('tr');
+                tr.innerHTML = '<td><a href="/documents/' + escapeHtml(d.id) + '">' + escapeHtml(d.fileName || d.id) + '</a></td><td>' + escapeHtml(d.clientName || '—') + '</td><td><span class="badge ' + escapeHtml(rec) + '">' + escapeHtml(d.routingRecommendation || '') + '</span></td><td>' + (d.suggestedCaseId ? '<a href="/cases/' + escapeHtml(d.suggestedCaseId) + '">' + escapeHtml(d.suggestedCaseId) + '</a>' : '—') + '</td><td>' + (d.routedCaseId ? '<a href="/cases/' + escapeHtml(d.routedCaseId) + '">' + escapeHtml(d.routedCaseId) + '</a>' : '—') + '</td>';
+                tbody.appendChild(tr);
+              });
+            }
+          }
+          loadMoreWrap.style.display = nextCursor ? 'block' : 'none';
+        }).catch(function (e) {
+          if (!cursor) listWrap.innerHTML = '';
+          setError(e.message);
+          loadMoreWrap.style.display = 'none';
+        });
+      }
+
+      function refreshSavedViewsList() {
+        if (!savedViewsList) return;
+        fetch(API_BASE + '/saved-views?scope=review_queue', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        }).then(function (data) {
+          var items = (data && data.ok && data.items) ? data.items : [];
+          if (items.length === 0) {
+            savedViewsList.innerHTML = '<li class="loading">No saved views.</li>';
+            return;
+          }
+          var html = '';
+          items.forEach(function (v) {
+            html += '<li><span>' + escapeHtml(v.name) + '</span>';
+            html += '<button type="button" class="btn-link load-view" data-filters="' + escapeHtml(JSON.stringify(v.filtersJson || {})) + '">Load</button>';
+            html += '<button type="button" class="btn-link danger delete-view" data-id="' + escapeHtml(v.id) + '">Delete</button></li>';
+          });
+          savedViewsList.innerHTML = html;
+          savedViewsList.querySelectorAll('.load-view').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              try {
+                var f = JSON.parse(btn.getAttribute('data-filters') || '{}');
+                applyFilters(f);
+                fetchQueue(null);
+              } catch (e) {}
+            });
+          });
+          savedViewsList.querySelectorAll('.delete-view').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var id = btn.getAttribute('data-id');
+              if (!id) return;
+              fetch(API_BASE + '/saved-views/' + encodeURIComponent(id), {
+                method: 'DELETE',
+                headers: getAuth(),
+                credentials: 'include',
+              }).then(function (r) {
+                if (r.ok) refreshSavedViewsList();
+              });
+            });
+          });
+        }).catch(function () {
+          savedViewsList.innerHTML = '<li class="loading">Could not load saved views.</li>';
+        });
+      }
+
+      loadQueueBtn.addEventListener('click', function () {
+        limit = getCurrentFilters().limit;
+        fetchQueue(null);
+        refreshSavedViewsList();
+      });
+
+      loadMoreBtn.addEventListener('click', function () {
+        if (nextCursor) fetchQueue(nextCursor);
+      });
+
+      saveViewBtn.addEventListener('click', function () {
+        var name = prompt('Name for this view');
+        if (!name || !name.trim()) return;
+        setError('');
+        fetch(API_BASE + '/saved-views', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({ name: name.trim(), scope: 'review_queue', filtersJson: getCurrentFilters() }),
+        }).then(function (r) {
+          return r.json().then(function (data) {
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            refreshSavedViewsList();
+          });
+        }).catch(function (e) {
+          setError(e.message);
+        });
+      });
+
+      try {
+        var saved = sessionStorage.getItem('providerApiKey');
+        if (saved && keyInput) keyInput.value = saved;
+      } catch (e) {}
+      refreshSavedViewsList();
+    })();
+  </script>
+</body>
+</html>

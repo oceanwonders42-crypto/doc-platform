@@ -1,18 +1,23 @@
 /**
  * Robust job runner: processes Job table with exponential backoff.
- * Permanently failing jobs (max attempts exceeded) are marked failed with lastError.
+ * Enqueue via enqueueJob(); run jobQueueWorker to process (or use runNextJob for legacy loop).
  */
 import { prisma } from "../db/prisma";
-import { runRetentionCleanup } from "./retentionCleanup";
-import { runOverdueTaskReminders } from "./overdueTaskReminders";
-import { deliverWebhook } from "./webhooks";
 
-export async function enqueueJob(firmId: string, type: string, payload?: unknown): Promise<string> {
+export async function enqueueJob(
+  firmId: string | null,
+  type: string,
+  payload?: unknown,
+  opts?: { priority?: number; runAt?: Date; maxAttempts?: number }
+): Promise<string> {
   const job = await prisma.job.create({
     data: {
       firmId,
       type,
-      payload: payload ? JSON.parse(JSON.stringify(payload)) : undefined,
+      payload: (payload != null ? JSON.parse(JSON.stringify(payload)) : {}) as object,
+      priority: opts?.priority ?? 100,
+      runAt: opts?.runAt ?? new Date(),
+      maxAttempts: opts?.maxAttempts ?? 5,
     },
   });
   return job.id;
@@ -21,34 +26,9 @@ export async function enqueueJob(firmId: string, type: string, payload?: unknown
 const MAX_ATTEMPTS = 5;
 const BASE_DELAY_MS = 60_000; // 1 minute
 
-export type JobHandler = (firmId: string, payload: unknown) => Promise<void>;
+export type JobRunnerHandler = (firmId: string | null, payload: unknown) => Promise<void>;
 
-const handlers: Record<string, JobHandler> = {
-  retention_cleanup: async () => {
-    await runRetentionCleanup();
-  },
-  overdue_task_reminders: async () => {
-    await runOverdueTaskReminders();
-  },
-  webhook_delivery: async (_firmId, p) => {
-    const payload = p as {
-      webhookEndpointId: string;
-      url: string;
-      secret: string;
-      event: string;
-      data: Record<string, unknown>;
-      timestamp: string;
-    };
-    if (!payload?.url || !payload?.secret || !payload?.event) {
-      throw new Error("Invalid webhook_delivery payload");
-    }
-    await deliverWebhook(payload);
-  },
-};
-
-export function registerJobHandler(type: string, handler: JobHandler) {
-  handlers[type] = handler;
-}
+const handlers: Record<string, JobRunnerHandler> = {};
 
 function getBackoffDelayMs(attempts: number): number {
   return BASE_DELAY_MS * Math.pow(2, attempts);
@@ -62,7 +42,7 @@ export async function runNextJob(): Promise<boolean> {
       runAt: { lte: now },
       attempts: { lt: MAX_ATTEMPTS },
     },
-    orderBy: { runAt: "asc" },
+    orderBy: [{ priority: "asc" }, { runAt: "asc" }],
   });
 
   if (!job) return false;
@@ -83,14 +63,27 @@ export async function runNextJob(): Promise<boolean> {
 
   await prisma.job.update({
     where: { id: job.id },
-    data: { status: "running", attempts: job.attempts + 1, updatedAt: new Date() },
+    data: {
+      status: "running",
+      attempts: job.attempts + 1,
+      lockedAt: now,
+      lockedBy: "jobRunner",
+      updatedAt: new Date(),
+    },
   });
 
   try {
     await handler(job.firmId, job.payload as object);
     await prisma.job.update({
       where: { id: job.id },
-      data: { status: "done", lastError: null, updatedAt: new Date() },
+      data: {
+        status: "done",
+        lastError: null,
+        finishedAt: new Date(),
+        lockedAt: null,
+        lockedBy: null,
+        updatedAt: new Date(),
+      },
     });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -103,6 +96,9 @@ export async function runNextJob(): Promise<boolean> {
         data: {
           status: "failed",
           lastError,
+          finishedAt: new Date(),
+          lockedAt: null,
+          lockedBy: null,
           updatedAt: new Date(),
         },
       });
@@ -115,6 +111,8 @@ export async function runNextJob(): Promise<boolean> {
           status: "queued",
           lastError,
           runAt,
+          lockedAt: null,
+          lockedBy: null,
           updatedAt: new Date(),
         },
       });

@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #f5f5f5; }
+    a { color: #0066cc; }
+    .header-bar { background: #fff; padding: 0.5rem 1rem; border-bottom: 1px solid #e0e0e0; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .header-bar a { text-decoration: none; color: #333; }
+    .header-bar a:hover { color: #0066cc; }
+    .header-bar .spacer { flex: 1; }
+    .bell-wrap { position: relative; }
+    .bell-btn { background: none; border: none; cursor: pointer; padding: 0.25rem; font-size: 1.2rem; line-height: 1; }
+    .bell-badge { position: absolute; top: -4px; right: -4px; background: #c00; color: #fff; font-size: 0.65rem; padding: 0.1rem 0.35rem; border-radius: 10px; min-width: 1.2em; text-align: center; }
+    .bell-dropdown-panel { display: none; position: absolute; top: 100%; right: 0; margin-top: 0.25rem; background: #fff; border: 1px solid #ddd; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 280px; z-index: 100; max-height: 360px; overflow: auto; }
+    .bell-dropdown-panel.open { display: block; }
+    .bell-dropdown-panel .notif-item { padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+    .bell-dropdown-panel .notif-item a { text-decoration: none; color: #333; }
+    .bell-dropdown-panel .view-all { display: block; padding: 0.5rem 0.75rem; text-align: center; background: #f5f5f5; font-weight: 600; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    h2 { margin: 1rem 0 0.5rem; font-size: 1rem; color: #444; }
+    .main { padding: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .attention-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; margin-top: 1rem; }
+    .card { background: #fff; border-radius: 6px; padding: 1rem; border: 1px solid #e5e5e5; }
+    .card-title { font-weight: 600; margin-bottom: 0.5rem; color: #333; }
+    .card-count { color: #666; font-size: 0.9rem; margin-bottom: 0.5rem; }
+    .card-list { list-style: none; padding: 0; margin: 0; font-size: 0.9rem; }
+    .card-list li { padding: 0.35rem 0; border-bottom: 1px solid #eee; }
+    .card-list li:last-child { border-bottom: none; }
+    .card-list a { text-decoration: none; }
+    .card-list a:hover { text-decoration: underline; }
+    .empty-card { color: #888; font-style: italic; padding: 0.5rem 0; }
+    .loading { color: #666; }
+    .card.overdue-card { border-color: #dc2626; background: #fef2f2; }
+    .card.overdue-card .card-title { color: #991b1b; }
+    .activity-feed { list-style: none; padding: 0; margin: 0; font-size: 0.9rem; }
+    .activity-feed li { padding: 0.4rem 0; border-bottom: 1px solid #eee; display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline; }
+    .activity-feed li:last-child { border-bottom: none; }
+    .activity-feed .activity-time { color: #888; font-size: 0.85rem; }
+    .activity-feed .activity-type { color: #666; }
+    .saved-views-wrap { margin-top: 0.5rem; }
+    .saved-views-wrap .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; font-size: 0.9rem; }
+    .saved-views-wrap .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .saved-views-list { list-style: none; padding: 0; margin: 0.5rem 0 0; font-size: 0.9rem; }
+    .saved-views-list li { padding: 0.35rem 0; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .saved-views-list li .name { flex: 1; min-width: 120px; }
+    .saved-views-list .btn-link { background: none; border: none; color: #0066cc; cursor: pointer; padding: 0; text-decoration: underline; font-size: inherit; }
+    .saved-views-list .btn-link:hover { color: #004499; }
+    .saved-views-list .btn-link.danger { color: #c00; }
+    .today-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; margin-top: 0.5rem; }
+    .today-panel .card-count { font-size: 0.85rem; }
+    .digest-actions { margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .doc-filters { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
+    .doc-filters label { font-size: 0.85rem; }
+    .doc-filters select, .doc-filters input[type="date"] { padding: 0.35rem 0.5rem; }
+    .doc-table-wrap { overflow-x: auto; }
+    .doc-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .doc-table th, .doc-table td { padding: 0.4rem 0.6rem; text-align: left; border-bottom: 1px solid #eee; }
+    .doc-table th { background: #fafafa; font-weight: 600; }
+    .doc-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; background: #eee; vertical-align: middle; display: inline-block; }
+    .doc-thumb-cell { width: 1%; white-space: nowrap; }
+    .doc-preview-tooltip { display: none; position: fixed; z-index: 1000; background: #fff; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); padding: 0.5rem; max-width: 220px; }
+    .doc-preview-tooltip.visible { display: block; }
+    .doc-preview-tooltip img { width: 200px; height: auto; max-height: 260px; object-fit: contain; display: block; border-radius: 4px; background: #f5f5f5; }
+    .doc-preview-tooltip .doc-preview-name { font-size: 0.85rem; margin-top: 0.35rem; color: #333; word-break: break-word; }
+    .doc-tag { display: inline-block; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.75rem; margin: 0.1rem 0.1rem 0 0; }
+    .doc-checkbox-col { width: 2rem; text-align: center; }
+    .doc-bulk-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .doc-bulk-count { font-size: 0.9rem; color: #555; }
+  </style>
+</head>
+<body>
+  <div class="header-bar">
+    <a href="/admin/cases">Cases</a>
+    <a href="/search">Search</a>
+    <a href="/notifications">Notifications</a>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/review-queue">Review queue</a>
+    <span class="spacer"></span>
+    <div class="bell-wrap" id="headerBell">
+      <a href="/notifications" style="font-size:1.2rem;">🔔</a>
+    </div>
+  </div>
+  <div class="main">
+    <h1>Dashboard</h1>
+    <div class="api-key-wrap">
+      <label>API key (Bearer):</label>
+      <input type="password" id="apiKey" placeholder="Paste API key" />
+    </div>
+    <div id="error" class="error" aria-live="polite"></div>
+    <h2>Background jobs</h2>
+    <div class="card">
+      <p style="margin:0 0 0.5rem;"><a href="/admin/jobs">View jobs</a> <button type="button" id="jobsCountsRefresh" class="btn">Refresh</button></p>
+      <div class="today-panel" style="display:flex;gap:1rem;flex-wrap:wrap;">
+        <span>Queued: <strong id="dashJobsQueued">—</strong></span>
+        <span>Running: <strong id="dashJobsRunning">—</strong></span>
+        <span>Failed: <strong id="dashJobsFailed">—</strong></span>
+        <span>Retry backlog: <strong id="dashJobsRetryBacklog">—</strong></span>
+      </div>
+    </div>
+    <h2>Product metrics</h2>
+    <div class="card">
+      <p style="margin:0 0 0.5rem; font-size:0.9rem; color:#666;">Documents processed and routing (all time). <button type="button" id="analyticsRefreshBtn" class="btn">Refresh</button></p>
+      <div id="analyticsWrap" class="today-panel" style="display:flex;gap:1rem;flex-wrap:wrap;">
+        <span>Processed: <strong id="analyticsTotal">—</strong></span>
+        <span>Failed: <strong id="analyticsFailed">—</strong></span>
+        <span>Needs review: <strong id="analyticsNeedsReview">—</strong></span>
+        <span>Routed: <strong id="analyticsRouted">—</strong></span>
+        <span>Route rate: <strong id="analyticsRouteRate">—</strong></span>
+        <span>Avg latency: <strong id="analyticsLatency">—</strong></span>
+      </div>
+    </div>
+    <h2>Today</h2>
+    <div id="todayPanel" class="card">
+      <p class="loading">Loading…</p>
+      <div id="digestActions" class="digest-actions" style="display:none;">
+        <button type="button" id="copyDigestBtn" class="btn">Copy summary</button>
+        <button type="button" id="downloadDigestBtn" class="btn">Download as .txt</button>
+      </div>
+    </div>
+    <h2>Needs Attention</h2>
+    <div id="attentionPanel" class="attention-panel">
+      <p class="loading">Loading…</p>
+    </div>
+    <h2>Recent activity</h2>
+    <div class="card">
+      <div class="saved-views-wrap">
+        <span>Saved views:</span>
+        <button type="button" id="saveViewBtn" class="btn primary">Save current view</button>
+        <ul id="savedViewsList" class="saved-views-list"><li class="empty-card">Loading…</li></ul>
+      </div>
+      <ul id="activityFeed" class="activity-feed"><p class="loading">Loading…</p></ul>
+    </div>
+    <h2>Documents</h2>
+    <div class="card">
+      <div class="doc-filters" id="docFilters">
+        <label>Status</label><select id="docFilterStatus"><option value="">Any</option><option value="UNMATCHED">Unmatched</option><option value="FAILED">Failed</option><option value="NEEDS_REVIEW">Needs review</option><option value="UPLOADED">Uploaded</option><option value="RECEIVED">Received</option><option value="PROCESSING">Processing</option></select>
+        <label>Case</label><select id="docFilterCase"><option value="">Any</option></select>
+        <label>Tag</label><select id="docFilterTag"><option value="">Any</option></select>
+        <label>Provider</label><select id="docFilterProvider"><option value="">Any</option></select>
+        <label>From</label><input type="date" id="docFilterDateFrom" />
+        <label>To</label><input type="date" id="docFilterDateTo" />
+        <label><input type="checkbox" id="docFilterHasOffer" /> Has settlement offer</label>
+        <label><input type="checkbox" id="docFilterDuplicatesOnly" /> Duplicates only</label>
+        <button type="button" id="docApplyBtn" class="btn primary">Apply</button>
+        <span style="margin-left:0.5rem;">Saved filters:</span>
+        <select id="docSavedViewSelect"><option value="">Load saved…</option></select>
+        <button type="button" id="docLoadViewBtn" class="btn">Load</button>
+        <button type="button" id="docSaveViewBtn" class="btn">Save current filter</button>
+      </div>
+      <div id="docBulkActions" class="doc-bulk-actions" style="display:none; margin-bottom:0.5rem;">
+        <span id="docBulkCount" class="doc-bulk-count">0 selected</span>
+        <button type="button" id="docMergeBtn" class="btn primary">Merge selected</button>
+      </div>
+      <div id="docTableWrap" class="doc-table-wrap">
+        <p class="loading">Set filters and click Apply to load documents.</p>
+      </div>
+      <p style="margin-top:0.5rem;"><button type="button" id="docLoadMoreBtn" class="btn" style="display:none;">Load more</button></p>
+    </div>
+  </div>
+  <div id="docPreviewTooltip" class="doc-preview-tooltip" aria-hidden="true">
+    <img src="" alt="" />
+    <span class="doc-preview-name"></span>
+  </div>
+
+  <script>
+    (function () {
+      var API_BASE = '';
+      var keyInput = document.getElementById('apiKey');
+      var errorEl = document.getElementById('error');
+      var attentionPanel = document.getElementById('attentionPanel');
+      var headerBell = document.getElementById('headerBell');
+      var activityFeed = document.getElementById('activityFeed');
+      var saveViewBtn = document.getElementById('saveViewBtn');
+      var savedViewsList = document.getElementById('savedViewsList');
+      var activityLimit = 20;
+      var todayPanel = document.getElementById('todayPanel');
+      var digestActions = document.getElementById('digestActions');
+      var copyDigestBtn = document.getElementById('copyDigestBtn');
+      var downloadDigestBtn = document.getElementById('downloadDigestBtn');
+      var lastDigestText = '';
+      var docFilterStatus = document.getElementById('docFilterStatus');
+      var docFilterCase = document.getElementById('docFilterCase');
+      var docFilterTag = document.getElementById('docFilterTag');
+      var docFilterProvider = document.getElementById('docFilterProvider');
+      var docFilterDateFrom = document.getElementById('docFilterDateFrom');
+      var docFilterDateTo = document.getElementById('docFilterDateTo');
+      var docFilterHasOffer = document.getElementById('docFilterHasOffer');
+      var docFilterDuplicatesOnly = document.getElementById('docFilterDuplicatesOnly');
+      var docApplyBtn = document.getElementById('docApplyBtn');
+      var docSavedViewSelect = document.getElementById('docSavedViewSelect');
+      var docLoadViewBtn = document.getElementById('docLoadViewBtn');
+      var docSaveViewBtn = document.getElementById('docSaveViewBtn');
+      var docTableWrap = document.getElementById('docTableWrap');
+      var docLoadMoreBtn = document.getElementById('docLoadMoreBtn');
+      var docNextCursor = null;
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) { errorEl.textContent = msg || ''; }
+
+      function loadJobsCounts() {
+        fetch(API_BASE + '/jobs/counts', { headers: Object.assign({}, getAuth(), { Accept: 'application/json' }), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) return;
+            var el = function (id) { return document.getElementById(id); };
+            if (el('dashJobsQueued')) el('dashJobsQueued').textContent = data.queued != null ? data.queued : '—';
+            if (el('dashJobsRunning')) el('dashJobsRunning').textContent = data.running != null ? data.running : '—';
+            if (el('dashJobsFailed')) el('dashJobsFailed').textContent = data.failed != null ? data.failed : '—';
+            if (el('dashJobsRetryBacklog')) el('dashJobsRetryBacklog').textContent = data.retryBacklog != null ? data.retryBacklog : '—';
+          })
+          .catch(function () {});
+      }
+
+      function loadAnalytics() {
+        fetch(API_BASE + '/me/analytics', { headers: Object.assign({}, getAuth(), { Accept: 'application/json' }), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) return;
+            var el = function (id) { return document.getElementById(id); };
+            if (el('analyticsTotal')) el('analyticsTotal').textContent = data.totalDocumentsProcessed != null ? data.totalDocumentsProcessed : '—';
+            if (el('analyticsFailed')) el('analyticsFailed').textContent = data.failedDocuments != null ? data.failedDocuments : '—';
+            if (el('analyticsNeedsReview')) el('analyticsNeedsReview').textContent = data.needsReviewDocuments != null ? data.needsReviewDocuments : '—';
+            if (el('analyticsRouted')) el('analyticsRouted').textContent = data.routedDocuments != null ? data.routedDocuments : '—';
+            if (el('analyticsRouteRate')) el('analyticsRouteRate').textContent = data.successfulRouteRatePct != null ? data.successfulRouteRatePct + '%' : '—';
+            if (el('analyticsLatency')) {
+              var lat = data.avgProcessingLatencyMs;
+              el('analyticsLatency').textContent = lat != null ? (lat < 1000 ? lat + ' ms' : (lat / 1000).toFixed(1) + ' s') : '—';
+            }
+          })
+          .catch(function () {});
+      }
+
+      function escapeHtml(s) {
+        if (s == null) return '';
+        var div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function renderCard(title, count, items, linkUrl, linkLabelFn, extraCardClass) {
+        var html = '<div class="card' + (extraCardClass ? ' ' + extraCardClass : '') + '"><div class="card-title">' + escapeHtml(title) + '</div>';
+        html += '<div class="card-count">' + count + ' total</div>';
+        if (!items || items.length === 0) {
+          html += '<div class="empty-card">None</div>';
+        } else {
+          html += '<ul class="card-list">';
+          items.forEach(function (item) {
+            var url = typeof linkUrl === 'function' ? linkUrl(item) : linkUrl;
+            var label = linkLabelFn ? linkLabelFn(item) : (item.originalName || item.title || item.id || '—');
+            html += '<li><a href="' + url + '">' + escapeHtml(label) + '</a></li>';
+          });
+          html += '</ul>';
+        }
+        html += '</div>';
+        return html;
+      }
+
+      function refreshHeaderBell() {
+        if (!headerBell) return;
+        fetch(API_BASE + '/notifications?limit=5', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return;
+          return r.json();
+        }).then(function (data) {
+          if (!data) return;
+          var count = data.unreadCount || 0;
+          var items = (data.items || []).slice(0, 5);
+          var html = '<div class="bell-wrap" style="position:relative;">';
+          html += '<button type="button" class="bell-btn" id="bellBtn" aria-label="Notifications">🔔</button>';
+          if (count > 0) html += '<span class="bell-badge">' + (count > 99 ? '99+' : count) + '</span>';
+          html += '<div class="bell-dropdown-panel" id="bellPanel">';
+          items.forEach(function (n) {
+            var meta = n.meta || {};
+            var caseId = meta.caseId;
+            var link = caseId ? ('/cases/' + caseId) : '/notifications';
+            html += '<div class="notif-item"><a href="' + link + '">' + escapeHtml(n.title || n.type || '') + '</a></div>';
+          });
+          html += '<a href="/notifications" class="view-all">View all notifications</a></div></div>';
+          headerBell.innerHTML = html;
+          var btn = document.getElementById('bellBtn');
+          var panel = document.getElementById('bellPanel');
+          if (btn && panel) {
+            btn.addEventListener('click', function (e) { e.preventDefault(); panel.classList.toggle('open'); });
+            document.addEventListener('click', function (e) {
+              if (!headerBell.contains(e.target)) panel.classList.remove('open');
+            });
+          }
+        }).catch(function () {
+          headerBell.innerHTML = '<a href="/notifications" style="font-size:1.2rem;">🔔</a>';
+        });
+      }
+
+      function formatActivityTime(iso) {
+        if (!iso) return '';
+        try {
+          var d = new Date(iso);
+          var now = new Date();
+          var diff = (now - d) / 60000;
+          if (diff < 60) return 'Just now';
+          if (diff < 1440) return Math.floor(diff / 60) + 'm ago';
+          return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch (e) { return iso; }
+      }
+
+      function renderActivityFeed(items) {
+        if (!activityFeed) return;
+        if (!items || items.length === 0) {
+          activityFeed.innerHTML = '<li class="empty-card">No recent activity.</li>';
+          return;
+        }
+        var html = '';
+        items.forEach(function (i) {
+          var time = formatActivityTime(i.createdAt);
+          var caseLink = i.caseId ? ('<a href="/cases/' + escapeHtml(i.caseId) + '">Case</a>') : '';
+          html += '<li><span class="activity-time">' + escapeHtml(time) + '</span> <span class="activity-type">' + escapeHtml(i.type) + '</span> ' + escapeHtml(i.title) + (caseLink ? ' — ' + caseLink : '') + '</li>';
+        });
+        activityFeed.innerHTML = html;
+      }
+
+      function getCurrentDashboardFilters() {
+        return { activityLimit: activityLimit };
+      }
+
+      function applyDashboardFilters(filters) {
+        if (filters && typeof filters.activityLimit === 'number' && filters.activityLimit >= 1) {
+          activityLimit = Math.min(100, Math.max(1, filters.activityLimit));
+        }
+      }
+
+      function fetchActivityFeed() {
+        if (!activityFeed) return;
+        activityFeed.innerHTML = '<p class="loading">Loading…</p>';
+        fetch(API_BASE + '/activity-feed?limit=' + activityLimit, {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (r && typeof r.json === 'function') return r.json();
+          return null;
+        }).then(function (data) {
+          if (data && data.ok && data.items) renderActivityFeed(data.items);
+          else if (activityFeed) activityFeed.innerHTML = '<li class="empty-card">No recent activity.</li>';
+        }).catch(function () {
+          if (activityFeed) activityFeed.innerHTML = '<li class="empty-card">Could not load activity.</li>';
+        });
+      }
+
+      function refreshSavedViewsList() {
+        if (!savedViewsList) return;
+        fetch(API_BASE + '/saved-views?scope=dashboard', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        }).then(function (data) {
+          var items = (data && data.ok && data.items) ? data.items : [];
+          if (items.length === 0) {
+            savedViewsList.innerHTML = '<li class="empty-card">No saved views. Save current view to create one.</li>';
+            return;
+          }
+          var html = '';
+          items.forEach(function (v) {
+            html += '<li><span class="name">' + escapeHtml(v.name) + '</span>';
+            html += '<button type="button" class="btn-link load-view" data-id="' + escapeHtml(v.id) + '" data-filters="' + escapeHtml(JSON.stringify(v.filtersJson || {})) + '">Load</button>';
+            html += '<button type="button" class="btn-link danger delete-view" data-id="' + escapeHtml(v.id) + '">Delete</button></li>';
+          });
+          savedViewsList.innerHTML = html;
+          savedViewsList.querySelectorAll('.load-view').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              try {
+                var f = JSON.parse(btn.getAttribute('data-filters') || '{}');
+                applyDashboardFilters(f);
+                fetchActivityFeed();
+              } catch (e) {}
+            });
+          });
+          savedViewsList.querySelectorAll('.delete-view').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var id = btn.getAttribute('data-id');
+              if (!id) return;
+              fetch(API_BASE + '/saved-views/' + encodeURIComponent(id), {
+                method: 'DELETE',
+                headers: getAuth(),
+                credentials: 'include',
+              }).then(function (r) {
+                if (r.ok) refreshSavedViewsList();
+              });
+            });
+          });
+        }).catch(function () {
+          savedViewsList.innerHTML = '<li class="empty-card">Could not load saved views.</li>';
+        });
+      }
+
+      function getDocumentFilters() {
+        return {
+          status: docFilterStatus && docFilterStatus.value ? docFilterStatus.value.trim() : '',
+          caseId: docFilterCase && docFilterCase.value ? docFilterCase.value.trim() : '',
+          tag: docFilterTag && docFilterTag.value ? docFilterTag.value.trim() : '',
+          provider: docFilterProvider && docFilterProvider.value ? docFilterProvider.value.trim() : '',
+          dateFrom: docFilterDateFrom && docFilterDateFrom.value ? docFilterDateFrom.value : '',
+          dateTo: docFilterDateTo && docFilterDateTo.value ? docFilterDateTo.value : '',
+          hasSettlementOffer: docFilterHasOffer && docFilterHasOffer.checked,
+          duplicatesOnly: docFilterDuplicatesOnly && docFilterDuplicatesOnly.checked,
+        };
+      }
+
+      function applyDocumentFilters(f) {
+        if (!f) return;
+        if (docFilterStatus && f.status !== undefined) docFilterStatus.value = f.status || '';
+        if (docFilterCase && f.caseId !== undefined) docFilterCase.value = f.caseId || '';
+        if (docFilterTag && f.tag !== undefined) docFilterTag.value = f.tag || '';
+        if (docFilterProvider && f.provider !== undefined) docFilterProvider.value = f.provider || '';
+        if (docFilterDateFrom && f.dateFrom !== undefined) docFilterDateFrom.value = f.dateFrom || '';
+        if (docFilterDateTo && f.dateTo !== undefined) docFilterDateTo.value = f.dateTo || '';
+        if (docFilterHasOffer && f.hasSettlementOffer !== undefined) docFilterHasOffer.checked = !!f.hasSettlementOffer;
+        if (docFilterDuplicatesOnly && f.duplicatesOnly !== undefined) docFilterDuplicatesOnly.checked = !!f.duplicatesOnly;
+      }
+
+      function buildDocumentQueryString(cursor) {
+        var f = getDocumentFilters();
+        var q = 'limit=50';
+        if (cursor) q += '&cursor=' + encodeURIComponent(cursor);
+        if (f.status) q += '&status=' + encodeURIComponent(f.status);
+        if (f.caseId) q += '&caseId=' + encodeURIComponent(f.caseId);
+        if (f.tag) q += '&tag=' + encodeURIComponent(f.tag);
+        if (f.provider) q += '&provider=' + encodeURIComponent(f.provider);
+        if (f.dateFrom) q += '&dateFrom=' + encodeURIComponent(f.dateFrom);
+        if (f.dateTo) q += '&dateTo=' + encodeURIComponent(f.dateTo);
+        if (f.hasSettlementOffer) q += '&hasSettlementOffer=true';
+        if (f.duplicatesOnly) q += '&duplicatesOnly=true';
+        return q;
+      }
+
+      function tagStyle(c) {
+        if (c && /^#[0-9a-fA-F]{3,8}$/.test(c)) return 'background:' + c + ';color:#fff;';
+        return 'background:#e5e7eb;color:#374151;';
+      }
+
+      function renderDocumentsTable(items, append) {
+        if (!docTableWrap) return;
+        if (!items || items.length === 0) {
+          if (!append) docTableWrap.innerHTML = '<p class="empty-card">No documents match the filters.</p>';
+          if (docLoadMoreBtn) docLoadMoreBtn.style.display = 'none';
+          return;
+        }
+        function tagsHtml(tags) {
+          if (!tags || tags.length === 0) return '—';
+          return (tags || []).map(function (t) {
+            return '<span class="doc-tag" style="' + tagStyle(t.color) + '">' + escapeHtml(t.name || t.id || '') + '</span>';
+          }).join(' ');
+        }
+        if (!append) {
+          var html = '<table class="doc-table"><thead><tr><th class="doc-checkbox-col"><input type="checkbox" id="docSelectAll" title="Select all" /></th><th class="doc-thumb-cell">Thumb</th><th>Name</th><th>Tags</th><th>Status</th><th>Case</th><th>Created</th><th></th></tr></thead><tbody>';
+          items.forEach(function (d) {
+            var created = d.createdAt ? new Date(d.createdAt).toLocaleDateString() : '—';
+            var caseLink = d.routedCaseId ? '<a href="/cases/' + escapeHtml(d.routedCaseId) + '">' + escapeHtml(d.routedCaseId) + '</a>' : '—';
+            var thumbCell = d.thumbnailUrl ? '<img src="' + escapeHtml(d.thumbnailUrl) + '" alt="" class="doc-thumb" loading="lazy" />' : '—';
+            var thumbAttrs = (d.thumbnailUrl ? ' data-thumbnail-url="' + escapeHtml(d.thumbnailUrl) + '" data-doc-name="' + escapeHtml((d.originalName || d.id || '').replace(/"/g, '&quot;')) + '"' : '');
+            var isPdf = (d.mimeType === 'application/pdf') || ((d.originalName || '').toLowerCase().endsWith('.pdf'));
+            var cb = isPdf ? '<input type="checkbox" class="doc-row-cb" data-document-id="' + escapeHtml(d.id) + '" />' : '<span class="doc-no-merge" title="Only PDFs can be merged">—</span>';
+            html += '<tr' + thumbAttrs + '><td class="doc-checkbox-col">' + cb + '</td><td class="doc-thumb-cell">' + thumbCell + '</td><td><a href="/documents/' + escapeHtml(d.id) + '">' + escapeHtml(d.originalName || d.id) + '</a></td><td>' + tagsHtml(d.tags) + '</td><td>' + escapeHtml(d.status || '') + '</td><td>' + caseLink + '</td><td>' + created + '</td><td><a href="' + (API_BASE || '') + '/documents/' + encodeURIComponent(d.id) + '/download" target="_blank" rel="noopener">Open</a></td></tr>';
+          });
+          html += '</tbody></table>';
+          docTableWrap.innerHTML = html;
+          setupDocTableBulkActions();
+        } else {
+          var tbody = docTableWrap.querySelector('.doc-table tbody');
+          if (tbody) {
+            items.forEach(function (d) {
+              var created = d.createdAt ? new Date(d.createdAt).toLocaleDateString() : '—';
+              var caseLink = d.routedCaseId ? '<a href="/cases/' + escapeHtml(d.routedCaseId) + '">' + escapeHtml(d.routedCaseId) + '</a>' : '—';
+              var thumbCell = d.thumbnailUrl ? '<img src="' + escapeHtml(d.thumbnailUrl) + '" alt="" class="doc-thumb" loading="lazy" />' : '—';
+              var thumbAttrs = (d.thumbnailUrl ? ' data-thumbnail-url="' + escapeHtml(d.thumbnailUrl) + '" data-doc-name="' + escapeHtml((d.originalName || d.id || '').replace(/"/g, '&quot;')) + '"' : '');
+              var isPdf = (d.mimeType === 'application/pdf') || ((d.originalName || '').toLowerCase().endsWith('.pdf'));
+              var cb = isPdf ? '<input type="checkbox" class="doc-row-cb" data-document-id="' + escapeHtml(d.id) + '" />' : '<span class="doc-no-merge" title="Only PDFs can be merged">—</span>';
+              var row = '<tr' + thumbAttrs + '><td class="doc-checkbox-col">' + cb + '</td><td class="doc-thumb-cell">' + thumbCell + '</td><td><a href="/documents/' + escapeHtml(d.id) + '">' + escapeHtml(d.originalName || d.id) + '</a></td><td>' + tagsHtml(d.tags) + '</td><td>' + escapeHtml(d.status || '') + '</td><td>' + caseLink + '</td><td>' + created + '</td><td><a href="' + (API_BASE || '') + '/documents/' + encodeURIComponent(d.id) + '/download" target="_blank" rel="noopener">Open</a></td></tr>';
+              tbody.insertAdjacentHTML('beforeend', row);
+            });
+            setupDocTableBulkActions();
+          }
+        }
+        if (docLoadMoreBtn) docLoadMoreBtn.style.display = docNextCursor ? 'block' : 'none';
+      }
+
+      function getSelectedDocumentIds() {
+        if (!docTableWrap) return [];
+        var cbs = docTableWrap.querySelectorAll('.doc-row-cb:checked');
+        return Array.prototype.map.call(cbs, function (el) { return el.getAttribute('data-document-id'); }).filter(Boolean);
+      }
+
+      function setupDocTableBulkActions() {
+        var bulkBar = document.getElementById('docBulkActions');
+        var bulkCount = document.getElementById('docBulkCount');
+        var selectAll = document.getElementById('docSelectAll');
+        var mergeBtn = document.getElementById('docMergeBtn');
+        if (!docTableWrap) return;
+        function updateBulkBar() {
+          var ids = getSelectedDocumentIds();
+          if (bulkCount) bulkCount.textContent = ids.length + ' selected';
+          if (bulkBar) bulkBar.style.display = ids.length > 0 ? 'block' : 'none';
+          if (selectAll) selectAll.checked = ids.length > 0 && docTableWrap.querySelectorAll('.doc-row-cb').length === docTableWrap.querySelectorAll('.doc-row-cb:checked').length;
+        }
+        docTableWrap.addEventListener('change', function (e) {
+          if (e.target && (e.target.id === 'docSelectAll' || e.target.classList.contains('doc-row-cb'))) {
+            if (e.target.id === 'docSelectAll') {
+              var checked = selectAll && selectAll.checked;
+              docTableWrap.querySelectorAll('.doc-row-cb').forEach(function (cb) { cb.checked = !!checked; });
+            }
+            updateBulkBar();
+          }
+        });
+        if (mergeBtn) {
+          mergeBtn.onclick = function () {
+            var ids = getSelectedDocumentIds();
+            if (ids.length < 2) {
+              setError('Select at least 2 PDFs to merge.');
+              return;
+            }
+            setError('');
+            mergeBtn.disabled = true;
+            mergeBtn.textContent = 'Merging…';
+            fetch(API_BASE + '/documents/merge', {
+              method: 'POST',
+              headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+              credentials: 'include',
+              body: JSON.stringify({ documentIds: ids }),
+            }).then(function (r) {
+              return r.json().then(function (data) {
+                if (!r.ok) throw new Error(data.error || r.statusText);
+                return data;
+              });
+            }).then(function (data) {
+              if (data.document && data.document.documentId) {
+                setError('');
+                fetchDocuments();
+                var link = '/documents/' + data.document.documentId;
+                if (window.confirm('Merged document created. Open it now?')) {
+                  window.location.href = link;
+                }
+              }
+            }).catch(function (e) {
+              setError(e.message || 'Merge failed');
+            }).finally(function () {
+              mergeBtn.disabled = false;
+              mergeBtn.textContent = 'Merge selected';
+            });
+          };
+        }
+        updateBulkBar();
+      }
+
+      function fetchDocuments(cursor) {
+        if (!docTableWrap) return;
+        if (!cursor) docTableWrap.innerHTML = '<p class="loading">Loading…</p>';
+        var qs = buildDocumentQueryString(cursor);
+        fetch(API_BASE + '/me/documents?' + qs, {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        }).then(function (data) {
+          var items = data.items || [];
+          docNextCursor = data.nextCursor || null;
+          renderDocumentsTable(items, !!cursor);
+        }).catch(function (e) {
+          if (!cursor) docTableWrap.innerHTML = '';
+          setError(e.message);
+          if (docLoadMoreBtn) docLoadMoreBtn.style.display = 'none';
+        });
+      }
+
+      (function setupDocPreviewTooltip() {
+        var tooltip = document.getElementById('docPreviewTooltip');
+        if (!docTableWrap || !tooltip) return;
+        var tipImg = tooltip.querySelector('img');
+        var tipName = tooltip.querySelector('.doc-preview-name');
+        docTableWrap.addEventListener('mouseover', function (e) {
+          var tr = e.target.closest && e.target.closest('tr');
+          if (tr && tr.dataset.thumbnailUrl) {
+            if (tipImg) tipImg.src = tr.dataset.thumbnailUrl;
+            if (tipName) tipName.textContent = tr.dataset.docName || '';
+            tooltip.classList.add('visible');
+            tooltip.setAttribute('aria-hidden', 'false');
+            tooltip.style.left = (e.clientX + 16) + 'px';
+            tooltip.style.top = (e.clientY + 16) + 'px';
+          } else {
+            tooltip.classList.remove('visible');
+            tooltip.setAttribute('aria-hidden', 'true');
+            if (tipImg) tipImg.removeAttribute('src');
+          }
+        });
+        docTableWrap.addEventListener('mousemove', function (e) {
+          if (tooltip.classList.contains('visible')) {
+            tooltip.style.left = (e.clientX + 16) + 'px';
+            tooltip.style.top = (e.clientY + 16) + 'px';
+          }
+        });
+        docTableWrap.addEventListener('mouseleave', function () {
+          tooltip.classList.remove('visible');
+          tooltip.setAttribute('aria-hidden', 'true');
+          if (tipImg) tipImg.removeAttribute('src');
+        });
+      })();
+
+      function refreshDocSavedViews() {
+        if (!docSavedViewSelect) return;
+        fetch(API_BASE + '/saved-views?scope=documents', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return [];
+          return r.json();
+        }).then(function (data) {
+          var items = (data && data.ok && data.items) ? data.items : [];
+          var html = '<option value="">Load saved…</option>';
+          items.forEach(function (v) {
+            html += '<option value="' + escapeHtml(v.id) + '" data-filters="' + escapeHtml(JSON.stringify(v.filtersJson || {})) + '">' + escapeHtml(v.name) + '</option>';
+          });
+          docSavedViewSelect.innerHTML = html;
+        }).catch(function () {});
+      }
+
+      function populateDocFilterDropdowns() {
+        var auth = getAuth();
+        if (docFilterCase) {
+          fetch(API_BASE + '/cases', { headers: Object.assign({}, auth, { 'Accept': 'application/json' }), credentials: 'include' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+              var items = (data && data.ok && data.items) ? data.items : [];
+              var html = '<option value="">Any</option>';
+              items.forEach(function (c) {
+                html += '<option value="' + escapeHtml(c.id) + '">' + escapeHtml((c.caseNumber || c.title || c.id) + (c.clientName ? ' — ' + c.clientName : '')) + '</option>';
+              });
+              docFilterCase.innerHTML = html;
+            }).catch(function () {});
+        }
+        if (docFilterTag) {
+          fetch(API_BASE + '/document-tags', { headers: Object.assign({}, auth, { 'Accept': 'application/json' }), credentials: 'include' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+              var items = (data && data.ok && data.items) ? data.items : [];
+              var html = '<option value="">Any</option>';
+              items.forEach(function (t) {
+                html += '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name || t.id) + '</option>';
+              });
+              docFilterTag.innerHTML = html;
+            }).catch(function () {});
+        }
+        if (docFilterProvider) {
+          fetch(API_BASE + '/providers', { headers: Object.assign({}, auth, { 'Accept': 'application/json' }), credentials: 'include' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+              var items = (data && data.items) ? data.items : [];
+              var html = '<option value="">Any</option>';
+              items.forEach(function (p) {
+                html += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name || p.id) + '</option>';
+              });
+              docFilterProvider.innerHTML = html;
+            }).catch(function () {});
+        }
+      }
+
+      function buildDigestText(data) {
+        if (!data || !data.date) return '';
+        var d = data.date;
+        var lines = [
+          'Daily operations digest — ' + d,
+          '',
+          'New docs today: ' + (data.newDocsToday && data.newDocsToday.count != null ? data.newDocsToday.count : 0),
+          'Docs still processing: ' + (data.docsStillProcessing && data.docsStillProcessing.count != null ? data.docsStillProcessing.count : 0),
+          'Unmatched docs: ' + (data.unmatchedDocs && data.unmatchedDocs.count != null ? data.unmatchedDocs.count : 0),
+          'Failed docs: ' + (data.failedDocs && data.failedDocs.count != null ? data.failedDocs.count : 0),
+          'Overdue tasks: ' + (data.overdueTasks && data.overdueTasks.count != null ? data.overdueTasks.count : 0),
+          'Requests sent today: ' + (data.requestsSentToday && data.requestsSentToday.count != null ? data.requestsSentToday.count : 0),
+          '',
+          'Latest notifications: ' + (data.latestNotifications ? data.latestNotifications.length : 0)
+        ];
+        (data.latestNotifications || []).slice(0, 10).forEach(function (n) {
+          lines.push('  - ' + (n.title || n.type || '') + (n.createdAt ? ' (' + n.createdAt.slice(0, 16) + ')' : ''));
+        });
+        return lines.join('\n');
+      }
+
+      function renderTodayPanel(data) {
+        if (!todayPanel) return;
+        if (!data || !data.ok) {
+          todayPanel.innerHTML = '<p class="empty-card">Could not load daily digest.</p>';
+          digestActions.style.display = 'none';
+          return;
+        }
+        var date = data.date || '';
+        var newDocs = data.newDocsToday || { count: 0, items: [] };
+        var processing = data.docsStillProcessing || { count: 0, items: [] };
+        var unmatched = data.unmatchedDocs || { count: 0, items: [] };
+        var failed = data.failedDocs || { count: 0, items: [] };
+        var overdue = data.overdueTasks || { count: 0, items: [] };
+        var sentToday = data.requestsSentToday || { count: 0, items: [] };
+        var notifs = data.latestNotifications || [];
+        var html = '<div class="today-panel">';
+        html += '<div class="card"><div class="card-title">New docs today</div><div class="card-count">' + newDocs.count + '</div>';
+        html += (newDocs.items && newDocs.items.length) ? '<ul class="card-list">' + newDocs.items.slice(0, 5).map(function (d) { return '<li><a href="/documents/' + escapeHtml(d.id) + '">' + escapeHtml(d.originalName || d.id) + '</a></li>'; }).join('') + '</ul>' : '<div class="empty-card">None</div>';
+        html += '</div>';
+        html += '<div class="card"><div class="card-title">Still processing</div><div class="card-count">' + processing.count + '</div>';
+        html += (processing.items && processing.items.length) ? '<ul class="card-list">' + processing.items.slice(0, 5).map(function (d) { return '<li><a href="/documents/' + escapeHtml(d.id) + '">' + escapeHtml(d.originalName || d.id) + '</a></li>'; }).join('') + '</ul>' : '<div class="empty-card">None</div>';
+        html += '</div>';
+        html += '<div class="card"><div class="card-title">Unmatched</div><div class="card-count">' + unmatched.count + '</div>';
+        html += (unmatched.items && unmatched.items.length) ? '<ul class="card-list">' + unmatched.items.slice(0, 5).map(function (d) { return '<li><a href="/documents/' + escapeHtml(d.id) + '">' + escapeHtml(d.originalName || d.id) + '</a></li>'; }).join('') + '</ul>' : '<div class="empty-card">None</div>';
+        html += '</div>';
+        html += '<div class="card"><div class="card-title">Failed</div><div class="card-count">' + failed.count + '</div>';
+        html += (failed.items && failed.items.length) ? '<ul class="card-list">' + failed.items.slice(0, 5).map(function (d) { return '<li><a href="/documents/' + escapeHtml(d.id) + '">' + escapeHtml(d.originalName || d.id) + '</a></li>'; }).join('') + '</ul>' : '<div class="empty-card">None</div>';
+        html += '</div>';
+        html += '<div class="card' + (overdue.count > 0 ? ' overdue-card' : '') + '"><div class="card-title">Overdue tasks</div><div class="card-count">' + overdue.count + '</div>';
+        html += (overdue.items && overdue.items.length) ? '<ul class="card-list">' + overdue.items.slice(0, 5).map(function (t) { return '<li><a href="/cases/' + escapeHtml(t.caseId || '') + '">' + escapeHtml(t.title || 'Task') + '</a></li>'; }).join('') + '</ul>' : '<div class="empty-card">None</div>';
+        html += '</div>';
+        html += '<div class="card"><div class="card-title">Requests sent today</div><div class="card-count">' + sentToday.count + '</div>';
+        html += (sentToday.items && sentToday.items.length) ? '<ul class="card-list">' + sentToday.items.slice(0, 5).map(function (a) { return '<li>' + escapeHtml(a.providerName || 'Request') + ' (' + (a.channel || '') + ')</li>'; }).join('') + '</ul>' : '<div class="empty-card">None</div>';
+        html += '</div>';
+        html += '<div class="card"><div class="card-title">Latest notifications</div><div class="card-count">' + notifs.length + '</div>';
+        html += notifs.length ? '<ul class="card-list">' + notifs.slice(0, 5).map(function (n) { return '<li>' + escapeHtml(n.title || n.type || '') + '</li>'; }).join('') + '</ul>' : '<div class="empty-card">None</div>';
+        html += '</div></div>';
+        todayPanel.innerHTML = html;
+        lastDigestText = buildDigestText(data);
+        digestActions.style.display = 'flex';
+      }
+
+      function fetchDailyDigest() {
+        if (!todayPanel) return;
+        todayPanel.innerHTML = '<p class="loading">Loading…</p>';
+        digestActions.style.display = 'none';
+        fetch(API_BASE + '/dashboard/daily-digest', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (r && typeof r.json === 'function') return r.json();
+          return null;
+        }).then(function (data) {
+          renderTodayPanel(data);
+        }).catch(function () {
+          todayPanel.innerHTML = '<p class="empty-card">Could not load daily digest.</p>';
+          digestActions.style.display = 'none';
+        });
+      }
+
+      function load() {
+        setError('');
+        attentionPanel.innerHTML = '<p class="loading">Loading…</p>';
+        fetch(API_BASE + '/dashboard/attention', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Failed to load');
+            var u = data.unmatchedDocuments || { count: 0, items: [] };
+            var f = data.failedDocuments || { count: 0, items: [] };
+            var o = data.overdueCaseTasks || { count: 0, items: [] };
+            var r = data.openReviewDocuments || { count: 0, items: [] };
+            var rr = data.recordsRequestsNeedingFollowUp || { count: 0, items: [] };
+            var s = data.recentRequestSendFailures || { count: 0, items: [] };
+
+            var html = '';
+            html += renderCard('Unmatched documents', u.count, u.items, function (d) { return '/documents/' + d.id; }, function (d) { return d.originalName || d.id; });
+            html += renderCard('Failed documents', f.count, f.items, function (d) { return '/documents/' + d.id; }, function (d) { return d.originalName || d.id; });
+            html += renderCard('Overdue tasks', o.count, o.items, function (t) { return '/cases/' + (t.caseId || ''); }, function (t) { return (t.title || 'Task') + (t.dueDate ? ' (' + new Date(t.dueDate).toLocaleDateString() + ')' : ''); }, o.count > 0 ? 'overdue-card' : '');
+            html += renderCard('Documents in review queue', r.count, r.items, function (d) { return '/documents/' + d.id; }, function (d) { return d.originalName || d.id; });
+            html += renderCard('Records requests with failed sends', rr.count, rr.items, function (x) { return '/records-requests/' + x.id; }, function (x) { return (x.providerName || 'Request') + (x.status ? ' (' + x.status + ')' : ''); });
+            html += renderCard('Recent request send failures', s.count, s.items, function (a) { return '/records-requests/' + (a.recordsRequestId || a.id); }, function (a) { return (a.error || 'Send failed').slice(0, 50) + (a.createdAt ? ' — ' + new Date(a.createdAt).toLocaleString() : ''); });
+
+            attentionPanel.innerHTML = html;
+            try { sessionStorage.setItem('providerApiKey', (keyInput && keyInput.value) ? keyInput.value.trim() : ''); } catch (e) {}
+            loadJobsCounts();
+            loadAnalytics();
+            refreshHeaderBell();
+            refreshSavedViewsList();
+            refreshDocSavedViews();
+            populateDocFilterDropdowns();
+            fetchDailyDigest();
+            fetch(API_BASE + '/activity-feed?limit=' + activityLimit, {
+              headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+              credentials: 'include',
+            }).then(function (r) {
+              if (r && typeof r.json === 'function') return r.json();
+              return null;
+            }).then(function (data) {
+              if (data && data.ok && data.items) renderActivityFeed(data.items);
+              else if (activityFeed) activityFeed.innerHTML = '<li class="empty-card">No recent activity.</li>';
+            }).catch(function () {
+              if (activityFeed) activityFeed.innerHTML = '<li class="empty-card">Could not load activity.</li>';
+            });
+          })
+          .catch(function (e) {
+            attentionPanel.innerHTML = '';
+            setError(e.message);
+            if (activityFeed) activityFeed.innerHTML = '<li class="empty-card">Could not load activity.</li>';
+          });
+      }
+
+      keyInput.addEventListener('change', load);
+      keyInput.addEventListener('keyup', function (e) { if (e.key === 'Enter') load(); });
+
+      if (docApplyBtn) {
+        docApplyBtn.addEventListener('click', function () { fetchDocuments(null); });
+      }
+      if (docLoadMoreBtn) {
+        docLoadMoreBtn.addEventListener('click', function () { fetchDocuments(docNextCursor); });
+      }
+      if (docLoadViewBtn && docSavedViewSelect) {
+        docLoadViewBtn.addEventListener('click', function () {
+          var opt = docSavedViewSelect.options[docSavedViewSelect.selectedIndex];
+          if (!opt || !opt.value) return;
+          try {
+            var f = JSON.parse(opt.getAttribute('data-filters') || '{}');
+            applyDocumentFilters(f);
+            fetchDocuments(null);
+          } catch (e) {}
+        });
+      }
+      if (docSaveViewBtn) {
+        docSaveViewBtn.addEventListener('click', function () {
+          var name = prompt('Name for this filter');
+          if (!name || !name.trim()) return;
+          setError('');
+          fetch(API_BASE + '/saved-views', {
+            method: 'POST',
+            headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+            credentials: 'include',
+            body: JSON.stringify({ name: name.trim(), scope: 'documents', filtersJson: getDocumentFilters() }),
+          }).then(function (r) {
+            return r.json().then(function (data) {
+              if (!r.ok) throw new Error(data.error || r.statusText);
+              refreshDocSavedViews();
+            });
+          }).catch(function (e) {
+            setError(e.message);
+          });
+        });
+      }
+
+      saveViewBtn.addEventListener('click', function () {
+        var name = prompt('Name for this view');
+        if (!name || !name.trim()) return;
+        setError('');
+        fetch(API_BASE + '/saved-views', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({ name: name.trim(), scope: 'dashboard', filtersJson: getCurrentDashboardFilters() }),
+        }).then(function (r) {
+          return r.json().then(function (data) {
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            refreshSavedViewsList();
+          });
+        }).catch(function (e) {
+          setError(e.message);
+        });
+      });
+
+      if (copyDigestBtn) {
+        copyDigestBtn.addEventListener('click', function () {
+          if (!lastDigestText) return;
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(lastDigestText).then(function () {
+              copyDigestBtn.textContent = 'Copied';
+              setTimeout(function () { copyDigestBtn.textContent = 'Copy summary'; }, 2000);
+            }).catch(function () { setError('Could not copy.'); });
+          } else {
+            var ta = document.createElement('textarea');
+            ta.value = lastDigestText;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'absolute';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            try {
+              document.execCommand('copy');
+              copyDigestBtn.textContent = 'Copied';
+              setTimeout(function () { copyDigestBtn.textContent = 'Copy summary'; }, 2000);
+            } catch (e) { setError('Could not copy.'); }
+            document.body.removeChild(ta);
+          }
+        });
+      }
+      if (downloadDigestBtn) {
+        downloadDigestBtn.addEventListener('click', function () {
+          if (!lastDigestText) return;
+          var blob = new Blob([lastDigestText], { type: 'text/plain' });
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'daily-digest-' + (new Date().toISOString().slice(0, 10)) + '.txt';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(a.href);
+        });
+      }
+      var jobsCountsRefresh = document.getElementById('jobsCountsRefresh');
+      if (jobsCountsRefresh) jobsCountsRefresh.addEventListener('click', loadJobsCounts);
+      var analyticsRefreshBtn = document.getElementById('analyticsRefreshBtn');
+      if (analyticsRefreshBtn) analyticsRefreshBtn.addEventListener('click', loadAnalytics);
+
+      try {
+        var saved = sessionStorage.getItem('providerApiKey');
+        if (saved && keyInput) keyInput.value = saved;
+      } catch (e) {}
+      if (keyInput && keyInput.value.trim()) load();
+      else refreshHeaderBell();
+    })();
+  </script>
+</body>
+</html>

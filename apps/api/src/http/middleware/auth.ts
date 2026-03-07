@@ -1,11 +1,13 @@
 /**
- * Unified auth middleware: Bearer API key or session user.
+ * Unified auth middleware: Bearer API key, JWT, or session user.
  * Resolves firmId, userId, role (PLATFORM_ADMIN > FIRM_ADMIN > STAFF).
  */
 import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import { prisma } from "../../db/prisma";
 import { Role } from "@prisma/client";
+import { recordAbuse } from "../../services/abuseTracking";
+import { verifyToken, API_KEY_PREFIX } from "../../lib/jwt";
 
 const DEFAULT_MAX_PER_MINUTE = 120;
 const WINDOW_MS = 60 * 1000;
@@ -49,13 +51,12 @@ function parseScopes(scopes: string | null | undefined): Set<string> {
 }
 
 /**
- * Main auth: Bearer API key or PLATFORM_ADMIN_API_KEY.
- * (Session user: placeholder for future - check cookies/session after Bearer.)
+ * Main auth: Bearer API key, PLATFORM_ADMIN_API_KEY, or session (browser cookie).
+ * Session: req.session.userId must match a User; firmId/role from User for tenant safety.
  * Sets: req.firmId, req.apiKeyId?, req.userId?, req.authRole, req.authScopes, req.isAdmin?
  */
 export async function auth(req: Request, res: Response, next: NextFunction) {
   const token = getBearerToken(req);
-  // TODO: session user - if no Bearer, check req.session?.userId, resolve User+firmId+role
   const adminKey = process.env.PLATFORM_ADMIN_API_KEY;
 
   if (adminKey && token && token === adminKey) {
@@ -65,45 +66,88 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
     return next();
   }
 
-  if (!token) {
-    return res.status(401).json({ ok: false, error: "Missing Authorization: Bearer <apiKey>" });
-  }
-
-  const prefix = token.slice(0, 12);
-  const candidates = await prisma.apiKey.findMany({
-    where: { keyPrefix: prefix, revokedAt: null },
-    take: 5,
-    select: { id: true, firmId: true, userId: true, keyHash: true, scopes: true },
-  });
-
-  for (const k of candidates) {
-    const ok = await bcrypt.compare(token, k.keyHash);
-    if (ok) {
-      const requestId = (req as any).requestId as string | undefined;
-      if (!checkRateLimit(k.id, requestId)) {
-        res.setHeader("Retry-After", "60");
-        return res.status(429).json({ ok: false, error: "Too many requests. Try again later." });
+  if (token) {
+    // JWT: when token is not an API key prefix, try JWT (for web Bearer auth)
+    if (!token.startsWith(API_KEY_PREFIX)) {
+      const payload = verifyToken(token);
+      if (payload) {
+        (req as any).firmId = payload.firmId;
+        (req as any).userId = payload.userId;
+        (req as any).authRole = payload.role as Role;
+        (req as any).authScopes = new Set<string>();
+        return next();
       }
-      await prisma.apiKey.update({ where: { id: k.id }, data: { lastUsedAt: new Date() } });
-
-      (req as any).firmId = k.firmId;
-      (req as any).apiKeyId = k.id;
-      (req as any).authScopes = parseScopes(k.scopes);
-
-      if (k.userId) {
-        const user = await prisma.user.findUnique({
-          where: { id: k.userId },
-          select: { role: true },
-        });
-        (req as any).userId = k.userId;
-        (req as any).authRole = user?.role ?? Role.STAFF;
-      } else {
-        (req as any).userId = null;
-        (req as any).authRole = Role.STAFF;
-      }
-      return next();
     }
+
+    const prefix = token.slice(0, 12);
+    const candidates = await prisma.apiKey.findMany({
+      where: { keyPrefix: prefix, revokedAt: null },
+      take: 5,
+      select: { id: true, firmId: true, userId: true, keyHash: true, scopes: true },
+    });
+
+    for (const k of candidates) {
+      const ok = await bcrypt.compare(token, k.keyHash);
+      if (ok) {
+        const requestId = (req as any).requestId as string | undefined;
+        if (!checkRateLimit(k.id, requestId)) {
+          res.setHeader("Retry-After", "60");
+          return res.status(429).json({ ok: false, error: "Too many requests. Try again later." });
+        }
+        await prisma.apiKey.update({ where: { id: k.id }, data: { lastUsedAt: new Date() } });
+
+        (req as any).firmId = k.firmId;
+        (req as any).apiKeyId = k.id;
+        (req as any).authScopes = parseScopes(k.scopes);
+
+        if (k.userId) {
+          const user = await prisma.user.findUnique({
+            where: { id: k.userId },
+            select: { role: true, firmId: true },
+          });
+          (req as any).userId = k.userId;
+          (req as any).authRole = user?.role ?? Role.STAFF;
+          if (user && user.firmId !== k.firmId) {
+            recordAbuse({
+              ip: (req.ip || req.socket?.remoteAddress || "unknown").toString(),
+              route: req.originalUrl || req.path || "/",
+              eventType: "tenant_mismatch",
+            });
+            return res.status(403).json({ ok: false, error: "Tenant mismatch", code: "FORBIDDEN" });
+          }
+        } else {
+          (req as any).userId = null;
+          (req as any).authRole = Role.STAFF;
+        }
+        return next();
+      }
+    }
+    const ip = (req.ip || req.socket?.remoteAddress || "unknown").toString();
+    const route = req.originalUrl || req.path || "/";
+    recordAbuse({ ip, route, eventType: "auth_failure" });
+    return res.status(401).json({ ok: false, error: "Invalid API key", code: "UNAUTHORIZED" });
   }
 
-  return res.status(401).json({ ok: false, error: "Invalid API key" });
+  // No Bearer token: try session (browser cookie)
+  const sess = (req as any).session;
+  const sessionUserId = sess?.userId;
+  if (sessionUserId && typeof sessionUserId === "string") {
+    const user = await prisma.user.findUnique({
+      where: { id: sessionUserId },
+      select: { id: true, firmId: true, email: true, role: true },
+    });
+    if (!user) {
+      if (typeof (req as any).session?.destroy === "function") {
+        (req as any).session.destroy(() => {});
+      }
+      return res.status(401).json({ ok: false, error: "Session invalid", code: "UNAUTHORIZED" });
+    }
+    (req as any).firmId = user.firmId;
+    (req as any).userId = user.id;
+    (req as any).authRole = user.role;
+    (req as any).authScopes = new Set<string>();
+    return next();
+  }
+
+  return res.status(401).json({ ok: false, error: "Missing Authorization or session", code: "UNAUTHORIZED" });
 }

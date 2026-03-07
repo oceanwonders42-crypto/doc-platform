@@ -4,6 +4,8 @@ const url = process.env.REDIS_URL || "redis://localhost:6379";
 export const redis = new Redis(url);
 
 const QUEUE_KEY = "doc_jobs";
+/** Legacy migration jobs: processed after main queue so normal workflow is not blocked. */
+const QUEUE_KEY_MIGRATION = "doc_jobs_migration";
 
 export type OcrJobPayload = { type: "ocr"; documentId: string; firmId: string };
 export type ClassificationJobPayload = { type: "classification"; documentId: string; firmId: string };
@@ -20,6 +22,11 @@ export type JobPayload =
 
 export async function enqueueOcrJob(payload: Omit<OcrJobPayload, "type">) {
   await redis.lpush(QUEUE_KEY, JSON.stringify({ type: "ocr", ...payload }));
+}
+
+/** Enqueue OCR job to migration queue (bulk backfile import). Same pipeline; worker processes main queue first. */
+export async function enqueueMigrationOcrJob(payload: Omit<OcrJobPayload, "type">) {
+  await redis.lpush(QUEUE_KEY_MIGRATION, JSON.stringify({ type: "ocr", ...payload }));
 }
 
 export async function enqueueClassificationJob(payload: Omit<ClassificationJobPayload, "type">) {
@@ -45,7 +52,21 @@ export async function enqueueTimelineRebuildJob(payload: { caseId: string; firmI
 
 export async function popJob(): Promise<JobPayload | null> {
   const raw = await redis.rpop(QUEUE_KEY);
-  return raw ? (JSON.parse(raw) as JobPayload) : null;
+  if (raw) return JSON.parse(raw) as JobPayload;
+  const migrationRaw = await redis.rpop(QUEUE_KEY_MIGRATION);
+  return migrationRaw ? (JSON.parse(migrationRaw) as JobPayload) : null;
+}
+
+/** Number of jobs waiting in the document pipeline queue (pending). */
+export async function getRedisQueueLength(): Promise<number> {
+  const n = await redis.llen(QUEUE_KEY);
+  return typeof n === "number" ? n : 0;
+}
+
+/** Number of jobs in the migration queue. */
+export async function getMigrationQueueLength(): Promise<number> {
+  const n = await redis.llen(QUEUE_KEY_MIGRATION);
+  return typeof n === "number" ? n : 0;
 }
 
 /** @deprecated Use popJob */

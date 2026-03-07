@@ -53,6 +53,7 @@ export async function runRetentionCleanup(): Promise<RetentionCleanupResult[]> {
         await prisma.document.updateMany({ where: { duplicateOfId: doc.id }, data: { duplicateOfId: null } });
         await prisma.caseTimelineEvent.deleteMany({ where: { documentId: doc.id } });
         await prisma.documentAuditEvent.deleteMany({ where: { documentId: doc.id } });
+        await prisma.reviewQueueEvent.deleteMany({ where: { documentId: doc.id } });
         await pgPool.query("DELETE FROM document_recognition WHERE document_id = $1", [doc.id]);
         await prisma.document.delete({ where: { id: doc.id } });
         deleted++;

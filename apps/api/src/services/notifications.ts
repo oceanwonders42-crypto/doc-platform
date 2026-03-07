@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma";
 
 export type NotificationType =
@@ -6,10 +7,13 @@ export type NotificationType =
   | "narrative_generated"
   | "records_request_pdf_generated"
   | "records_request_sent"
+  | "records_request_send_failed"
   | "mailbox_poll_failed"
   | "case_created_from_doc"
   | "retention_cleanup"
-  | "overdue_task_reminder";
+  | "overdue_task_reminder"
+  | "demand_package_ready"
+  | "job_failed";
 
 export async function createNotification(
   firmId: string,
@@ -24,7 +28,7 @@ export async function createNotification(
       type,
       title,
       message: message ?? null,
-      meta: meta ? JSON.parse(JSON.stringify(meta)) : null,
+      meta: meta != null ? JSON.parse(JSON.stringify(meta)) : Prisma.JsonNull,
     },
   });
 }
@@ -37,13 +41,16 @@ export async function getUnreadCount(firmId: string): Promise<number> {
 
 export async function listNotifications(
   firmId: string,
-  options?: { limit?: number; unreadOnly?: boolean }
+  options?: { limit?: number; unreadOnly?: boolean; type?: string }
 ): Promise<
   { id: string; type: string; title: string; message: string | null; meta: unknown; read: boolean; createdAt: Date }[]
 > {
   const limit = Math.min(options?.limit ?? 50, 100);
+  const where: { firmId: string; read?: boolean; type?: string } = { firmId };
+  if (options?.unreadOnly) where.read = false;
+  if (options?.type && options.type.trim()) where.type = options.type.trim();
   const items = await prisma.notification.findMany({
-    where: { firmId, ...(options?.unreadOnly ? { read: false } : {}) },
+    where,
     orderBy: { createdAt: "desc" },
     take: limit,
     select: { id: true, type: true, title: true, message: true, meta: true, read: true, createdAt: true },

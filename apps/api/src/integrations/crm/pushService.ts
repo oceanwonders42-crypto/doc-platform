@@ -12,6 +12,7 @@ import {
 } from "./messageBuilder";
 import type { CrmPushMessage } from "./index";
 import webhookAdapter from "./webhookAdapter";
+import { pushCaseUpdate } from "./crmAdapter";
 
 /** Generic webhook push: POST payload to firm's CRM webhook URL and log to CrmPushLog. Gated by crm_push. */
 export type PushCrmWebhookParams = {
@@ -28,6 +29,7 @@ export async function pushCrmWebhook(params: PushCrmWebhookParams): Promise<{ ok
   const enabled = await hasFeature(firmId, "crm_push");
   if (!enabled) return { ok: true };
 
+  const actionType = (meta.actionType as string) ?? "webhook_push";
   const msg: CrmPushMessage = {
     firmId,
     caseId,
@@ -36,8 +38,25 @@ export async function pushCrmWebhook(params: PushCrmWebhookParams): Promise<{ ok
     meta: { ...meta, documentId: documentId ?? undefined },
   };
 
-  const result = await webhookAdapter.pushNote(msg);
-  const actionType = (meta.actionType as string) ?? "webhook_push";
+  const firm = await prisma.firm.findUnique({
+    where: { id: firmId },
+    select: { settings: true },
+  });
+  const settings = (firm?.settings ?? {}) as Record<string, unknown>;
+  const provider = settings.crm === "clio" ? "clio" : "generic_webhook";
+
+  let result: { ok: boolean; externalId?: string; error?: string };
+  if (provider === "clio") {
+    result = await pushCaseUpdate({
+      firmId,
+      caseId,
+      title,
+      bodyMarkdown,
+      meta,
+    });
+  } else {
+    result = await webhookAdapter.pushNote(msg);
+  }
 
   await prisma.crmPushLog.create({
     data: {
@@ -45,7 +64,7 @@ export async function pushCrmWebhook(params: PushCrmWebhookParams): Promise<{ ok
       caseId,
       documentId: documentId ?? null,
       actionType,
-      provider: "generic_webhook",
+      provider,
       ok: result.ok,
       externalId: result.externalId ?? null,
       error: result.error ?? null,
@@ -53,7 +72,7 @@ export async function pushCrmWebhook(params: PushCrmWebhookParams): Promise<{ ok
   });
 
   if (!result.ok) {
-    console.warn("[crm] push failed:", { firmId, caseId, actionType, error: result.error });
+    console.warn("[crm] push failed:", { firmId, caseId, actionType, provider, error: result.error });
   }
   return result.ok ? { ok: true } : { ok: false, error: result.error };
 }

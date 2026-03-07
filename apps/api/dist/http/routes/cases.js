@@ -1,10 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const client_1 = require("@prisma/client");
 const prisma_1 = require("../../db/prisma");
-const authApiKey_1 = require("../middleware/authApiKey");
+const auth_1 = require("../middleware/auth");
+const requireRole_1 = require("../middleware/requireRole");
 const router = (0, express_1.Router)();
-router.get("/", authApiKey_1.authApiKey, async (req, res) => {
+router.get("/", auth_1.auth, (0, requireRole_1.requireRole)(client_1.Role.STAFF), async (req, res) => {
     try {
         const firmId = req.firmId;
         const items = await prisma_1.prisma.legalCase.findMany({

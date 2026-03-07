@@ -85,6 +85,37 @@ Demo labels show as "DEMO-001", "DEMO-002", "DEMO-003" (case number) with titles
 
 ---
 
+## Multi-device development workflow
+
+Keep desktop and laptop in sync by auto-pushing from the desktop and pulling on the laptop.
+
+**Make scripts executable (once per clone):**
+
+```bash
+chmod +x scripts/git-auto-sync.sh
+chmod +x scripts/start-sync.sh
+```
+
+**Desktop machine (auto-backup every 15 minutes):**
+
+```bash
+pnpm run autosync
+```
+
+This stages all changes, commits only if there are changes (message: `auto-backup YYYY-MM-DD HH:MM:SS`), and pushes to `origin main`. Push failures are logged to `logs/git-sync.log`.
+
+**Windows:** Ensure Git Bash is in your PATH, or run from Git Bash: `bash scripts/git-auto-sync.sh` (or add `C:\Program Files\Git\bin` to PATH).
+
+**Laptop machine:**
+
+```bash
+git pull origin main
+```
+
+Run `git pull` whenever you start working to get the latest from the desktop.
+
+---
+
 ## Kill API on port 4000
 
 To forcefully stop the API process when it's stuck or needs a restart:

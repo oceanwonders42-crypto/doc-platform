@@ -4,9 +4,13 @@
  */
 import { prisma } from "../db/prisma";
 import { pgPool } from "../db/pg";
+import { Prisma } from "@prisma/client";
 import { rebuildCaseTimeline } from "./caseTimeline";
 import { createNotification } from "./notifications";
 import { emitWebhookEvent } from "./webhooks";
+import { recordReviewQueueExit } from "./reviewQueueEvent";
+import { ensureProviderCaseLinkFromDocument } from "./providerCaseLinking";
+import type { DocumentStatus } from "@prisma/client";
 
 export type RouteDocumentOptions = {
   actor: string;
@@ -30,16 +34,36 @@ export async function routeDocument(
   });
   if (!doc) return { ok: false, error: "document not found" };
 
-  const updateData: { routedCaseId?: string | null; routedSystem?: string | null; routingStatus?: string | null } = {
+  const updateData: {
+    routedCaseId?: string | null;
+    routedSystem?: string | null;
+    routingStatus?: string | null;
+    status?: DocumentStatus;
+  } = {
     routedCaseId: toCaseId ?? null,
   };
   if (routedSystem !== undefined) updateData.routedSystem = routedSystem;
   if (routingStatus !== undefined) updateData.routingStatus = routingStatus;
+  if (toCaseId) {
+    updateData.status = "UPLOADED";
+  } else {
+    updateData.status = "UNMATCHED";
+    updateData.routingStatus = null;
+  }
 
   await prisma.document.update({
     where: { id: documentId },
     data: updateData,
   });
+
+  if (toCaseId) {
+    await recordReviewQueueExit(firmId, documentId, "routed");
+    await ensureProviderCaseLinkFromDocument(firmId, documentId, toCaseId).catch((e) => {
+      console.warn("[documentRouting] ensureProviderCaseLinkFromDocument failed", { documentId, caseId: toCaseId, err: e });
+    });
+  } else {
+    await recordReviewQueueExit(firmId, documentId, "unmatched");
+  }
 
   await prisma.documentAuditEvent.create({
     data: {
@@ -49,7 +73,7 @@ export async function routeDocument(
       action,
       fromCaseId: doc.routedCaseId ?? null,
       toCaseId: toCaseId ?? null,
-      metaJson: metaJson ? JSON.parse(JSON.stringify(metaJson)) : null,
+      metaJson: metaJson != null ? (JSON.parse(JSON.stringify(metaJson)) as Prisma.InputJsonValue) : Prisma.JsonNull,
     },
   });
 

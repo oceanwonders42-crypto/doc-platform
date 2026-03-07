@@ -15,6 +15,7 @@ exports.upsertCrmCaseMapping = upsertCrmCaseMapping;
 exports.getCrmCaseMapping = getCrmCaseMapping;
 const prisma_1 = require("../../db/prisma");
 const webhookAdapter_1 = __importDefault(require("./webhookAdapter"));
+const clioConfig_1 = require("../../services/clioConfig");
 const CLIO_API_BASE = process.env.CLIO_API_BASE_URL || "https://app.clio.com/api/v4";
 async function getFirmCrmSettings(firmId) {
     const firm = await prisma_1.prisma.firm.findUnique({
@@ -33,10 +34,11 @@ async function getFirmCrmSettings(firmId) {
 async function fetchCasesFromCRM(firmId) {
     const { provider, settings } = await getFirmCrmSettings(firmId);
     if (provider === "clio") {
-        const token = settings.clioAccessToken;
-        if (!token || typeof token !== "string") {
-            return { ok: false, error: "Clio access token not configured" };
+        const tokenResult = await (0, clioConfig_1.getClioAccessToken)(firmId);
+        if (!tokenResult.configured) {
+            return { ok: false, error: tokenResult.error ?? "Clio access token not configured" };
         }
+        const token = tokenResult.accessToken;
         try {
             const res = await fetch(`${CLIO_API_BASE}/matters?limit=100`, {
                 headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -148,10 +150,11 @@ async function pushCaseUpdate(params) {
         return { ok: false, error: result.error ?? "Webhook push failed" };
     }
     if (provider === "clio") {
-        const { settings } = await getFirmCrmSettings(firmId);
-        const token = settings.clioAccessToken;
-        if (!token)
-            return { ok: false, error: "Clio access token not configured" };
+        const tokenResult = await (0, clioConfig_1.getClioAccessToken)(firmId);
+        if (!tokenResult.configured) {
+            return { ok: false, error: tokenResult.error ?? "Clio access token not configured" };
+        }
+        const token = tokenResult.accessToken;
         try {
             const res = await fetch(`${CLIO_API_BASE}/notes`, {
                 method: "POST",

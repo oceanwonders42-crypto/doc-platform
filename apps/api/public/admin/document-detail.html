@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Document – Detail</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    a { color: #0066cc; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    h2 { margin: 1rem 0 0.5rem; font-size: 1rem; color: #444; }
+    .back { margin-bottom: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+    .card dl { margin: 0; }
+    .card dt { font-weight: 600; margin-top: 0.5rem; }
+    .card dd { margin: 0 0 0 1rem; }
+    .loading { color: #666; }
+    .badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; }
+    .badge.duplicate { background: #fff3cd; color: #856404; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; margin-right: 0.25rem; margin-bottom: 0.25rem; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .btn.danger { border-color: #dc3545; color: #dc3545; }
+    .actions-wrap { margin-top: 0.5rem; }
+    .toast-wrap { position: fixed; top: 1rem; right: 1rem; z-index: 100; max-width: 24rem; }
+    .toast { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 0.5rem; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+    .toast.success { background: #d4edda; color: #155724; }
+    .toast.error { background: #f8d7da; color: #721c24; }
+    select { padding: 0.35rem 0.5rem; min-width: 200px; }
+    pre { background: #f5f5f5; padding: 0.75rem; border-radius: 4px; overflow: auto; font-size: 0.85rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-size: 0.9rem; }
+    .tag-badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; margin: 0.15rem 0.15rem 0 0; }
+    .tag-badge .remove-tag { margin-left: 0.35rem; cursor: pointer; opacity: 0.8; }
+    .tags-add-wrap { margin-top: 0.5rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .tags-add-wrap select { min-width: 140px; }
+  </style>
+</head>
+<body>
+  <div class="back"><a href="/admin/cases" id="backLink">← Back</a></div>
+  <h1 id="pageTitle">Document</h1>
+  <div class="api-key-wrap">
+    <label>API key (Bearer):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+    <button type="button" id="loadBtn">Load</button>
+  </div>
+  <div id="error" class="error" aria-live="polite"></div>
+  <div id="toastWrap" class="toast-wrap" aria-live="polite" style="display:none;"></div>
+  <div id="content" style="display:none;">
+    <div class="card">
+      <h2>Metadata</h2>
+      <div id="metadataCard"></div>
+    </div>
+    <div class="card" id="duplicateCard" style="display:none;">
+      <h2>Duplicate</h2>
+      <div id="duplicateInfo"></div>
+    </div>
+    <div class="card" id="tagsCard">
+      <h2>Tags</h2>
+      <div id="tagsList"><p class="loading">Loading…</p></div>
+      <div class="tags-add-wrap" id="tagsAddWrap" style="display:none;">
+        <select id="tagSelect"><option value="">Add a tag…</option></select>
+        <button type="button" id="addTagBtn" class="btn primary">Add</button>
+        <span>or</span>
+        <input type="text" id="newTagName" placeholder="New tag name" style="width:10rem;" />
+        <input type="text" id="newTagColor" placeholder="Color #hex" style="width:6rem;" title="Optional hex color e.g. #3b82f6" />
+        <button type="button" id="createTagBtn" class="btn">Create tag</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Extracted fields</h2>
+      <pre id="extractedFields">—</pre>
+    </div>
+    <div class="card">
+      <h2>Case assignment</h2>
+      <p><label>Case: </label><select id="caseSelect"></select></p>
+      <div class="actions-wrap">
+        <button type="button" id="markNeedsReviewBtn" class="btn">Mark needs review</button>
+        <button type="button" id="markUnmatchedBtn" class="btn danger">Mark unmatched</button>
+        <button type="button" id="reprocessFullBtn" class="btn primary">Retry full processing</button>
+        <button type="button" id="reprocessOcrBtn" class="btn">Retry OCR</button>
+        <button type="button" id="reprocessExtractionBtn" class="btn">Rebuild extraction</button>
+      </div>
+    </div>
+    <div class="card" id="routeExplainerCard">
+      <h2>Routing explanation</h2>
+      <div id="routeExplainerContent"><p class="loading">Loading…</p></div>
+    </div>
+    <div class="card">
+      <h2>Audit trail</h2>
+      <div id="auditTrail"><p class="loading">Loading…</p></div>
+    </div>
+    <div class="card" id="versionHistoryCard">
+      <h2>Version history</h2>
+      <p style="margin:0.5rem 0;">
+        <input type="file" id="newVersionFile" accept=".pdf,application/pdf" style="margin-right:0.5rem;" />
+        <button type="button" id="uploadNewVersionBtn" class="btn primary">Upload replacement version</button>
+      </p>
+      <div id="versionHistoryList"><p class="loading">Loading…</p></div>
+    </div>
+  </div>
+  <div id="loadingState">
+    <p class="loading">Enter API key and click Load.</p>
+  </div>
+
+  <script>
+    (function () {
+      var API_BASE = '';
+      var keyInput = document.getElementById('apiKey');
+      var loadBtn = document.getElementById('loadBtn');
+      var errorEl = document.getElementById('error');
+      var contentEl = document.getElementById('content');
+      var loadingState = document.getElementById('loadingState');
+      var pageTitleEl = document.getElementById('pageTitle');
+      var metadataCard = document.getElementById('metadataCard');
+      var duplicateCard = document.getElementById('duplicateCard');
+      var duplicateInfo = document.getElementById('duplicateInfo');
+      var extractedFieldsEl = document.getElementById('extractedFields');
+      var caseSelect = document.getElementById('caseSelect');
+      var markNeedsReviewBtn = document.getElementById('markNeedsReviewBtn');
+      var markUnmatchedBtn = document.getElementById('markUnmatchedBtn');
+      var reprocessFullBtn = document.getElementById('reprocessFullBtn');
+      var reprocessOcrBtn = document.getElementById('reprocessOcrBtn');
+      var reprocessExtractionBtn = document.getElementById('reprocessExtractionBtn');
+      var auditTrail = document.getElementById('auditTrail');
+      var backLink = document.getElementById('backLink');
+      var routeExplainerContent = document.getElementById('routeExplainerContent');
+      var tagsList = document.getElementById('tagsList');
+      var tagsAddWrap = document.getElementById('tagsAddWrap');
+      var tagSelect = document.getElementById('tagSelect');
+      var addTagBtn = document.getElementById('addTagBtn');
+      var newTagName = document.getElementById('newTagName');
+      var newTagColor = document.getElementById('newTagColor');
+      var createTagBtn = document.getElementById('createTagBtn');
+
+      function getDocId() {
+        var path = (window.location.pathname || '').replace(/\/$/, '');
+        var parts = path.split('/');
+        var idx = parts.indexOf('documents');
+        if (idx >= 0 && parts[idx + 1]) return parts[idx + 1];
+        return '';
+      }
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) { errorEl.textContent = msg || ''; }
+
+      var toastTimeout;
+      function showToast(msg, type) {
+        type = type === 'error' ? 'error' : 'success';
+        var wrap = document.getElementById('toastWrap');
+        if (!wrap) return;
+        var div = document.createElement('div');
+        div.className = 'toast ' + type;
+        div.textContent = msg || '';
+        wrap.innerHTML = '';
+        wrap.appendChild(div);
+        wrap.style.display = 'block';
+        clearTimeout(toastTimeout);
+        toastTimeout = setTimeout(function () { wrap.style.display = 'none'; wrap.innerHTML = ''; }, 5000);
+      }
+
+      function loadRouteExplainer() {
+        var id = getDocId();
+        if (!id) return Promise.resolve(null);
+        return fetch(API_BASE + '/documents/' + encodeURIComponent(id) + '/route-explainer', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return null;
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data || !data.ok) return null;
+            return data;
+          })
+          .catch(function () { return null; });
+      }
+
+      function renderRouteExplainer(data, casesForFeedback) {
+        if (!routeExplainerContent) return;
+        if (!data) {
+          routeExplainerContent.innerHTML = '<p class="loading">Not available.</p>';
+          return;
+        }
+        var html = '<dl>';
+        html += '<dt>Routing status</dt><dd>' + (data.routingStatus || '—') + '</dd>';
+        if (data.routedCaseId) html += '<dt>Routed to case</dt><dd><a href="/cases/' + data.routedCaseId + '">' + (data.routedCase && data.routedCase.caseNumber ? data.routedCase.caseNumber : data.routedCaseId) + '</a></dd>';
+        if (data.chosenDocType) html += '<dt>Doc type</dt><dd>' + data.chosenDocType + '</dd>';
+        if (data.confidence != null) html += '<dt>Match confidence</dt><dd>' + (data.confidence * 100).toFixed(0) + '%</dd>';
+        html += '<dt>Minimum confidence for auto-route</dt><dd>' + (data.threshold != null ? (data.threshold * 100).toFixed(0) + '%' : '—') + '</dd>';
+        if (data.signals && (data.signals.caseNumber || data.signals.clientName || data.signals.fileName)) {
+          html += '<dt>Signals used</dt><dd>Case#: ' + (data.signals.caseNumber || '—') + ', Client: ' + (data.signals.clientName || '—') + ', File: ' + (data.signals.fileName || '—') + '</dd>';
+        }
+        if (data.extractedFieldsUsed && (data.extractedFieldsUsed.caseNumber || data.extractedFieldsUsed.clientName)) {
+          html += '<dt>Fields used for matching</dt><dd>Case number: ' + (data.extractedFieldsUsed.caseNumber || '—') + ', Client: ' + (data.extractedFieldsUsed.clientName || '—') + '</dd>';
+        }
+        html += '</dl>';
+        if (data.whyPassed) {
+          html += '<p><strong>Why routed:</strong> ' + data.whyPassed + '</p>';
+        }
+        if (data.whyFailed) {
+          html += '<p><strong>Why in review queue:</strong> ' + data.whyFailed + '</p>';
+        }
+        if (data.matchedPatterns && data.matchedPatterns.length > 0) {
+          html += '<p><strong>Matched patterns:</strong></p><ul>';
+          data.matchedPatterns.forEach(function (p) {
+            html += '<li>' + (p.name || p.id) + (p.targetCaseId ? ' → case ' + p.targetCaseId : '') + '</li>';
+          });
+          html += '</ul>';
+        }
+        if (data.candidateMatches && data.candidateMatches.length > 0) {
+          html += '<p><strong>Suggested match:</strong></p><ul>';
+          data.candidateMatches.forEach(function (c) {
+            html += '<li><a href="/cases/' + c.caseId + '">' + (c.caseNumber || c.caseTitle || c.caseId) + '</a> — ' + (c.confidence * 100).toFixed(0) + '% — ' + (c.reason || '') + '</li>';
+          });
+          html += '</ul>';
+        }
+        html += '<div class="routing-feedback-wrap" style="margin-top:0.75rem;">';
+        html += '<p><strong>Was this correct?</strong></p>';
+        html += '<button type="button" class="btn routing-feedback-yes">Yes</button> ';
+        html += '<button type="button" class="btn routing-feedback-no">No</button>';
+        html += '<div id="routingFeedbackCorrectionForm" style="display:none; margin-top:0.5rem; padding:0.5rem; background:#f8f9fa; border-radius:4px;">';
+        html += '<p>Correct case: <select id="routingFeedbackCaseSelect"><option value="">— Unassigned —</option>';
+        (casesForFeedback || []).forEach(function (c) {
+          html += '<option value="' + c.id + '">' + (c.caseNumber || c.title || c.clientName || c.id) + '</option>';
+        });
+        html += '</select></p>';
+        html += '<p>Correct doc type (optional): <input type="text" id="routingFeedbackDocType" placeholder="e.g. medical_record" style="width:12rem;" /></p>';
+        html += '<button type="button" class="btn primary" id="routingFeedbackSubmit">Submit feedback</button>';
+        html += '</div></div>';
+        routeExplainerContent.innerHTML = html;
+        var yesBtn = routeExplainerContent.querySelector('.routing-feedback-yes');
+        var noBtn = routeExplainerContent.querySelector('.routing-feedback-no');
+        var formEl = document.getElementById('routingFeedbackCorrectionForm');
+        var caseSel = document.getElementById('routingFeedbackCaseSelect');
+        var docTypeInput = document.getElementById('routingFeedbackDocType');
+        var submitBtn = document.getElementById('routingFeedbackSubmit');
+        if (yesBtn) yesBtn.addEventListener('click', function () {
+          var id = getDocId();
+          if (!id) return;
+          setError('');
+          fetch(API_BASE + '/documents/' + encodeURIComponent(id) + '/routing-feedback', {
+            method: 'POST',
+            headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+            credentials: 'include',
+            body: JSON.stringify({ finalCaseId: data.routedCaseId, finalStatus: data.routingStatus === 'routed' ? 'UPLOADED' : null, finalDocType: data.chosenDocType || data.extractedFieldsUsed && data.extractedFieldsUsed.docType }),
+          }).then(function (r) { if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); }); return r.json(); })
+            .then(function () { if (typeof showToast === 'function') showToast('Feedback recorded (accepted).', 'success'); loadRouteExplainer().then(function (d) { loadCases().then(function (cases) { renderRouteExplainer(d, cases); }); }); })
+            .catch(function (e) { setError(e.message); });
+        });
+        if (noBtn && formEl) noBtn.addEventListener('click', function () { formEl.style.display = formEl.style.display === 'none' ? 'block' : 'none'; });
+        if (submitBtn && caseSel && docTypeInput) submitBtn.addEventListener('click', function () {
+          var id = getDocId();
+          if (!id) return;
+          setError('');
+          var finalCaseId = caseSel.value || null;
+          var finalDocType = (docTypeInput.value && docTypeInput.value.trim()) ? docTypeInput.value.trim() : null;
+          fetch(API_BASE + '/documents/' + encodeURIComponent(id) + '/routing-feedback', {
+            method: 'POST',
+            headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+            credentials: 'include',
+            body: JSON.stringify({ finalCaseId: finalCaseId || null, finalStatus: finalCaseId ? 'UPLOADED' : null, finalDocType: finalDocType }),
+          }).then(function (r) { if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); }); return r.json(); })
+            .then(function () { if (typeof showToast === 'function') showToast('Correction submitted.', 'success'); formEl.style.display = 'none'; loadRouteExplainer().then(function (d) { loadCases().then(function (cases) { renderRouteExplainer(d, cases); }); }); })
+            .catch(function (e) { setError(e.message); });
+        });
+      }
+
+      function loadDoc() {
+        var id = getDocId();
+        if (!id) return Promise.reject(new Error('No document ID in URL'));
+        return fetch(API_BASE + '/documents/' + encodeURIComponent(id), { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          });
+      }
+
+      function loadCases() {
+        return fetch(API_BASE + '/cases', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return Promise.reject(new Error('Failed to load cases'));
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function loadAuditEvents() {
+        var id = getDocId();
+        if (!id) return Promise.resolve([]);
+        return fetch(API_BASE + '/documents/' + encodeURIComponent(id) + '/audit-events', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return Promise.reject(new Error('Failed to load audit'));
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function loadVersionHistory() {
+        var id = getDocId();
+        if (!id) return Promise.resolve([]);
+        return fetch(API_BASE + '/documents/' + encodeURIComponent(id) + '/versions', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return (data.ok && data.items) ? data.items : []; });
+      }
+
+      function renderVersionHistory(items) {
+        var el = document.getElementById('versionHistoryList');
+        if (!el) return;
+        if (!items || items.length === 0) {
+          el.innerHTML = '<p class="loading">No previous versions yet. The current document is the only version. Upload a replacement to create version history.</p>';
+          return;
+        }
+        var html = '<table><thead><tr><th>Version</th><th>Created</th><th></th></tr></thead><tbody>';
+        items.forEach(function (v) {
+          var dateStr = v.createdAt ? new Date(v.createdAt).toLocaleString() : '—';
+          var link = v.downloadUrl ? '<a href="' + v.downloadUrl + '" target="_blank" rel="noopener">Download</a>' : '—';
+          html += '<tr><td>v' + (v.versionNumber || '') + '</td><td>' + dateStr + '</td><td>' + link + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        el.innerHTML = html;
+      }
+
+      function refreshVersionHistory() {
+        loadVersionHistory().then(renderVersionHistory).catch(function () {
+          var el = document.getElementById('versionHistoryList');
+          if (el) el.innerHTML = '<p class="loading">Could not load version history.</p>';
+        });
+      }
+
+      function loadDocumentTags() {
+        var id = getDocId();
+        if (!id) return Promise.resolve([]);
+        return fetch(API_BASE + '/documents/' + encodeURIComponent(id) + '/tags', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return Promise.reject(new Error('Failed to load tags'));
+            return r.json();
+          })
+          .then(function (data) { return (data.ok && data.items) ? data.items : []; });
+      }
+
+      function loadFirmTags() {
+        return fetch(API_BASE + '/document-tags', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return Promise.resolve([]);
+            return r.json();
+          })
+          .then(function (data) { return (data.ok && data.items) ? data.items : []; });
+      }
+
+      function tagBadgeStyle(color) {
+        if (color && /^#[0-9a-fA-F]{3,8}$/.test(color)) {
+          return 'background:' + color + ';color:#fff;';
+        }
+        return 'background:#e5e7eb;color:#374151;';
+      }
+
+      function renderTagsCard(docTags, allTags) {
+        if (!tagsList || !tagsAddWrap) return;
+        var currentIds = (docTags || []).map(function (t) { return t.tagId || (t.tag && t.tag.id) || t.id; });
+        if (docTags && docTags.length > 0) {
+          var html = '';
+          docTags.forEach(function (t) {
+            var tag = t.tag || t;
+            var name = tag.name || tag.tagId || '';
+            var color = tag.color || null;
+            var tagId = tag.id || t.tagId;
+            html += '<span class="tag-badge" style="' + tagBadgeStyle(color) + '">' + (name.replace(/</g, '&lt;')) + ' <span class="remove-tag" data-tag-id="' + (tagId || '').replace(/"/g, '&quot;') + '" aria-label="Remove">×</span></span>';
+          });
+          tagsList.innerHTML = html;
+          tagsList.querySelectorAll('.remove-tag').forEach(function (el) {
+            el.addEventListener('click', function () {
+              var tid = el.getAttribute('data-tag-id');
+              if (tid) removeTag(tid);
+            });
+          });
+        } else {
+          tagsList.innerHTML = '<p class="loading">No tags. Add one below.</p>';
+        }
+        tagsAddWrap.style.display = 'flex';
+        var opts = '<option value="">Add a tag…</option>';
+        (allTags || []).forEach(function (t) {
+          if (currentIds.indexOf(t.id) >= 0) return;
+          opts += '<option value="' + (t.id || '').replace(/"/g, '&quot;') + '">' + (t.name || t.id || '').replace(/</g, '&lt;') + '</option>';
+        });
+        if (tagSelect) tagSelect.innerHTML = opts;
+      }
+
+      function addTag(tagId) {
+        var docId = getDocId();
+        if (!docId || !tagId) return Promise.resolve();
+        return fetch(API_BASE + '/documents/' + encodeURIComponent(docId) + '/tags', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({ tagId: tagId }),
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        }).then(function () {
+          showToast('Tag added', 'success');
+          return Promise.all([loadDocumentTags(), loadFirmTags()]).then(function (arr) {
+            renderTagsCard(arr[0], arr[1]);
+          });
+        }).catch(function (e) { setError(e.message); });
+      }
+
+      function removeTag(tagId) {
+        var docId = getDocId();
+        if (!docId || !tagId) return Promise.resolve();
+        return fetch(API_BASE + '/documents/' + encodeURIComponent(docId) + '/tags/' + encodeURIComponent(tagId), {
+          method: 'DELETE',
+          headers: getAuth(),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json ? r.json() : Promise.resolve();
+        }).then(function () {
+          showToast('Tag removed', 'success');
+          return Promise.all([loadDocumentTags(), loadFirmTags()]).then(function (arr) {
+            renderTagsCard(arr[0], arr[1]);
+          });
+        }).catch(function (e) { setError(e.message); });
+      }
+
+      function createTag() {
+        var name = newTagName && newTagName.value ? newTagName.value.trim() : '';
+        if (!name) { setError('Enter a tag name'); return; }
+        var color = newTagColor && newTagColor.value ? newTagColor.value.trim() || null : null;
+        fetch(API_BASE + '/document-tags', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({ name: name, color: color }),
+        }).then(function (r) {
+          return r.json().then(function (data) {
+            if (!r.ok) throw new Error(data.error || r.statusText);
+            showToast('Tag created', 'success');
+            if (newTagName) newTagName.value = '';
+            if (newTagColor) newTagColor.value = '';
+            return Promise.all([loadDocumentTags(), loadFirmTags()]).then(function (arr) {
+              renderTagsCard(arr[0], arr[1]);
+            });
+          });
+        }).catch(function (e) { setError(e.message); });
+      }
+
+      function refreshTags() {
+        Promise.all([loadDocumentTags(), loadFirmTags()]).then(function (arr) {
+          renderTagsCard(arr[0], arr[1]);
+        }).catch(function () {
+          if (tagsList) tagsList.innerHTML = '<p class="loading">Could not load tags.</p>';
+        });
+      }
+
+      function renderMetadata(doc) {
+        var html = '<dl>';
+        html += '<dt>Name</dt><dd>' + (doc.originalName || doc.id) + '</dd>';
+        html += '<dt>Status</dt><dd>' + (doc.status || '—') + '</dd>';
+        html += '<dt>Source</dt><dd>' + (doc.source || '—') + '</dd>';
+        html += '<dt>Page count</dt><dd>' + (doc.pageCount != null ? doc.pageCount : '—') + '</dd>';
+        html += '<dt>MIME type</dt><dd>' + (doc.mimeType || '—') + '</dd>';
+        html += '<dt>Created</dt><dd>' + fmt(doc.createdAt) + '</dd>';
+        html += '<dt>Processed</dt><dd>' + fmt(doc.processedAt) + '</dd>';
+        html += '<dt>Routing status</dt><dd>' + (doc.routingStatus || '—') + '</dd>';
+        if (doc.routedCaseId) html += '<dt>Routed to case</dt><dd><a href="/cases/' + doc.routedCaseId + '">' + doc.routedCaseId + '</a></dd>';
+        html += '</dl>';
+        html += '<p><a href="#" id="downloadLink">Download / Open file</a></p>';
+        return html;
+      }
+
+      function renderExtractedFields(doc) {
+        var ef = doc.extractedFields;
+        if (ef == null) return '—';
+        try {
+          var str = typeof ef === 'string' ? ef : JSON.stringify(ef, null, 2);
+          return str.length > 5000 ? str.slice(0, 5000) + '\n… (truncated)' : str;
+        } catch (e) { return String(ef); }
+      }
+
+      function renderDuplicateInfo(doc) {
+        if (doc.duplicateOfId) {
+          duplicateCard.style.display = 'block';
+          duplicateInfo.innerHTML = '<p><span class="badge duplicate">Duplicate</span> Duplicate of document <a href="/documents/' + doc.duplicateOfId + '">' + doc.duplicateOfId + '</a></p>';
+          return;
+        }
+        if (doc.duplicateMatchCount > 0) {
+          duplicateCard.style.display = 'block';
+          duplicateInfo.innerHTML = '<p><span class="badge duplicate">' + doc.duplicateMatchCount + ' duplicate(s) detected</span></p>';
+          return;
+        }
+        duplicateCard.style.display = 'none';
+      }
+
+      function renderCaseDropdown(doc, cases) {
+        var current = doc.routedCaseId || '';
+        var html = '<option value="">— Unassigned —</option>';
+        (cases || []).forEach(function (c) {
+          var label = (c.caseNumber || c.title || c.clientName || c.id) || c.id;
+          html += '<option value="' + c.id + '"' + (c.id === current ? ' selected' : '') + '>' + label + '</option>';
+        });
+        caseSelect.innerHTML = html;
+      }
+
+      function renderAuditTrail(items) {
+        if (!items || items.length === 0) {
+          auditTrail.innerHTML = '<p class="loading">No audit events.</p>';
+          return;
+        }
+        var html = '<table><thead><tr><th>Date</th><th>Action</th><th>Actor</th><th>From case</th><th>To case</th></tr></thead><tbody>';
+        items.forEach(function (e) {
+          html += '<tr><td>' + fmt(e.createdAt) + '</td><td>' + (e.action || '—') + '</td><td>' + (e.actor || '—') + '</td><td>' + (e.fromCaseId || '—') + '</td><td>' + (e.toCaseId || '—') + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        auditTrail.innerHTML = html;
+      }
+
+      function patchDoc(body) {
+        var id = getDocId();
+        if (!id) return Promise.reject(new Error('No document ID'));
+        return fetch(API_BASE + '/documents/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify(body),
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        });
+      }
+
+      function postReprocess(mode) {
+        var id = getDocId();
+        if (!id) return Promise.reject(new Error('No document ID'));
+        var body = { mode: mode || 'full' };
+        return fetch(API_BASE + '/documents/' + encodeURIComponent(id) + '/reprocess', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify(body),
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        });
+      }
+
+      function refreshDoc() {
+        loadDoc().then(function (doc) {
+          pageTitleEl.textContent = doc.originalName || doc.id || 'Document';
+          metadataCard.innerHTML = renderMetadata(doc);
+          extractedFieldsEl.textContent = renderExtractedFields(doc);
+          renderDuplicateInfo(doc);
+          loadCases().then(function (cases) {
+            renderCaseDropdown(doc, cases);
+          });
+          if (doc.routedCaseId) backLink.href = '/cases/' + doc.routedCaseId;
+          else backLink.href = '/admin/cases';
+          backLink.style.display = 'inline';
+          bindDownloadLink();
+          loadRouteExplainer().then(function (d) { loadCases().then(function (cases) { renderRouteExplainer(d, cases); }); });
+          refreshTags();
+          refreshAudit();
+          refreshVersionHistory();
+        }).catch(function (e) { setError(e.message); });
+      }
+
+      function refreshAudit() {
+        loadAuditEvents().then(renderAuditTrail).catch(function () {
+          auditTrail.innerHTML = '<p class="loading">Could not load audit events.</p>';
+        });
+      }
+
+      function bindDownloadLink() {
+        var ln = document.getElementById('downloadLink');
+        if (!ln) return;
+        ln.addEventListener('click', function (e) {
+          e.preventDefault();
+          var id = getDocId();
+          if (!id) return;
+          fetch(API_BASE + '/documents/' + encodeURIComponent(id) + '/download', { headers: getAuth(), credentials: 'include' })
+            .then(function (r) {
+              if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+              return r.json();
+            })
+            .then(function (data) {
+              if (data.url) window.open(data.url, '_blank');
+            })
+            .catch(function (err) { setError(err.message); });
+        });
+      }
+
+      loadBtn.addEventListener('click', function () {
+        setError('');
+        loadingState.style.display = 'block';
+        contentEl.style.display = 'none';
+        loadDoc()
+          .then(function (doc) {
+            loadingState.style.display = 'none';
+            contentEl.style.display = 'block';
+            pageTitleEl.textContent = doc.originalName || doc.id || 'Document';
+            metadataCard.innerHTML = renderMetadata(doc);
+            extractedFieldsEl.textContent = renderExtractedFields(doc);
+            renderDuplicateInfo(doc);
+            bindDownloadLink();
+            try { sessionStorage.setItem('providerApiKey', (keyInput && keyInput.value) ? keyInput.value.trim() : ''); } catch (e) {}
+            return loadCases();
+          })
+          .then(function (cases) {
+            loadDoc().then(function (doc) {
+              renderCaseDropdown(doc, cases);
+              if (doc.routedCaseId) backLink.href = '/cases/' + doc.routedCaseId;
+              else backLink.href = '/admin/cases';
+              backLink.style.display = 'inline';
+            });
+          })
+          .then(refreshAudit)
+          .then(refreshVersionHistory)
+          .then(function () { return loadRouteExplainer().then(function (d) { return loadCases().then(function (cases) { renderRouteExplainer(d, cases); }); }); })
+          .catch(function (e) {
+            loadingState.style.display = 'block';
+            contentEl.style.display = 'none';
+            setError(e.message);
+          });
+      });
+
+      caseSelect.addEventListener('change', function () {
+        var val = caseSelect.value;
+        var body = { routedCaseId: val === '' ? null : val };
+        setError('');
+        patchDoc(body).then(refreshDoc).then(refreshAudit).catch(function (e) { setError(e.message); });
+      });
+
+      markNeedsReviewBtn.addEventListener('click', function () {
+        setError('');
+        patchDoc({ status: 'NEEDS_REVIEW', routingStatus: 'needs_review' }).then(refreshDoc).then(refreshAudit).catch(function (e) { setError(e.message); });
+      });
+
+      markUnmatchedBtn.addEventListener('click', function () {
+        if (!confirm('Mark this document as unmatched and remove case assignment?')) return;
+        setError('');
+        patchDoc({ routedCaseId: null }).then(refreshDoc).then(refreshAudit).catch(function (e) { setError(e.message); });
+      });
+
+      function runReprocess(mode, label) {
+        if (!confirm('Start "' + label + '" for this document?')) return;
+        setError('');
+        var btns = [reprocessFullBtn, reprocessOcrBtn, reprocessExtractionBtn];
+        btns.forEach(function (b) { if (b) b.disabled = true; });
+        postReprocess(mode)
+          .then(function () {
+            showToast(label + ' started. Document status will update when processing completes.', 'success');
+            refreshDoc();
+            refreshAudit();
+          })
+          .catch(function (e) {
+            setError(e.message);
+            showToast(e.message, 'error');
+          })
+          .finally(function () { btns.forEach(function (b) { if (b) b.disabled = false; }); });
+      }
+
+      if (reprocessFullBtn) reprocessFullBtn.addEventListener('click', function () { runReprocess('full', 'Retry full processing'); });
+      if (reprocessOcrBtn) reprocessOcrBtn.addEventListener('click', function () { runReprocess('ocr', 'Retry OCR'); });
+      if (reprocessExtractionBtn) reprocessExtractionBtn.addEventListener('click', function () { runReprocess('extraction', 'Rebuild extraction'); });
+
+      var uploadNewVersionBtn = document.getElementById('uploadNewVersionBtn');
+      var newVersionFile = document.getElementById('newVersionFile');
+      if (uploadNewVersionBtn && newVersionFile) {
+        uploadNewVersionBtn.addEventListener('click', function () {
+          var id = getDocId();
+          if (!id) { setError('No document ID'); return; }
+          var file = newVersionFile.files && newVersionFile.files[0];
+          if (!file) { setError('Choose a PDF file to upload as replacement version.'); return; }
+          setError('');
+          uploadNewVersionBtn.disabled = true;
+          var formData = new FormData();
+          formData.append('file', file);
+          fetch(API_BASE + '/documents/' + encodeURIComponent(id) + '/new-version', {
+            method: 'POST',
+            headers: getAuth(),
+            credentials: 'include',
+            body: formData,
+          }).then(function (r) {
+            return r.json().then(function (data) {
+              if (!r.ok) throw new Error(data.error || r.statusText);
+              return data;
+            });
+          }).then(function () {
+            showToast('Replacement version uploaded. Document updated.', 'success');
+            newVersionFile.value = '';
+            refreshVersionHistory();
+            refreshDoc();
+          }).catch(function (e) {
+            setError(e.message);
+            showToast(e.message || 'Upload failed', 'error');
+          }).finally(function () { uploadNewVersionBtn.disabled = false; });
+        });
+      }
+
+      if (addTagBtn) addTagBtn.addEventListener('click', function () {
+        var tagId = tagSelect && tagSelect.value ? tagSelect.value.trim() : '';
+        if (!tagId) return;
+        addTag(tagId);
+      });
+      if (createTagBtn) createTagBtn.addEventListener('click', createTag);
+
+      try {
+        var saved = sessionStorage.getItem('providerApiKey');
+        if (saved && keyInput) keyInput.value = saved;
+      } catch (e) {}
+      if (getDocId() && keyInput && keyInput.value.trim()) loadBtn.click();
+    })();
+  </script>
+</body>
+</html>

@@ -131,6 +131,13 @@ async function run(): Promise<{ warnings: { check: string; message: string; coun
     console.log('SKIP  Provider missing (run prisma migrate dev/deploy)');
   }
 
+  // Optional: document_recognition (OCR/classification persistence; created by migration 20260304500000)
+  const recognitionExists = await tableExists("document_recognition");
+  if (!recognitionExists) {
+    skipped.push("document_recognition");
+    console.log('SKIP  document_recognition missing — run: pnpm exec prisma migrate deploy');
+  }
+
   // Optional: RecordsRequest
   const recordsRequestExists = await tableExists("RecordsRequest");
   if (!recordsRequestExists) {

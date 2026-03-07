@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Demand Package – Edit</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    a { color: #0066cc; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    h2 { margin: 1rem 0 0.5rem; font-size: 1rem; color: #444; }
+    .back { margin-bottom: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; margin-right: 0.25rem; margin-bottom: 0.25rem; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; }
+    .badge.draft { background: #e2e3e5; color: #383d41; }
+    .badge.generating { background: #cce5ff; color: #004085; }
+    .badge.ready { background: #d4edda; color: #155724; }
+    .badge.failed { background: #f8d7da; color: #721c24; }
+    .loading { color: #666; }
+    .section-block { margin-bottom: 1rem; }
+    .section-block label { display: block; font-weight: 600; margin-bottom: 0.25rem; font-size: 0.95rem; }
+    .section-block textarea { width: 100%; min-height: 120px; padding: 0.5rem; font-family: inherit; font-size: 0.9rem; }
+    .source-panel { font-size: 0.85rem; color: #666; margin-top: 0.35rem; }
+    .toast-wrap { position: fixed; top: 1rem; right: 1rem; z-index: 100; max-width: 24rem; }
+    .toast { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 0.5rem; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+    .toast.success { background: #d4edda; color: #155724; }
+    .toast.error { background: #f8d7da; color: #721c24; }
+  </style>
+</head>
+<body>
+  <div class="back"><a href="#" id="backLink">← Demand Packages</a></div>
+  <h1 id="pageTitle">Demand Package</h1>
+  <div class="api-key-wrap">
+    <label>API key (Bearer):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+    <button type="button" id="loadBtn">Load</button>
+  </div>
+  <div id="error" class="error" aria-live="polite"></div>
+  <div id="toastWrap" class="toast-wrap" aria-live="polite" style="display:none;"></div>
+  <div id="content" style="display:none;">
+    <div class="card">
+      <h2>Header</h2>
+      <p><strong>Title:</strong> <span id="headerTitle"></span> <span id="statusBadge" class="badge draft">draft</span></p>
+      <p style="margin-top:0.5rem;">
+        <button type="button" id="saveBtn" class="btn primary">Save</button>
+        <button type="button" id="generateBtn" class="btn primary">Generate Package</button>
+        <button type="button" id="regeneratePdfBtn" class="btn">Regenerate PDF</button>
+        <a href="#" id="openPdfLink" class="btn" style="display:none;">Open PDF</a>
+      </p>
+    </div>
+    <div class="card">
+      <h2>Sections</h2>
+      <div class="section-block">
+        <label>1. Case Summary</label>
+        <textarea id="summaryText" placeholder="Summary text…"></textarea>
+        <div id="sourcesSummary" class="source-panel"></div>
+      </div>
+      <div class="section-block">
+        <label>2. Liability</label>
+        <textarea id="liabilityText" placeholder="Liability analysis…"></textarea>
+        <div id="sourcesLiability" class="source-panel"></div>
+      </div>
+      <div class="section-block">
+        <label>3. Treatment Chronology</label>
+        <textarea id="treatmentText" placeholder="Treatment chronology…"></textarea>
+        <div id="sourcesTreatment" class="source-panel"></div>
+      </div>
+      <div class="section-block">
+        <label>4. Damages</label>
+        <textarea id="damagesText" placeholder="Damages…"></textarea>
+        <div id="sourcesDamages" class="source-panel"></div>
+      </div>
+      <div class="section-block">
+        <label>5. Future Care</label>
+        <textarea id="futureCareText" placeholder="Future care…"></textarea>
+        <div id="sourcesFutureCare" class="source-panel"></div>
+      </div>
+      <div class="section-block">
+        <label>6. Settlement Demand</label>
+        <textarea id="settlementText" placeholder="Settlement demand…"></textarea>
+        <div id="sourcesSettlement" class="source-panel"></div>
+      </div>
+      <p>
+        <button type="button" id="saveBtn2" class="btn primary">Save</button>
+        <button type="button" id="generateBtn2" class="btn primary">Generate Package</button>
+        <button type="button" id="regeneratePdfBtn2" class="btn">Regenerate PDF</button>
+      </p>
+    </div>
+  </div>
+  <div id="loadingState"><p class="loading">Enter API key and click Load.</p></div>
+
+  <script>
+    (function () {
+      var API_BASE = '';
+      var keyInput = document.getElementById('apiKey');
+      var loadBtn = document.getElementById('loadBtn');
+      var errorEl = document.getElementById('error');
+      var contentEl = document.getElementById('content');
+      var loadingState = document.getElementById('loadingState');
+      var backLink = document.getElementById('backLink');
+      var pageTitleEl = document.getElementById('pageTitle');
+      var headerTitle = document.getElementById('headerTitle');
+      var statusBadge = document.getElementById('statusBadge');
+      var saveBtn = document.getElementById('saveBtn');
+      var saveBtn2 = document.getElementById('saveBtn2');
+      var generateBtn = document.getElementById('generateBtn');
+      var generateBtn2 = document.getElementById('generateBtn2');
+      var regeneratePdfBtn = document.getElementById('regeneratePdfBtn');
+      var regeneratePdfBtn2 = document.getElementById('regeneratePdfBtn2');
+      var openPdfLink = document.getElementById('openPdfLink');
+
+      var currentCaseId = null;
+
+      function getPkgId() {
+        var path = (window.location.pathname || '').replace(/\/$/, '');
+        var parts = path.split('/');
+        var idx = parts.indexOf('demand-packages');
+        if (idx >= 0 && parts[idx + 1]) return parts[idx + 1];
+        return '';
+      }
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) { errorEl.textContent = msg || ''; }
+
+      var toastTimeout;
+      function showToast(msg, type) {
+        type = type === 'error' ? 'error' : 'success';
+        var wrap = document.getElementById('toastWrap');
+        if (!wrap) return;
+        var div = document.createElement('div');
+        div.className = 'toast ' + type;
+        div.textContent = msg || '';
+        wrap.innerHTML = '';
+        wrap.appendChild(div);
+        wrap.style.display = 'block';
+        clearTimeout(toastTimeout);
+        toastTimeout = setTimeout(function () { wrap.style.display = 'none'; wrap.innerHTML = ''; }, 5000);
+      }
+
+      function renderSourcePanel(sectionKey, sources) {
+        var idMap = { summary: 'Summary', liability: 'Liability', treatment: 'Treatment', damages: 'Damages', future_care: 'FutureCare', settlement: 'Settlement' };
+        var el = document.getElementById('sources' + (idMap[sectionKey] || sectionKey));
+        if (!el) return;
+        var bySection = (sources || []).filter(function (s) { return s.sectionKey === sectionKey; });
+        if (bySection.length === 0) { el.textContent = ''; return; }
+        el.textContent = 'Sources: ' + bySection.map(function (s) { return s.sourceType + (s.documentId ? ' (doc)' : '') + (s.timelineEventId ? ' (timeline)' : ''); }).join(', ');
+      }
+
+      function loadPackage() {
+        var id = getPkgId();
+        if (!id) return Promise.reject(new Error('No package ID in URL'));
+        return fetch(API_BASE + '/demand-packages/' + encodeURIComponent(id), { headers: Object.assign({}, getAuth(), { Accept: 'application/json' }), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok || !data.item) throw new Error('Invalid response');
+            var pkg = data.item;
+            currentCaseId = pkg.caseId;
+            backLink.href = '/cases/' + encodeURIComponent(pkg.caseId) + '/demand-packages';
+            pageTitleEl.textContent = pkg.title || 'Demand Package';
+            headerTitle.textContent = pkg.title || 'Demand Package';
+            statusBadge.textContent = pkg.status || 'draft';
+            statusBadge.className = 'badge ' + (pkg.status || 'draft').toLowerCase();
+            document.getElementById('summaryText').value = pkg.summaryText || '';
+            document.getElementById('liabilityText').value = pkg.liabilityText || '';
+            document.getElementById('treatmentText').value = pkg.treatmentText || '';
+            document.getElementById('damagesText').value = pkg.damagesText || '';
+            document.getElementById('futureCareText').value = pkg.futureCareText || '';
+            document.getElementById('settlementText').value = pkg.settlementText || '';
+            var sources = pkg.sectionSources || [];
+            ['summary', 'liability', 'treatment', 'damages', 'future_care', 'settlement'].forEach(function (k) { renderSourcePanel(k, sources); });
+            if (pkg.generatedDocId) {
+              openPdfLink.style.display = 'inline-block';
+              openPdfLink.href = '#';
+              openPdfLink.dataset.docId = pkg.generatedDocId;
+            } else {
+              openPdfLink.style.display = 'none';
+            }
+            return pkg;
+          });
+      }
+
+      function collectBody() {
+        return {
+          summaryText: document.getElementById('summaryText').value,
+          liabilityText: document.getElementById('liabilityText').value,
+          treatmentText: document.getElementById('treatmentText').value,
+          damagesText: document.getElementById('damagesText').value,
+          futureCareText: document.getElementById('futureCareText').value,
+          settlementText: document.getElementById('settlementText').value,
+        };
+      }
+
+      function doSave() {
+        var id = getPkgId();
+        if (!id) return;
+        setError('');
+        var btns = [saveBtn, saveBtn2];
+        btns.forEach(function (b) { if (b) b.disabled = true; });
+        var body = collectBody();
+        fetch(API_BASE + '/demand-packages/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify(body),
+        })
+          .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || r.statusText); return d; }); })
+          .then(function () { showToast('Saved.'); })
+          .catch(function (e) { setError(e.message); showToast(e.message, 'error'); })
+          .finally(function () { btns.forEach(function (b) { if (b) b.disabled = false; }); });
+      }
+
+      function doGenerate() {
+        var id = getPkgId();
+        if (!id) return;
+        setError('');
+        var btns = [generateBtn, generateBtn2];
+        btns.forEach(function (b) { if (b) b.disabled = true; });
+        fetch(API_BASE + '/demand-packages/' + encodeURIComponent(id) + '/generate', { method: 'POST', headers: getAuth(), credentials: 'include' })
+          .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || r.statusText); return d; }); })
+          .then(function (data) {
+            showToast('Package generated.');
+            if (data.documentId && openPdfLink) {
+              openPdfLink.dataset.docId = data.documentId;
+              openPdfLink.style.display = 'inline-block';
+            }
+            loadPackage();
+          })
+          .catch(function (e) { setError(e.message); showToast(e.message, 'error'); })
+          .finally(function () { btns.forEach(function (b) { if (b) b.disabled = false; }); });
+      }
+
+      function doRegeneratePdf() {
+        var id = getPkgId();
+        if (!id) return;
+        setError('');
+        var btns = [regeneratePdfBtn, regeneratePdfBtn2];
+        btns.forEach(function (b) { if (b) b.disabled = true; });
+        var body = collectBody();
+        fetch(API_BASE + '/demand-packages/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify(body),
+        })
+          .then(function (r) { if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); }); return r.json(); })
+          .then(function () {
+            return fetch(API_BASE + '/demand-packages/' + encodeURIComponent(id) + '/regenerate-pdf', { method: 'POST', headers: getAuth(), credentials: 'include' });
+          })
+          .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || r.statusText); return d; }); })
+          .then(function (data) {
+            showToast('PDF regenerated.');
+            if (data.documentId && openPdfLink) {
+              openPdfLink.dataset.docId = data.documentId;
+              openPdfLink.style.display = 'inline-block';
+            }
+            loadPackage();
+          })
+          .catch(function (e) { setError(e.message); showToast(e.message, 'error'); })
+          .finally(function () { btns.forEach(function (b) { if (b) b.disabled = false; }); });
+      }
+
+      loadBtn.addEventListener('click', function () {
+        setError('');
+        loadingState.style.display = 'none';
+        contentEl.style.display = 'block';
+        loadPackage()
+          .then(function () {})
+          .catch(function (e) {
+            setError(e.message);
+            contentEl.style.display = 'none';
+            loadingState.style.display = 'block';
+          });
+      });
+
+      if (saveBtn) saveBtn.addEventListener('click', doSave);
+      if (saveBtn2) saveBtn2.addEventListener('click', doSave);
+      if (generateBtn) generateBtn.addEventListener('click', doGenerate);
+      if (generateBtn2) generateBtn2.addEventListener('click', doGenerate);
+      if (regeneratePdfBtn) regeneratePdfBtn.addEventListener('click', doRegeneratePdf);
+      if (regeneratePdfBtn2) regeneratePdfBtn2.addEventListener('click', doRegeneratePdf);
+
+      if (openPdfLink) {
+        openPdfLink.addEventListener('click', function (e) {
+          e.preventDefault();
+          var docId = openPdfLink.dataset && openPdfLink.dataset.docId;
+          if (!docId) return;
+          fetch(API_BASE + '/documents/' + encodeURIComponent(docId) + '/download', { headers: getAuth(), credentials: 'include' })
+            .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || r.statusText); return d; }); })
+            .then(function (data) { if (data.url) window.open(data.url, '_blank'); })
+            .catch(function (err) { setError(err.message); });
+        });
+      }
+
+      try {
+        var saved = sessionStorage.getItem('providerApiKey');
+        if (saved && keyInput) keyInput.value = saved;
+      } catch (e) {}
+      if (getPkgId() && keyInput && keyInput.value.trim()) loadBtn.click();
+    })();
+  </script>
+</body>
+</html>

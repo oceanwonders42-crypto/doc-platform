@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin – Quality</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    a { color: #0066cc; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    h2 { margin: 1.5rem 0 0.5rem; font-size: 1rem; color: #444; }
+    .back { margin-bottom: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 24rem; padding: 0.5rem; }
+    .filters { margin-bottom: 1rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+    .filters label { margin-right: 0.25rem; }
+    .filters input, .filters select { padding: 0.35rem 0.5rem; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; border: 1px solid #e5e5e5; }
+    .funnel { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: stretch; margin: 1rem 0; }
+    .funnel-stage { flex: 1; min-width: 100px; max-width: 140px; background: #e8f4fc; border: 1px solid #b8d4e8; border-radius: 6px; padding: 0.75rem; text-align: center; }
+    .funnel-stage .name { font-size: 0.75rem; color: #555; text-transform: uppercase; margin-bottom: 0.25rem; }
+    .funnel-stage .count { font-size: 1.25rem; font-weight: 700; color: #333; }
+    .funnel-stage.complete { background: #d4edda; border-color: #a3d9a5; }
+    .funnel-fail { background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 6px; padding: 0.75rem; text-align: center; min-width: 100px; }
+    .funnel-fail .name { font-size: 0.75rem; color: #721c24; margin-bottom: 0.25rem; }
+    .funnel-fail .count { font-size: 1.25rem; font-weight: 700; color: #721c24; }
+    .metrics { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
+    .metrics .metric { padding: 0.5rem 1rem; background: #f8f9fa; border-radius: 4px; }
+    .metrics .metric .label { font-size: 0.8rem; color: #666; }
+    .metrics .metric .value { font-size: 1.1rem; font-weight: 600; }
+    .loading { color: #666; }
+    .failure-cats { margin-top: 0.5rem; }
+    .failure-cat { margin-bottom: 1rem; border: 1px solid #eee; border-radius: 4px; overflow: hidden; }
+    .failure-cat .head { padding: 0.5rem 0.75rem; background: #f8f9fa; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+    .failure-cat .count { font-size: 0.9rem; color: #666; font-weight: normal; }
+    .failure-cat .examples { padding: 0.5rem 0.75rem; font-size: 0.85rem; }
+    .failure-cat .examples pre { margin: 0.25rem 0; padding: 0.5rem; background: #f5f5f5; border-radius: 4px; white-space: pre-wrap; word-break: break-word; max-height: 8rem; overflow: auto; }
+    .health-badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 6px; font-weight: 700; font-size: 1rem; margin-left: 0.5rem; }
+    .health-badge.good { background: #d4edda; color: #155724; }
+    .health-badge.medium { background: #fff3cd; color: #856404; }
+    .health-badge.bad { background: #f8d7da; color: #721c24; }
+    .health-table { width: 100%; border-collapse: collapse; }
+    .health-table th, .health-table td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    .health-table th { background: #f8f9fa; font-weight: 600; }
+    .health-table a { text-decoration: none; }
+    .health-table a:hover { text-decoration: underline; }
+    .health-detail { margin-top: 1rem; padding: 1rem; background: #f8f9fa; border-radius: 6px; }
+    .health-detail h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+    .health-detail .metric-row { display: flex; justify-content: space-between; padding: 0.25rem 0; }
+    .lowconf-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .lowconf-table th, .lowconf-table td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    .lowconf-table th { background: #f8f9fa; font-weight: 600; }
+    .class-stats-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .class-stats-table th, .class-stats-table td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    .class-stats-table th { background: #f8f9fa; font-weight: 600; }
+    .class-stats-table tr.low-confidence { background: #fff3cd; }
+    .class-stats-table tr.low-confidence td { color: #856404; }
+    .class-chart { margin: 1rem 0; }
+    .class-chart-bar { margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem; }
+    .class-chart-bar .label { min-width: 140px; font-size: 0.85rem; }
+    .class-chart-bar .bar-wrap { flex: 1; height: 1.25rem; background: #e9ecef; border-radius: 4px; overflow: hidden; }
+    .class-chart-bar .bar { height: 100%; background: #0066cc; border-radius: 4px; min-width: 2px; }
+    .class-chart-bar .bar.low-conf { background: #dc3545; }
+    .class-chart-bar .count { font-size: 0.85rem; font-weight: 600; min-width: 2.5rem; text-align: right; }
+  </style>
+</head>
+<body>
+  <div class="back"><a href="/admin/firms">← Firms</a></div>
+  <h1>Quality <span id="healthBadge" class="health-badge" style="display:none;"></span></h1>
+  <div class="api-key-wrap">
+    <label>API key (Bearer, platform admin):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+  </div>
+  <div id="error" class="error" aria-live="polite">  </div>
+
+  <h2>MVP metrics</h2>
+  <div class="card">
+    <div class="filters">
+      <label>Firm:</label>
+      <select id="mvpFirmId">
+        <option value="">All firms</option>
+      </select>
+      <label>From:</label>
+      <input type="date" id="mvpDateFrom" />
+      <label>To:</label>
+      <input type="date" id="mvpDateTo" />
+      <button type="button" id="loadMvp" class="btn primary">Load MVP metrics</button>
+    </div>
+    <div id="mvpWrap">
+      <p class="loading">Click Load MVP metrics.</p>
+    </div>
+  </div>
+
+  <h2>Job queue</h2>
+  <div class="card">
+    <p style="margin:0 0 0.5rem;"><a href="/admin/jobs">View all jobs →</a> <button type="button" id="loadJobsCountsBtn" class="btn">Refresh</button></p>
+    <div id="jobsCountsWrap" class="metrics">
+      <span class="metric"><span class="label">Queued</span><span class="value" id="jobsQueued">—</span></span>
+      <span class="metric"><span class="label">Running</span><span class="value" id="jobsRunning">—</span></span>
+      <span class="metric"><span class="label">Failed</span><span class="value" id="jobsFailed">—</span></span>
+      <span class="metric"><span class="label">Retry backlog</span><span class="value" id="jobsRetryBacklog">—</span></span>
+    </div>
+  </div>
+
+  <h2>Health score</h2>
+  <div class="card">
+    <div class="filters">
+      <label>Firm:</label>
+      <select id="healthFirmId">
+        <option value="">All firms</option>
+      </select>
+      <label>From:</label>
+      <input type="date" id="healthDateFrom" />
+      <label>To:</label>
+      <input type="date" id="healthDateTo" />
+      <button type="button" id="loadHealth" class="btn primary">Load health score</button>
+      <button type="button" id="downloadWeeklySummary" class="btn">Download weekly summary</button>
+    </div>
+    <div id="healthWrap">
+      <p class="loading">Click Load health score.</p>
+    </div>
+  </div>
+
+  <h2>Review SLA</h2>
+  <div class="card">
+    <div class="filters">
+      <label>Firm:</label>
+      <select id="slaFirmId">
+        <option value="">All firms</option>
+      </select>
+      <label>From:</label>
+      <input type="date" id="slaDateFrom" />
+      <label>To:</label>
+      <input type="date" id="slaDateTo" />
+      <button type="button" id="loadSla" class="btn primary">Load review SLA</button>
+    </div>
+    <div id="slaWrap">
+      <p class="loading">Click Load review SLA.</p>
+    </div>
+  </div>
+
+  <h2>Recent low-confidence routes</h2>
+  <div class="card">
+    <div class="filters">
+      <label>Firm:</label>
+      <select id="lowConfFirmId">
+        <option value="">All firms</option>
+      </select>
+      <button type="button" id="loadLowConf" class="btn primary">Load</button>
+    </div>
+    <div id="lowConfWrap">
+      <p class="loading">Click Load to see documents with match confidence below the auto-route minimum (these are not auto-routed).</p>
+    </div>
+  </div>
+
+  <h2>Intake document classification</h2>
+  <div class="card">
+    <div class="filters">
+      <label>Firm:</label>
+      <select id="classFirmId">
+        <option value="">All firms</option>
+      </select>
+      <label>From:</label>
+      <input type="date" id="classDateFrom" />
+      <label>To:</label>
+      <input type="date" id="classDateTo" />
+      <button type="button" id="loadClassStats" class="btn primary">Load classification stats</button>
+    </div>
+    <div id="classStatsWrap">
+      <p class="loading">Click Load classification stats.</p>
+    </div>
+  </div>
+
+  <h2>Processing funnel</h2>
+  <div class="card">
+    <div class="filters">
+      <label>Firm:</label>
+      <select id="firmId">
+        <option value="">All firms</option>
+      </select>
+      <label>From:</label>
+      <input type="date" id="dateFrom" />
+      <label>To:</label>
+      <input type="date" id="dateTo" />
+      <button type="button" id="loadFunnel" class="btn primary">Load funnel</button>
+    </div>
+    <div id="funnelWrap">
+      <p class="loading">Set API key and click Load funnel.</p>
+    </div>
+  </div>
+
+  <h2>Failure categories</h2>
+  <div class="card">
+    <div class="filters">
+      <label>From:</label>
+      <input type="date" id="failDateFrom" />
+      <label>To:</label>
+      <input type="date" id="failDateTo" />
+      <button type="button" id="loadFailures" class="btn primary">Load failure categories</button>
+    </div>
+    <div id="failureWrap">
+      <p class="loading">Click Load failure categories.</p>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var API_BASE = '';
+      var keyInput = document.getElementById('apiKey');
+      var firmIdSelect = document.getElementById('firmId');
+      var dateFromInput = document.getElementById('dateFrom');
+      var dateToInput = document.getElementById('dateTo');
+      var loadFunnelBtn = document.getElementById('loadFunnel');
+      var errorEl = document.getElementById('error');
+      var funnelWrap = document.getElementById('funnelWrap');
+      var failDateFrom = document.getElementById('failDateFrom');
+      var failDateTo = document.getElementById('failDateTo');
+      var loadFailuresBtn = document.getElementById('loadFailures');
+      var failureWrap = document.getElementById('failureWrap');
+      var healthBadge = document.getElementById('healthBadge');
+      var healthFirmId = document.getElementById('healthFirmId');
+      var healthDateFrom = document.getElementById('healthDateFrom');
+      var healthDateTo = document.getElementById('healthDateTo');
+      var loadHealthBtn = document.getElementById('loadHealth');
+      var healthWrap = document.getElementById('healthWrap');
+      var downloadWeeklySummaryBtn = document.getElementById('downloadWeeklySummary');
+      var slaFirmId = document.getElementById('slaFirmId');
+      var slaDateFrom = document.getElementById('slaDateFrom');
+      var slaDateTo = document.getElementById('slaDateTo');
+      var loadSlaBtn = document.getElementById('loadSla');
+      var slaWrap = document.getElementById('slaWrap');
+      var lowConfFirmId = document.getElementById('lowConfFirmId');
+      var loadLowConfBtn = document.getElementById('loadLowConf');
+      var lowConfWrap = document.getElementById('lowConfWrap');
+      var classFirmId = document.getElementById('classFirmId');
+      var classDateFrom = document.getElementById('classDateFrom');
+      var classDateTo = document.getElementById('classDateTo');
+      var loadClassStatsBtn = document.getElementById('loadClassStats');
+      var classStatsWrap = document.getElementById('classStatsWrap');
+      var mvpFirmId = document.getElementById('mvpFirmId');
+      var mvpDateFrom = document.getElementById('mvpDateFrom');
+      var mvpDateTo = document.getElementById('mvpDateTo');
+      var loadMvpBtn = document.getElementById('loadMvp');
+      var mvpWrap = document.getElementById('mvpWrap');
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) { errorEl.textContent = msg || ''; }
+
+      function loadJobsCounts() {
+        fetch(API_BASE + '/jobs/counts', { headers: Object.assign({}, getAuth(), { Accept: 'application/json' }), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) return;
+            var el = function (id) { return document.getElementById(id); };
+            if (el('jobsQueued')) el('jobsQueued').textContent = data.queued != null ? data.queued : '—';
+            if (el('jobsRunning')) el('jobsRunning').textContent = data.running != null ? data.running : '—';
+            if (el('jobsFailed')) el('jobsFailed').textContent = data.failed != null ? data.failed : '—';
+            if (el('jobsRetryBacklog')) el('jobsRetryBacklog').textContent = data.retryBacklog != null ? data.retryBacklog : '—';
+          })
+          .catch(function () {});
+      }
+
+      function loadFirms() {
+        return fetch(API_BASE + '/admin/firms', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return Promise.reject(new Error('Failed to load firms'));
+            return r.json();
+          })
+          .then(function (data) {
+            var list = (data && data.firms) || (data && data.items) || [];
+            if (!Array.isArray(list)) list = [];
+            var opts = '<option value="">All firms</option>';
+            list.forEach(function (f) {
+              var id = f.firmId || f.id;
+              var name = f.firmName || f.name || id;
+              if (id) opts += '<option value="' + id + '">' + (name || id) + '</option>';
+            });
+            firmIdSelect.innerHTML = opts;
+          });
+      }
+
+      function loadFunnel() {
+        setError('');
+        funnelWrap.innerHTML = '<p class="loading">Loading…</p>';
+        var qs = '';
+        if (firmIdSelect.value) qs += '&firmId=' + encodeURIComponent(firmIdSelect.value);
+        if (dateFromInput.value) qs += '&dateFrom=' + encodeURIComponent(dateFromInput.value);
+        if (dateToInput.value) qs += '&dateTo=' + encodeURIComponent(dateToInput.value);
+        if (qs) qs = '?' + qs.slice(1);
+
+        fetch(API_BASE + '/admin/quality/funnel' + qs, {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Failed to load funnel');
+            var stages = [
+              { key: 'uploaded', label: 'Uploaded' },
+              { key: 'ocr', label: 'OCR' },
+              { key: 'classification', label: 'Classification' },
+              { key: 'extraction', label: 'Extraction' },
+              { key: 'case_match', label: 'Case match' },
+              { key: 'complete', label: 'Complete' },
+            ];
+            var html = '<div class="funnel">';
+            stages.forEach(function (s) {
+              var count = data[s.key] ?? data.stages?.[s.key] ?? 0;
+              html += '<div class="funnel-stage' + (s.key === 'complete' ? ' complete' : '') + '">';
+              html += '<div class="name">' + s.label + '</div>';
+              html += '<div class="count">' + count + '</div>';
+              html += '</div>';
+            });
+            html += '<div class="funnel-fail"><div class="name">Failed</div><div class="count">' + (data.failedCount ?? 0) + '</div></div>';
+            html += '</div>';
+            html += '<div class="metrics">';
+            html += '<div class="metric"><span class="label">Total in funnel</span><div class="value">' + (data.totalInFunnel ?? 0) + '</div></div>';
+            html += '<div class="metric"><span class="label">Completed (with processedAt)</span><div class="value">' + (data.completedCount ?? 0) + '</div></div>';
+            var avgMs = data.avgProcessingTimeMs;
+            var avgStr = avgMs != null ? (avgMs >= 1000 ? (avgMs / 1000).toFixed(1) + ' s' : avgMs + ' ms') : '—';
+            html += '<div class="metric"><span class="label">Avg. processing time</span><div class="value">' + avgStr + '</div></div>';
+            if (data.dateFrom || data.dateTo) {
+              html += '<div class="metric"><span class="label">Date range</span><div class="value">' + (data.dateFrom || '') + ' → ' + (data.dateTo || '') + '</div></div>';
+            }
+            html += '</div>';
+            funnelWrap.innerHTML = html;
+          })
+          .catch(function (e) {
+            funnelWrap.innerHTML = '';
+            setError(e.message);
+          });
+      }
+
+      loadFunnelBtn.addEventListener('click', loadFunnel);
+      loadFirms().catch(function () {});
+      if (keyInput && keyInput.value.trim()) loadFunnel();
+
+      function escapeHtml(s) {
+        if (s == null) return '';
+        var div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function loadFailureCategories() {
+        setError('');
+        failureWrap.innerHTML = '<p class="loading">Loading…</p>';
+        var qs = '';
+        if (failDateFrom && failDateFrom.value) qs += '&dateFrom=' + encodeURIComponent(failDateFrom.value);
+        if (failDateTo && failDateTo.value) qs += '&dateTo=' + encodeURIComponent(failDateTo.value);
+        if (qs) qs = '?' + qs.slice(1);
+        fetch(API_BASE + '/admin/quality/failure-categories' + qs, {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Failed to load');
+            var cats = data.categories || {};
+            var total = data.totalCount ?? 0;
+            var order = [
+              'OCR failure',
+              'PDF parse failure',
+              'upload failure',
+              'CRM push failure',
+              'mailbox auth failure',
+              'records request send failure',
+              'unknown',
+            ];
+            var html = '<p><strong>Total errors:</strong> ' + total + (data.dateFrom || data.dateTo ? ' <span class="metrics">(' + (data.dateFrom || '') + ' → ' + (data.dateTo || '') + ')</span>' : '') + '</p>';
+            html += '<div class="failure-cats">';
+            order.forEach(function (name) {
+              var c = cats[name] || { count: 0, examples: [] };
+              html += '<div class="failure-cat">';
+              html += '<div class="head">' + escapeHtml(name) + ' <span class="count">' + c.count + '</span></div>';
+              if (c.examples && c.examples.length > 0) {
+                html += '<div class="examples">';
+                c.examples.forEach(function (ex) {
+                  html += '<pre>' + escapeHtml(ex) + '</pre>';
+                });
+                html += '</div>';
+              }
+              html += '</div>';
+            });
+            html += '</div>';
+            failureWrap.innerHTML = html;
+          })
+          .catch(function (e) {
+            failureWrap.innerHTML = '';
+            setError(e.message);
+          });
+      }
+
+      if (loadFailuresBtn) loadFailuresBtn.addEventListener('click', loadFailureCategories);
+
+      function healthClass(score) {
+        if (score >= 70) return 'good';
+        if (score >= 40) return 'medium';
+        return 'bad';
+      }
+
+      function loadHealthScore() {
+        setError('');
+        healthWrap.innerHTML = '<p class="loading">Loading…</p>';
+        var qs = '';
+        if (healthFirmId && healthFirmId.value) qs += '&firmId=' + encodeURIComponent(healthFirmId.value);
+        if (healthDateFrom && healthDateFrom.value) qs += '&dateFrom=' + encodeURIComponent(healthDateFrom.value);
+        if (healthDateTo && healthDateTo.value) qs += '&dateTo=' + encodeURIComponent(healthDateTo.value);
+        if (qs) qs = '?' + qs.slice(1);
+        fetch(API_BASE + '/admin/quality/health-score' + qs, {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Failed to load');
+            if (data.firm) {
+              var f = data.firm;
+              if (healthBadge) {
+                healthBadge.textContent = 'Health: ' + f.score;
+                healthBadge.className = 'health-badge ' + healthClass(f.score);
+                healthBadge.style.display = 'inline-block';
+              }
+              healthWrap.innerHTML =
+                '<div class="health-detail">' +
+                '<h3>' + escapeHtml(f.firmName) + ' — ' + f.score + '</h3>' +
+                '<div class="metric-row"><span>Failed rate</span><span>' + f.failedRate + '%</span></div>' +
+                '<div class="metric-row"><span>Unmatched rate</span><span>' + f.unmatchedRate + '%</span></div>' +
+                '<div class="metric-row"><span>Auto-route rate</span><span>' + f.autoRouteRate + '%</span></div>' +
+                '<div class="metric-row"><span>Avg latency</span><span>' + (f.avgLatencyMs != null ? (f.avgLatencyMs >= 1000 ? (f.avgLatencyMs / 1000).toFixed(1) + ' s' : f.avgLatencyMs + ' ms') : '—') + '</span></div>' +
+                '<div class="metric-row"><span>Recent system errors (global)</span><span>' + (f.recentSystemErrors ?? 0) + '</span></div>' +
+                '<div class="metric-row"><span>Review backlog</span><span>' + (f.reviewBacklog ?? 0) + '</span></div>' +
+                '<p style="margin-top:0.75rem;"><a href="#" id="backToHealthList">← All firms</a></p></div>';
+              var backLink = document.getElementById('backToHealthList');
+              if (backLink) backLink.addEventListener('click', function (e) { e.preventDefault(); healthFirmId.value = ''; loadHealthScore(); });
+              return;
+            }
+            var items = data.items || [];
+            var overall = data.overallScore;
+            if (healthBadge && overall != null) {
+              healthBadge.textContent = 'Health: ' + overall;
+              healthBadge.className = 'health-badge ' + healthClass(overall);
+              healthBadge.style.display = 'inline-block';
+            }
+            var html = '';
+            if (overall != null) html += '<p><strong>Overall score:</strong> <span class="health-badge ' + healthClass(overall) + '">' + overall + '</span></p>';
+            html += '<table class="health-table"><thead><tr><th>Firm</th><th>Score</th><th>Failed %</th><th>Unmatched %</th><th>Auto-route %</th><th>Review backlog</th><th></th></tr></thead><tbody>';
+            items.forEach(function (f) {
+              html += '<tr><td>' + escapeHtml(f.firmName) + '</td><td><span class="health-badge ' + healthClass(f.score) + '">' + f.score + '</span></td>';
+              html += '<td>' + f.failedRate + '</td><td>' + f.unmatchedRate + '</td><td>' + f.autoRouteRate + '</td><td>' + (f.reviewBacklog ?? 0) + '</td>';
+              html += '<td><a href="#" data-firm-id="' + escapeHtml(f.firmId) + '" class="health-drill">Detail</a></td></tr>';
+            });
+            html += '</tbody></table>';
+            if (data.recentSystemErrors != null) html += '<p style="margin-top:0.5rem;font-size:0.9rem;">Recent system errors (global): ' + data.recentSystemErrors + '</p>';
+            healthWrap.innerHTML = html;
+            healthWrap.querySelectorAll('.health-drill').forEach(function (a) {
+              a.addEventListener('click', function (e) {
+                e.preventDefault();
+                var id = a.getAttribute('data-firm-id');
+                if (id && healthFirmId) { healthFirmId.value = id; loadHealthScore(); }
+              });
+            });
+          })
+          .catch(function (e) {
+            healthWrap.innerHTML = '';
+            setError(e.message);
+          });
+      }
+
+      if (loadHealthBtn) loadHealthBtn.addEventListener('click', loadHealthScore);
+      if (loadMvpBtn) loadMvpBtn.addEventListener('click', loadMvp);
+      var loadJobsCountsBtn = document.getElementById('loadJobsCountsBtn');
+      if (loadJobsCountsBtn) loadJobsCountsBtn.addEventListener('click', loadJobsCounts);
+      if (downloadWeeklySummaryBtn) {
+        downloadWeeklySummaryBtn.addEventListener('click', function () {
+          setError('');
+          var qs = '?format=csv';
+          if (healthDateFrom && healthDateFrom.value) qs += '&dateFrom=' + encodeURIComponent(healthDateFrom.value);
+          if (healthDateTo && healthDateTo.value) qs += '&dateTo=' + encodeURIComponent(healthDateTo.value);
+          fetch(API_BASE + '/admin/quality/weekly-summary' + qs, {
+            headers: getAuth(),
+            credentials: 'include',
+          })
+            .then(function (r) {
+              if (!r.ok) return r.text().then(function (t) { throw new Error(t || r.statusText); });
+              return r.text();
+            })
+            .then(function (csv) {
+              var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+              var url = URL.createObjectURL(blob);
+              var a = document.createElement('a');
+              a.href = url;
+              a.download = 'weekly-quality-summary.csv';
+              a.click();
+              URL.revokeObjectURL(url);
+            })
+            .catch(function (e) { setError(e.message); });
+        });
+      }
+      loadFirms().then(function () {
+        var sel = document.getElementById('healthFirmId');
+        if (sel && firmIdSelect) sel.innerHTML = firmIdSelect.innerHTML;
+        var slaSel = document.getElementById('slaFirmId');
+        if (slaSel && firmIdSelect) slaSel.innerHTML = firmIdSelect.innerHTML;
+        var lowConfSel = document.getElementById('lowConfFirmId');
+        if (lowConfSel && firmIdSelect) lowConfSel.innerHTML = firmIdSelect.innerHTML;
+        var classSel = document.getElementById('classFirmId');
+        if (classSel && firmIdSelect) classSel.innerHTML = firmIdSelect.innerHTML;
+        var mvpSel = document.getElementById('mvpFirmId');
+        if (mvpSel && firmIdSelect) mvpSel.innerHTML = firmIdSelect.innerHTML;
+      }).catch(function () {});
+
+      function loadMvp() {
+        setError('');
+        if (!mvpWrap) return;
+        mvpWrap.innerHTML = '<p class="loading">Loading…</p>';
+        var qs = '';
+        if (mvpFirmId && mvpFirmId.value) qs += '&firmId=' + encodeURIComponent(mvpFirmId.value);
+        if (mvpDateFrom && mvpDateFrom.value) qs += '&dateFrom=' + encodeURIComponent(mvpDateFrom.value);
+        if (mvpDateTo && mvpDateTo.value) qs += '&dateTo=' + encodeURIComponent(mvpDateTo.value);
+        if (qs) qs = '?' + qs.slice(1);
+        fetch(API_BASE + '/admin/quality/mvp' + qs, {
+          headers: Object.assign({}, getAuth(), { Accept: 'application/json' }),
+          credentials: 'include',
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Failed to load MVP metrics');
+            var lat = data.avgProcessingLatencyMs;
+            var latStr = lat != null ? (lat < 1000 ? lat + ' ms' : (lat / 1000).toFixed(1) + ' s') : '—';
+            var html = '<div class="metrics">';
+            html += '<div class="metric"><span class="label">Total processed</span><div class="value">' + (data.totalDocumentsProcessed != null ? data.totalDocumentsProcessed : '—') + '</div></div>';
+            html += '<div class="metric"><span class="label">Failed</span><div class="value">' + (data.failedDocuments != null ? data.failedDocuments : '—') + '</div></div>';
+            html += '<div class="metric"><span class="label">Needs review</span><div class="value">' + (data.needsReviewDocuments != null ? data.needsReviewDocuments : '—') + '</div></div>';
+            html += '<div class="metric"><span class="label">Routed</span><div class="value">' + (data.routedDocuments != null ? data.routedDocuments : '—') + '</div></div>';
+            html += '<div class="metric"><span class="label">Successful route rate</span><div class="value">' + (data.successfulRouteRatePct != null ? data.successfulRouteRatePct + '%' : '—') + '</div></div>';
+            html += '<div class="metric"><span class="label">Avg latency</span><div class="value">' + latStr + '</div></div>';
+            html += '</div>';
+            if (data.dateFrom || data.dateTo) {
+              html += '<p style="margin-top:0.5rem;font-size:0.9rem;">Date range: ' + (data.dateFrom || '') + ' → ' + (data.dateTo || '') + '</p>';
+            }
+            mvpWrap.innerHTML = html;
+          })
+          .catch(function (e) {
+            mvpWrap.innerHTML = '';
+            setError(e.message);
+          });
+      }
+
+      function formatDuration(ms) {
+        if (ms == null) return '—';
+        if (ms >= 86400000) return (ms / 86400000).toFixed(1) + ' d';
+        if (ms >= 3600000) return (ms / 3600000).toFixed(1) + ' h';
+        if (ms >= 60000) return (ms / 60000).toFixed(1) + ' m';
+        if (ms >= 1000) return (ms / 1000).toFixed(1) + ' s';
+        return ms + ' ms';
+      }
+
+      function loadReviewSla() {
+        setError('');
+        if (!slaWrap) return;
+        slaWrap.innerHTML = '<p class="loading">Loading…</p>';
+        var qs = '';
+        if (slaFirmId && slaFirmId.value) qs += '&firmId=' + encodeURIComponent(slaFirmId.value);
+        if (slaDateFrom && slaDateFrom.value) qs += '&dateFrom=' + encodeURIComponent(slaDateFrom.value);
+        if (slaDateTo && slaDateTo.value) qs += '&dateTo=' + encodeURIComponent(slaDateTo.value);
+        if (qs) qs = '?' + qs.slice(1);
+        fetch(API_BASE + '/admin/quality/review-sla' + qs, {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Failed to load');
+            var html = '<div class="metrics">';
+            html += '<div class="metric"><span class="label">Avg review time</span><div class="value">' + formatDuration(data.avgReviewTimeMs) + '</div></div>';
+            html += '<div class="metric"><span class="label">Median review time</span><div class="value">' + formatDuration(data.medianReviewTimeMs) + '</div></div>';
+            html += '<div class="metric"><span class="label">Review queue count</span><div class="value">' + (data.openReviewCount ?? 0) + '</div></div>';
+            html += '<div class="metric"><span class="label">Resolved today</span><div class="value">' + (data.resolvedToday ?? 0) + '</div></div>';
+            html += '<div class="metric"><span class="label">Resolved this week</span><div class="value">' + (data.resolvedThisWeek ?? 0) + '</div></div>';
+            html += '</div>';
+            if (data.dateFrom || data.dateTo) {
+              html += '<p style="margin-top:0.5rem;font-size:0.9rem;">Date range (for avg/median): ' + (data.dateFrom || '') + ' → ' + (data.dateTo || '') + '</p>';
+            }
+            slaWrap.innerHTML = html;
+          })
+          .catch(function (e) {
+            slaWrap.innerHTML = '';
+            setError(e.message);
+          });
+      }
+
+      function loadLowConfidenceRoutes() {
+        setError('');
+        if (!lowConfWrap) return;
+        lowConfWrap.innerHTML = '<p class="loading">Loading…</p>';
+        var qs = '';
+        if (lowConfFirmId && lowConfFirmId.value) qs += '&firmId=' + encodeURIComponent(lowConfFirmId.value);
+        if (qs) qs = '?' + qs.slice(1);
+        fetch(API_BASE + '/admin/quality/low-confidence-routes' + qs, {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Failed to load');
+            var items = data.items || [];
+            if (items.length === 0) {
+              lowConfWrap.innerHTML = '<p class="loading">No recent low-confidence routes.</p>';
+              return;
+            }
+            var html = '<table class="lowconf-table"><thead><tr><th>Document</th><th>Firm</th><th>Confidence</th><th>Threshold</th><th>Status</th><th>Reason</th></tr></thead><tbody>';
+            items.forEach(function (row) {
+              var conf = row.matchConfidence != null ? (row.matchConfidence * 100).toFixed(0) + '%' : '—';
+              var thresh = row.threshold != null ? (row.threshold * 100).toFixed(0) + '%' : '—';
+              html += '<tr>';
+              html += '<td><a href="/documents/' + row.documentId + '">' + (row.originalName || row.documentId) + '</a></td>';
+              html += '<td>' + (row.firmName || row.firmId) + '</td>';
+              html += '<td>' + conf + '</td>';
+              html += '<td>' + thresh + '</td>';
+              html += '<td>' + (row.status || '—') + (row.routingStatus ? ' / ' + row.routingStatus : '') + '</td>';
+              html += '<td>' + (row.matchReason || '—') + '</td>';
+              html += '</tr>';
+            });
+            html += '</tbody></table>';
+            lowConfWrap.innerHTML = html;
+          })
+          .catch(function (e) {
+            lowConfWrap.innerHTML = '';
+            setError(e.message);
+          });
+      }
+
+      if (loadSlaBtn) loadSlaBtn.addEventListener('click', loadReviewSla);
+      if (loadLowConfBtn) loadLowConfBtn.addEventListener('click', loadLowConfidenceRoutes);
+
+      var LOW_CONFIDENCE_THRESHOLD = 0.5;
+
+      function loadClassificationStats() {
+        setError('');
+        if (!classStatsWrap) return;
+        classStatsWrap.innerHTML = '<p class="loading">Loading…</p>';
+        var qs = '';
+        if (classFirmId && classFirmId.value) qs += '&firmId=' + encodeURIComponent(classFirmId.value);
+        if (classDateFrom && classDateFrom.value) qs += '&dateFrom=' + encodeURIComponent(classDateFrom.value);
+        if (classDateTo && classDateTo.value) qs += '&dateTo=' + encodeURIComponent(classDateTo.value);
+        if (qs) qs = '?' + qs.slice(1);
+        fetch(API_BASE + '/admin/quality/classification-stats' + qs, {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.ok) throw new Error(data.error || 'Failed to load');
+            var byType = data.byType || [];
+            var totalWithRecognition = data.totalWithRecognition ?? 0;
+            var totalOverrides = data.totalOverrides ?? 0;
+            var overridePctOverall = data.overridePctOverall ?? 0;
+            var maxCount = byType.length ? Math.max.apply(null, byType.map(function (r) { return r.count; })) : 0;
+
+            var html = '';
+            if (totalWithRecognition > 0) {
+              html += '<div class="metrics" style="margin-bottom:1rem;">';
+              html += '<div class="metric"><span class="label">Documents with classification</span><div class="value">' + totalWithRecognition + '</div></div>';
+              html += '<div class="metric"><span class="label">Total overrides</span><div class="value">' + totalOverrides + '</div></div>';
+              html += '<div class="metric"><span class="label">Override %</span><div class="value">' + overridePctOverall + '%</div></div>';
+              if (data.dateFrom || data.dateTo) {
+                html += '<div class="metric"><span class="label">Date range</span><div class="value">' + (data.dateFrom || '') + ' → ' + (data.dateTo || '') + '</div></div>';
+              }
+              html += '</div>';
+
+              html += '<h3 style="margin:0.5rem 0 0.25rem;font-size:0.95rem;">By document type</h3>';
+              html += '<div class="class-chart">';
+              byType.forEach(function (r) {
+                var pct = maxCount > 0 ? (r.count / maxCount) * 100 : 0;
+                var lowConf = r.avgConfidence != null && r.avgConfidence < LOW_CONFIDENCE_THRESHOLD;
+                html += '<div class="class-chart-bar">';
+                html += '<span class="label">' + escapeHtml(r.docType) + '</span>';
+                html += '<div class="bar-wrap"><div class="bar ' + (lowConf ? 'low-conf' : '') + '" style="width:' + pct + '%;"></div></div>';
+                html += '<span class="count">' + r.count + '</span>';
+                html += '</div>';
+              });
+              html += '</div>';
+
+              html += '<table class="class-stats-table"><thead><tr><th>Document type</th><th>Count</th><th>Avg confidence</th><th>Overrides</th><th>Override %</th></tr></thead><tbody>';
+              byType.forEach(function (r) {
+                var lowConf = r.avgConfidence != null && r.avgConfidence < LOW_CONFIDENCE_THRESHOLD;
+                var rowClass = lowConf ? ' class="low-confidence"' : '';
+                var confStr = r.avgConfidence != null ? (r.avgConfidence * 100).toFixed(1) + '%' : '—';
+                html += '<tr' + rowClass + '>';
+                html += '<td>' + escapeHtml(r.docType) + '</td><td>' + r.count + '</td><td>' + confStr + '</td><td>' + r.overrideCount + '</td><td>' + r.overridePct + '%</td>';
+                html += '</tr>';
+              });
+              html += '</tbody></table>';
+              html += '<p style="margin-top:0.5rem;font-size:0.85rem;color:#856404;">Rows in yellow have average confidence below ' + (LOW_CONFIDENCE_THRESHOLD * 100) + '%.</p>';
+            } else {
+              html = '<p class="loading">No documents with classification in the selected range.</p>';
+            }
+            classStatsWrap.innerHTML = html;
+          })
+          .catch(function (e) {
+            classStatsWrap.innerHTML = '';
+            setError(e.message);
+          });
+      }
+
+      if (loadClassStatsBtn) loadClassStatsBtn.addEventListener('click', loadClassificationStats);
+    })();
+  </script>
+</body>
+</html>

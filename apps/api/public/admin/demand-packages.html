@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Demand Packages</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    a { color: #0066cc; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    h2 { margin: 1rem 0 0.5rem; font-size: 1rem; color: #444; }
+    .back { margin-bottom: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; margin-right: 0.25rem; margin-bottom: 0.25rem; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-size: 0.9rem; }
+    .badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; }
+    .badge.draft { background: #e2e3e5; color: #383d41; }
+    .badge.generating { background: #cce5ff; color: #004085; }
+    .badge.ready { background: #d4edda; color: #155724; }
+    .badge.failed { background: #f8d7da; color: #721c24; }
+    .loading { color: #666; }
+    .empty { color: #888; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="back"><a href="#" id="backLink">← Case</a></div>
+  <h1 id="pageTitle">Demand Packages</h1>
+  <div class="api-key-wrap">
+    <label>API key (Bearer):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+    <button type="button" id="loadBtn">Load</button>
+  </div>
+  <div id="error" class="error" aria-live="polite"></div>
+  <div id="content" style="display:none;">
+    <div class="card">
+      <h2>Packages</h2>
+      <p style="margin:0.5rem 0;">
+        <button type="button" id="newPackageBtn" class="btn primary">New Package</button>
+      </p>
+      <div id="packagesList"><p class="loading">Loading…</p></div>
+    </div>
+  </div>
+  <div id="loadingState"><p class="loading">Enter API key and click Load, or open from a case page.</p></div>
+
+  <script>
+    (function () {
+      var API_BASE = '';
+      var keyInput = document.getElementById('apiKey');
+      var loadBtn = document.getElementById('loadBtn');
+      var errorEl = document.getElementById('error');
+      var contentEl = document.getElementById('content');
+      var loadingState = document.getElementById('loadingState');
+      var backLink = document.getElementById('backLink');
+      var pageTitleEl = document.getElementById('pageTitle');
+      var packagesList = document.getElementById('packagesList');
+      var newPackageBtn = document.getElementById('newPackageBtn');
+
+      function getCaseId() {
+        var path = (window.location.pathname || '').replace(/\/$/, '');
+        var parts = path.split('/');
+        var idx = parts.indexOf('cases');
+        if (idx >= 0 && parts[idx + 1] && parts[parts.indexOf('cases') + 1] !== 'demand-packages') return parts[parts.indexOf('cases') + 1];
+        return '';
+      }
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) { errorEl.textContent = msg || ''; }
+
+      function loadPackages() {
+        var caseId = getCaseId();
+        if (!caseId) {
+          packagesList.innerHTML = '<p class="empty">No case ID in URL. Open this page from a case (Demand Package tab).</p>';
+          return;
+        }
+        packagesList.innerHTML = '<p class="loading">Loading…</p>';
+        fetch(API_BASE + '/cases/' + encodeURIComponent(caseId) + '/demand-packages', { headers: Object.assign({}, getAuth(), { Accept: 'application/json' }), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            var items = (data.ok && data.items) ? data.items : [];
+            if (items.length === 0) {
+              packagesList.innerHTML = '<p class="empty">No demand packages yet. Click New Package to create one.</p>';
+              return;
+            }
+            var html = '<table><thead><tr><th>Title</th><th>Status</th><th>Generated</th><th></th></tr></thead><tbody>';
+            items.forEach(function (p) {
+              var statusClass = (p.status || 'draft').toLowerCase();
+              var genAt = p.generatedAt ? new Date(p.generatedAt).toLocaleString() : '—';
+              html += '<tr><td>' + (p.title || '').replace(/</g, '&lt;') + '</td><td><span class="badge ' + statusClass + '">' + (p.status || 'draft') + '</span></td><td>' + genAt + '</td><td>';
+              html += '<a href="/demand-packages/' + (p.id || '').replace(/"/g, '&quot;') + '">Open</a> ';
+              if (p.status === 'draft' || p.status === 'failed') {
+                html += '<button type="button" class="btn primary generate-pkg-btn" data-id="' + (p.id || '').replace(/"/g, '&quot;') + '">Generate</button>';
+              }
+              if (p.generatedDocId) {
+                html += ' <a href="#" class="open-pdf-link" data-doc-id="' + (p.generatedDocId || '').replace(/"/g, '&quot;') + '">PDF</a>';
+              }
+              html += '</td></tr>';
+            });
+            html += '</tbody></table>';
+            packagesList.innerHTML = html;
+            packagesList.querySelectorAll('.generate-pkg-btn').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var id = btn.getAttribute('data-id');
+                if (!id) return;
+                setError('');
+                btn.disabled = true;
+                btn.textContent = 'Generating…';
+                fetch(API_BASE + '/demand-packages/' + encodeURIComponent(id) + '/generate', { method: 'POST', headers: getAuth(), credentials: 'include' })
+                  .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || r.statusText); return d; }); })
+                  .then(function () { loadPackages(); })
+                  .catch(function (e) { setError(e.message); })
+                  .finally(function () { btn.disabled = false; btn.textContent = 'Generate'; });
+              });
+            });
+            packagesList.querySelectorAll('.open-pdf-link').forEach(function (a) {
+              a.addEventListener('click', function (e) {
+                e.preventDefault();
+                var docId = a.getAttribute('data-doc-id');
+                if (!docId) return;
+                fetch(API_BASE + '/documents/' + encodeURIComponent(docId) + '/download', { headers: getAuth(), credentials: 'include' })
+                  .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || r.statusText); return d; }); })
+                  .then(function (data) { if (data.url) window.open(data.url, '_blank'); })
+                  .catch(function (err) { setError(err.message); });
+              });
+            });
+          })
+          .catch(function (e) {
+            packagesList.innerHTML = '<p class="empty">Could not load packages.</p>';
+            setError(e.message);
+          });
+      }
+
+      function loadCaseTitle() {
+        var caseId = getCaseId();
+        if (!caseId) return;
+        fetch(API_BASE + '/cases/' + encodeURIComponent(caseId), { headers: Object.assign({}, getAuth(), { Accept: 'application/json' }), credentials: 'include' })
+          .then(function (r) { if (!r.ok) return null; return r.json(); })
+          .then(function (data) {
+            if (data && data.item) pageTitleEl.textContent = 'Demand Packages — ' + (data.item.clientName || data.item.caseNumber || data.item.title || caseId);
+            backLink.href = '/cases/' + encodeURIComponent(caseId);
+          })
+          .catch(function () {});
+      }
+
+      loadBtn.addEventListener('click', function () {
+        setError('');
+        var caseId = getCaseId();
+        if (!caseId) { setError('No case ID in URL. Go to a case and open Demand Package.'); return; }
+        loadingState.style.display = 'none';
+        contentEl.style.display = 'block';
+        loadCaseTitle();
+        loadPackages();
+      });
+
+      newPackageBtn.addEventListener('click', function () {
+        var caseId = getCaseId();
+        if (!caseId) { setError('No case ID'); return; }
+        setError('');
+        newPackageBtn.disabled = true;
+        fetch(API_BASE + '/cases/' + encodeURIComponent(caseId) + '/demand-packages', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({ title: 'Demand Package' }),
+        })
+          .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || r.statusText); return d; }); })
+          .then(function (data) {
+            if (data.item && data.item.id) window.location.href = '/demand-packages/' + data.item.id;
+            else loadPackages();
+          })
+          .catch(function (e) { setError(e.message); })
+          .finally(function () { newPackageBtn.disabled = false; });
+      });
+
+      if (getCaseId() && keyInput && keyInput.value.trim()) loadBtn.click();
+      try {
+        var saved = sessionStorage.getItem('providerApiKey');
+        if (saved && keyInput) keyInput.value = saved;
+      } catch (e) {}
+    })();
+  </script>
+</body>
+</html>

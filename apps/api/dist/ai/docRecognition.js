@@ -3,6 +3,7 @@
 // Uses pdfjs-dist (must be installed in apps/api). Node/CommonJS: use legacy build.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.extractTextFromPdf = extractTextFromPdf;
+exports.extractTextFromPdfPerPage = extractTextFromPdfPerPage;
 exports.classifyAndExtract = classifyAndExtract;
 function clean(s) {
     return s.replace(/\s+/g, " ").trim();
@@ -47,6 +48,36 @@ async function extractTextFromPdf(buffer) {
         fullText += pageText + "\n";
     }
     return fullText.trim();
+}
+/** Returns full text and per-page text for multi-page extraction and timeline. */
+async function extractTextFromPdfPerPage(buffer) {
+    const pdfjs = getPdfjs();
+    if (typeof pdfjs.GlobalWorkerOptions !== "undefined") {
+        pdfjs.GlobalWorkerOptions.workerSrc = "";
+    }
+    const data = buffer instanceof Buffer ? new Uint8Array(buffer) : buffer;
+    let loadingTask;
+    try {
+        loadingTask = pdfjs.getDocument({ data });
+    }
+    catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[docRecognition] getDocument failed:", msg);
+        throw new Error(`PDF parse failed: ${msg}`);
+    }
+    const pdf = await loadingTask.promise;
+    const pageTexts = [];
+    let fullText = "";
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        const content = await page.getTextContent();
+        const pageText = content.items
+            .map((it) => (typeof it.str === "string" ? it.str : ""))
+            .join(" ");
+        pageTexts.push({ page: pageNum, text: pageText });
+        fullText += pageText + "\n";
+    }
+    return { fullText: fullText.trim(), pageTexts };
 }
 // KEEP your existing classify logic, but make sure it's inside this function
 function classifyAndExtract(textRaw) {

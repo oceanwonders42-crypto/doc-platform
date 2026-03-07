@@ -1,0 +1,784 @@
+{
+  "generatedAt": "2026-03-06T21:37:51.695Z",
+  "git": {
+    "branch": "",
+    "status": "",
+    "recentCommits": []
+  },
+  "web": {
+    "routes": [
+      "apps/web/app/debug/audit/page.tsx",
+      "apps/web/app/debug/layout.tsx",
+      "apps/web/app/layout.tsx",
+      "apps/web/app/onboarding/integration/page.tsx",
+      "apps/web/app/settings/integrations/page.tsx"
+    ],
+    "pagesCount": 3,
+    "apiRoutes": [
+      "apps/web/app/api/debug/audit/route.ts"
+    ]
+  },
+  "api": {
+    "filesCount": 99,
+    "keyFiles": [
+      "apps/api/src/db/prisma.ts",
+      "apps/api/src/http/server.ts",
+      "apps/api/src/workers/integrationSyncWorker.ts",
+      "apps/api/src/workers/jobHandlers/index.ts",
+      "apps/api/src/workers/jobQueueWorker.ts",
+      "apps/api/src/workers/worker.ts"
+    ]
+  },
+  "db": {
+    "models": [
+      "Firm",
+      "SavedView",
+      "Job",
+      "JobEvent",
+      "User",
+      "ApiKey",
+      "Document",
+      "DocumentVersion",
+      "DocumentTag",
+      "DocumentTagLink",
+      "RoutingRule",
+      "RoutingFeedback",
+      "RoutingPattern",
+      "RoutingScoreSnapshot",
+      "ExtractionFeedback",
+      "DocumentAuditEvent",
+      "UsageMonthly",
+      "Provider",
+      "ProviderInvoice",
+      "ProviderAccount",
+      "ProviderInvite",
+      "CaseProvider",
+      "RecordsRequest",
+      "RecordsRequestAttempt",
+      "LegalCase",
+      "CaseFinancial",
+      "CaseNote",
+      "CaseTask",
+      "Referral",
+      "CaseSummary",
+      "CaseChecklistItem",
+      "CasePacketExport",
+      "CaseContact",
+      "DemandPackage",
+      "DemandPackageSectionSource",
+      "ActivityFeedItem",
+      "CaseTimelineEvent",
+      "CaseTimelineRebuild",
+      "CrmPushLog",
+      "CrmCaseMapping",
+      "SystemErrorLog",
+      "Notification",
+      "ReviewQueueEvent",
+      "WebhookEndpoint",
+      "FirmIntegration",
+      "IntegrationCredential",
+      "MailboxConnection",
+      "IntegrationSyncLog",
+      "FieldMapping"
+    ],
+    "enums": [
+      "Role",
+      "DocumentStatus",
+      "ProcessingStage",
+      "JobStatus",
+      "IntegrationType",
+      "IntegrationProvider",
+      "IntegrationStatus",
+      "MailboxProvider"
+    ],
+    "migrations": {
+      "total": 65,
+      "pending": [],
+      "statusText": "Loaded Prisma config from prisma.config.ts.\n\nPrisma schema loaded from prisma\\schema.prisma.\nDatasource \"db\": PostgreSQL database \"db\", schema \"public\" at \"localhost:5432\"\nError: P1010: User was denied access on the database `(not available)`"
+    }
+  },
+  "build": {
+    "webBuildOk": true,
+    "apiTypecheckOk": true,
+    "errors": []
+  },
+  "codeHealth": {
+    "todoMarkers": [
+      {
+        "file": "apps/api/scripts/e2e_system_test.ts",
+        "line": 87,
+        "text": "// 3. Cases endpoint – GET /cases (may 404 if not implemented)"
+      },
+      {
+        "file": "apps/api/src/ai/documentExplain.ts",
+        "line": 75,
+        "text": "temperature: 0.2,"
+      },
+      {
+        "file": "apps/api/src/ai/documentSummary.ts",
+        "line": 51,
+        "text": "temperature: 0.2,"
+      },
+      {
+        "file": "apps/api/src/ai/extractors/courtExtractor.ts",
+        "line": 65,
+        "text": "temperature: 0.1,"
+      },
+      {
+        "file": "apps/api/src/ai/extractors/insuranceOfferExtractor.ts",
+        "line": 80,
+        "text": "temperature: 0.1,"
+      },
+      {
+        "file": "apps/api/src/ai/narrativeAssistant.ts",
+        "line": 185,
+        "text": "const diagnosesBlock = diagnoses.length ? diagnoses.join(\"; \") : \"[None extracted - add placeholders if needed]\";"
+      },
+      {
+        "file": "apps/api/src/ai/narrativeAssistant.ts",
+        "line": 191,
+        "text": "\"You are helping draft narrative sections for a demand package. Output draft language only-no legal advice, no recommend"
+      },
+      {
+        "file": "apps/api/src/ai/narrativeAssistant.ts",
+        "line": 213,
+        "text": "temperature: 0.4,"
+      },
+      {
+        "file": "apps/api/src/ai/recordsLetterGenerator.ts",
+        "line": 73,
+        "text": "- End with a thank-you and a signature block placeholder such as \"Sincerely,\" and \"[Law Firm]\" or \"Respectfully,\".`;"
+      },
+      {
+        "file": "apps/api/src/ai/recordsLetterGenerator.ts",
+        "line": 80,
+        "text": "temperature: 0.3,"
+      },
+      {
+        "file": "apps/api/src/email/emailIngestRunner.ts",
+        "line": 22,
+        "text": "// TODO: replace with real decrypt later. For now your existing behavior is plaintext."
+      },
+      {
+        "file": "apps/api/src/email/emailIngestRunner.ts",
+        "line": 87,
+        "text": "console.log(\"[email] gmail provider not implemented yet\");"
+      },
+      {
+        "file": "apps/api/src/email/emailIngestRunner.ts",
+        "line": 131,
+        "text": "throw new Error(\"gmail provider not implemented\");"
+      },
+      {
+        "file": "apps/api/src/http/middleware/auth.ts",
+        "line": 53,
+        "text": "* (Session user: placeholder for future - check cookies/session after Bearer.)"
+      },
+      {
+        "file": "apps/api/src/http/middleware/auth.ts",
+        "line": 58,
+        "text": "// TODO: session user - if no Bearer, check req.session?.userId, resolve User+firmId+role"
+      },
+      {
+        "file": "apps/api/src/http/routes/integrations.ts",
+        "line": 368,
+        "text": "// GET /integrations/sync-log — last sync attempts"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 749,
+        "text": "const body = (req.body ?? {}) as { type: string; payload?: Record<string, unknown>; priority?: number; runAt?: string; m"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 760,
+        "text": "maxAttempts: body.maxAttempts,"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 2228,
+        "text": "// TEMP dev route: create a firm"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 2237,
+        "text": "// TEMP dev route: create an API key for a firm (shows secret once)"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 2639,
+        "text": "const [unmatchedDocs, failedDocs, overdueTasks, recordsWithFailedAttempts, systemErrors] = await Promise.all(["
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 2665,
+        "text": "attempts: {"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 2695,
+        "text": "attempts: { some: { ok: false } },"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 2730,
+        "text": "items: recordsWithFailedAttempts.map((r) => ({"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 2966,
+        "text": "prisma.recordsRequestAttempt.count({"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 2969,
+        "text": "prisma.recordsRequestAttempt.findMany({"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 3062,
+        "text": "const [unmatchedDocs, failedDocs, overdueTasks, openReviewDocs, recordsWithFailedAttempts, recentFailures] ="
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 3089,
+        "text": "where: { firmId, attempts: { some: { ok: false } } },"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 3094,
+        "text": "prisma.recordsRequestAttempt.findMany({"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 3115,
+        "text": "where: { firmId, attempts: { some: { ok: false } } },"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 3117,
+        "text": "prisma.recordsRequestAttempt.count({ where: { firmId, ok: false } }),"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 3157,
+        "text": "items: recordsWithFailedAttempts.map((r) => ({"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 5050,
+        "text": "// TODO: send invite email in production"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 6119,
+        "text": "// Placeholder: 1x1 transparent PNG. Replace with real PDF thumbnail rendering."
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 8613,
+        "text": "const templateText = ["
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 8631,
+        "text": "const text = reqRow.letterBody ?? templateText;"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 8697,
+        "text": "app.get(\"/records-requests/:id/attempts\", auth, requireRole(Role.STAFF), async (req, res) => {"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 8710,
+        "text": "const items = await prisma.recordsRequestAttempt.findMany({"
+      },
+      {
+        "file": "apps/api/src/http/server.ts",
+        "line": 8728,
+        "text": "console.error(\"Failed to list records request attempts\", e);"
+      },
+      {
+        "file": "apps/api/src/integrations/crm/messageBuilder.ts",
+        "line": 138,
+        "text": "// Suggested follow-ups (placeholder)"
+      },
+      {
+        "file": "apps/api/src/integrations/crmAdapter.ts",
+        "line": 2,
+        "text": "* Placeholder CRM adapter interface for routing documents to Clio, Litify, etc."
+      },
+      {
+        "file": "apps/api/src/integrations/crmAdapter.ts",
+        "line": 27,
+        "text": "/** Placeholder: no-op adapter. Replace with real Clio/Litify clients. */"
+      },
+      {
+        "file": "apps/api/src/integrations/crmAdapter.ts",
+        "line": 29,
+        "text": "return { ok: false, error: \"CRM adapter not implemented\" };"
+      },
+      {
+        "file": "apps/api/src/send/adapters/faxAdapter.ts",
+        "line": 16,
+        "text": "// Placeholder for future Twilio/SRFax integration"
+      },
+      {
+        "file": "apps/api/src/send/adapters/faxAdapter.ts",
+        "line": 19,
+        "text": "error: `Fax provider \"${provider}\" is not yet implemented. Coming soon.`,"
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 16,
+        "text": "maxAttempts?: number;"
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 26,
+        "text": "maxAttempts = 5,"
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 36,
+        "text": "maxAttempts,"
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 46,
+        "text": "export async function claimNextJob(workerId: string): Promise<{ id: string; type: string; payload: any; firmId: string |"
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 60,
+        "text": "select: { id: true, type: true, payload: true, firmId: true, attempts: true, maxAttempts: true },"
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 78,
+        "text": "attempts: { increment: 1 },"
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 89,
+        "text": "attempts: candidate.attempts + 1,"
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 90,
+        "text": "maxAttempts: candidate.maxAttempts,"
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 130,
+        "text": "export async function rescheduleJobForRetry(jobId: string, attempts: number) {"
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 201,
+        "text": "* Set failed job back to queued for retry (attempts preserved or reset per policy)."
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 206,
+        "text": "select: { id: true, status: true, attempts: true, maxAttempts: true },"
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 243,
+        "text": "* Counts for dashboard: queued, running, failed, and retry backlog (queued with attempts > 0)."
+      },
+      {
+        "file": "apps/api/src/services/jobQueue.ts",
+        "line": 251,
+        "text": "prisma.job.count({ where: { ...where, status: \"queued\", attempts: { gt: 0 } } }),"
+      },
+      {
+        "file": "apps/api/src/services/jobRunner.ts",
+        "line": 11,
+        "text": "opts?: { priority?: number; runAt?: Date; maxAttempts?: number }"
+      },
+      {
+        "file": "apps/api/src/services/jobRunner.ts",
+        "line": 20,
+        "text": "maxAttempts: opts?.maxAttempts ?? 5,"
+      },
+      {
+        "file": "apps/api/src/services/jobRunner.ts",
+        "line": 26,
+        "text": "const MAX_ATTEMPTS = 5;"
+      },
+      {
+        "file": "apps/api/src/services/jobRunner.ts",
+        "line": 33,
+        "text": "function getBackoffDelayMs(attempts: number): number {"
+      },
+      {
+        "file": "apps/api/src/services/jobRunner.ts",
+        "line": 34,
+        "text": "return BASE_DELAY_MS * Math.pow(2, attempts);"
+      },
+      {
+        "file": "apps/api/src/services/jobRunner.ts",
+        "line": 43,
+        "text": "attempts: { lt: MAX_ATTEMPTS },"
+      },
+      {
+        "file": "apps/api/src/services/jobRunner.ts",
+        "line": 57,
+        "text": "attempts: job.attempts + 1,"
+      },
+      {
+        "file": "apps/api/src/services/jobRunner.ts",
+        "line": 68,
+        "text": "attempts: job.attempts + 1,"
+      },
+      {
+        "file": "apps/api/src/services/jobRunner.ts",
+        "line": 93,
+        "text": "if (job.attempts + 1 >= MAX_ATTEMPTS) {"
+      },
+      {
+        "file": "apps/api/src/services/jobRunner.ts",
+        "line": 106,
+        "text": "const delayMs = getBackoffDelayMs(job.attempts + 1);"
+      },
+      {
+        "file": "apps/api/src/services/recordsLetterPdf.ts",
+        "line": 148,
+        "text": "// --- Signature line placeholder ---"
+      },
+      {
+        "file": "apps/api/src/services/recordsRequestSend.ts",
+        "line": 117,
+        "text": "await prisma.recordsRequestAttempt.create({"
+      },
+      {
+        "file": "apps/api/src/workers/jobQueueWorker.ts",
+        "line": 36,
+        "text": "const { id: jobId, type, payload, firmId, attempts, maxAttempts } = job;"
+      },
+      {
+        "file": "apps/api/src/workers/jobQueueWorker.ts",
+        "line": 69,
+        "text": "if (attempts < maxAttempts) {"
+      },
+      {
+        "file": "apps/api/src/workers/jobQueueWorker.ts",
+        "line": 70,
+        "text": "await rescheduleJobForRetry(jobId, attempts);"
+      },
+      {
+        "file": "apps/api/src/workers/jobQueueWorker.ts",
+        "line": 71,
+        "text": "await addEvent(\"info\", `Scheduled retry ${attempts}/${maxAttempts}`);"
+      },
+      {
+        "file": "apps/api/src/workers/jobQueueWorker.ts",
+        "line": 81,
+        "text": "`Job ${type} failed after ${maxAttempts} attempts: ${errMsg.slice(0, 200)}`,"
+      },
+      {
+        "file": "apps/api/tests/tenantIsolation/runTenantIsolation.ts",
+        "line": 75,
+        "text": "body: JSON.stringify({ name: \"Hacked\" }),"
+      },
+      {
+        "file": "apps/web/.next/required-server-files.json",
+        "line": 1,
+        "text": "{\"version\":1,\"config\":{\"env\":{},\"webpack\":null,\"eslint\":{\"ignoreDuringBuilds\":false},\"typescript\":{\"ignoreBuildErrors\":f"
+      },
+      {
+        "file": "apps/web/.next/server/app/debug/audit/page.js",
+        "line": 1,
+        "text": "(()=>{var e={};e.id=606,e.ids=[606],e.modules={2934:e=>{\"use strict\";e.exports=require(\"next/dist/client/components/acti"
+      },
+      {
+        "file": "apps/web/.next/server/app/debug/audit/page_client-reference-manifest.js",
+        "line": 1,
+        "text": "globalThis.__RSC_MANIFEST=(globalThis.__RSC_MANIFEST||{});globalThis.__RSC_MANIFEST[\"/debug/audit/page\"]={\"moduleLoading"
+      },
+      {
+        "file": "apps/web/.next/server/app/onboarding/integration/page.js",
+        "line": 1,
+        "text": "(()=>{var e={};e.id=886,e.ids=[886],e.modules={2934:e=>{\"use strict\";e.exports=require(\"next/dist/client/components/acti"
+      }
+    ],
+    "duplicateBasenames": [
+      {
+        "basename": "package.json",
+        "paths": [
+          "apps/api/package.json",
+          "apps/web/.next/package.json",
+          "apps/web/.next/types/package.json",
+          "apps/web/package.json"
+        ]
+      },
+      {
+        "basename": "pnpm-lock.yaml",
+        "paths": [
+          "apps/api/pnpm-lock.yaml",
+          "apps/web/pnpm-lock.yaml"
+        ]
+      },
+      {
+        "basename": "migration.sql",
+        "paths": [
+          "apps/api/prisma/migrations/20260303213420_init/migration.sql",
+          "apps/api/prisma/migrations/20260304000000_routing_rule/migration.sql",
+          "apps/api/prisma/migrations/20260304100000_routing_status_and_min_auto_route/migration.sql",
+          "apps/api/prisma/migrations/20260305000000_document_ingested_at/migration.sql",
+          "apps/api/prisma/migrations/20260306000000_provider_firmid_records_providerid/migration.sql",
+          "apps/api/prisma/migrations/20260306000001_firm_integration_models/migration.sql",
+          "apps/api/prisma/migrations/20260306000002_tenant_isolation_indexes/migration.sql",
+          "apps/api/prisma/migrations/20260309000000_mailbox_email_tables/migration.sql",
+          "apps/api/prisma/migrations/20260310000000_case_timeline/migration.sql",
+          "apps/api/prisma/migrations/20260311000000_document_file_size_duplicate_idx/migration.sql",
+          "apps/api/prisma/migrations/20260312000000_timeline_track_metadata/migration.sql",
+          "apps/api/prisma/migrations/20260313000000_firm_features_usage_extraction/migration.sql",
+          "apps/api/prisma/migrations/20260314000000_usage_narrative_generated/migration.sql",
+          "apps/api/prisma/migrations/20260315000000_usage_duplicate_detected/migration.sql",
+          "apps/api/prisma/migrations/20260316000000_document_duplicate_match_count/migration.sql",
+          "apps/api/prisma/migrations/20260317000000_case_model/migration.sql",
+          "apps/api/prisma/migrations/20260318000000_firm_settings/migration.sql",
+          "apps/api/prisma/migrations/20260319000000_document_recognition_insurance_fields/migration.sql",
+          "apps/api/prisma/migrations/20260320000000_document_duplicate_of/migration.sql",
+          "apps/api/prisma/migrations/20260321000000_provider_map_fields/migration.sql",
+          "apps/api/prisma/migrations/20260322000000_document_recognition_risks/migration.sql",
+          "apps/api/prisma/migrations/20260323000000_records_request_letter_body/migration.sql",
+          "apps/api/prisma/migrations/20260324000000_document_recognition_insights/migration.sql",
+          "apps/api/prisma/migrations/20260325000000_email_messages_fax_client/migration.sql",
+          "apps/api/prisma/migrations/20260326000000_document_recognition_summary/migration.sql",
+          "apps/api/prisma/migrations/20260327000000_crm_push_log/migration.sql",
+          "apps/api/prisma/migrations/20260328000000_crm_case_mapping/migration.sql",
+          "apps/api/prisma/migrations/20260329000000_document_recognition_court_fields/migration.sql",
+          "apps/api/prisma/migrations/20260330000000_document_processing_stage/migration.sql",
+          "apps/api/prisma/migrations/20260331000000_system_error_log/migration.sql",
+          "apps/api/prisma/migrations/20260332000000_notifications/migration.sql",
+          "apps/api/prisma/migrations/20260333000000_add_unmatched_status/migration.sql",
+          "apps/api/prisma/migrations/20260334000000_repair_case_and_audit/migration.sql",
+          "apps/api/prisma/migrations/20260335000000_document_recognition_suggested_case_id/migration.sql",
+          "apps/api/prisma/migrations/20260336000000_firm_billing_fields/migration.sql",
+          "apps/api/prisma/migrations/20260337000000_provider_monetization/migration.sql",
+          "apps/api/prisma/migrations/20260338000000_provider_accounts/migration.sql",
+          "apps/api/prisma/migrations/20260401000000_case_provider/migration.sql",
+          "apps/api/prisma/migrations/20260402000000_case_note/migration.sql",
+          "apps/api/prisma/migrations/20260403000000_case_note_tasks/migration.sql",
+          "apps/api/prisma/migrations/20260404000000_job_model/migration.sql",
+          "apps/api/prisma/migrations/20260405000000_webhook_endpoint/migration.sql",
+          "apps/api/prisma/migrations/20260406000000_case_notes_tasks_fix/migration.sql",
+          "apps/api/prisma/migrations/20260407000000_records_request_generated_document/migration.sql",
+          "apps/api/prisma/migrations/20260408000000_records_request_attempt/migration.sql",
+          "apps/api/prisma/migrations/20260409000000_records_request_attempt_destination_optional/migration.sql",
+          "apps/api/prisma/migrations/20260410000000_review_queue_event/migration.sql",
+          "apps/api/prisma/migrations/20260411000000_provider_invoice/migration.sql",
+          "apps/api/prisma/migrations/20260412000000_provider_hours_service_areas/migration.sql",
+          "apps/api/prisma/migrations/20260413000000_referral/migration.sql",
+          "apps/api/prisma/migrations/20260414000000_case_summary/migration.sql",
+          "apps/api/prisma/migrations/20260415000000_case_checklist/migration.sql",
+          "apps/api/prisma/migrations/20260416000000_case_packet_export/migration.sql",
+          "apps/api/prisma/migrations/20260417000000_activity_feed/migration.sql",
+          "apps/api/prisma/migrations/20260418000000_saved_view/migration.sql",
+          "apps/api/prisma/migrations/20260419000000_case_financial/migration.sql",
+          "apps/api/prisma/migrations/20260420000000_document_tags/migration.sql",
+          "apps/api/prisma/migrations/20260501000000_document_thumbnail_key/migration.sql",
+          "apps/api/prisma/migrations/20260502000000_case_contact/migration.sql",
+          "apps/api/prisma/migrations/20260503000000_document_meta_json/migration.sql",
+          "apps/api/prisma/migrations/20260504000000_document_version/migration.sql",
+          "apps/api/prisma/migrations/20260505000000_demand_package/migration.sql",
+          "apps/api/prisma/migrations/20260506000000_job_system/migration.sql",
+          "apps/api/prisma/migrations/20260507000000_routing_learning/migration.sql",
+          "apps/api/prisma/migrations/20260606000000_duplicate_and_page_extraction/migration.sql"
+        ]
+      },
+      {
+        "basename": "index.ts",
+        "paths": [
+          "apps/api/src/ai/extractors/index.ts",
+          "apps/api/src/integrations/crm/index.ts",
+          "apps/api/src/workers/jobHandlers/index.ts"
+        ]
+      },
+      {
+        "basename": "crmAdapter.ts",
+        "paths": [
+          "apps/api/src/integrations/crm/crmAdapter.ts",
+          "apps/api/src/integrations/crmAdapter.ts"
+        ]
+      },
+      {
+        "basename": "tsconfig.json",
+        "paths": [
+          "apps/api/tsconfig.json",
+          "apps/web/tsconfig.json"
+        ]
+      },
+      {
+        "basename": "0.pack",
+        "paths": [
+          "apps/web/.next/cache/webpack/client-production/0.pack",
+          "apps/web/.next/cache/webpack/edge-server-production/0.pack",
+          "apps/web/.next/cache/webpack/server-production/0.pack"
+        ]
+      },
+      {
+        "basename": "1.pack",
+        "paths": [
+          "apps/web/.next/cache/webpack/client-production/1.pack",
+          "apps/web/.next/cache/webpack/server-production/1.pack"
+        ]
+      },
+      {
+        "basename": "2.pack",
+        "paths": [
+          "apps/web/.next/cache/webpack/client-production/2.pack",
+          "apps/web/.next/cache/webpack/server-production/2.pack"
+        ]
+      },
+      {
+        "basename": "3.pack",
+        "paths": [
+          "apps/web/.next/cache/webpack/client-production/3.pack",
+          "apps/web/.next/cache/webpack/server-production/3.pack"
+        ]
+      },
+      {
+        "basename": "index.pack",
+        "paths": [
+          "apps/web/.next/cache/webpack/client-production/index.pack",
+          "apps/web/.next/cache/webpack/edge-server-production/index.pack",
+          "apps/web/.next/cache/webpack/server-production/index.pack"
+        ]
+      },
+      {
+        "basename": "index.pack.old",
+        "paths": [
+          "apps/web/.next/cache/webpack/client-production/index.pack.old",
+          "apps/web/.next/cache/webpack/server-production/index.pack.old"
+        ]
+      },
+      {
+        "basename": "audit.meta",
+        "paths": [
+          "apps/web/.next/server/app/api/debug/audit.meta",
+          "apps/web/.next/server/app/debug/audit.meta"
+        ]
+      },
+      {
+        "basename": "page.js",
+        "paths": [
+          "apps/web/.next/server/app/debug/audit/page.js",
+          "apps/web/.next/server/app/onboarding/integration/page.js",
+          "apps/web/.next/server/app/settings/integrations/page.js",
+          "apps/web/.next/server/app/_not-found/page.js"
+        ]
+      },
+      {
+        "basename": "page.js.nft.json",
+        "paths": [
+          "apps/web/.next/server/app/debug/audit/page.js.nft.json",
+          "apps/web/.next/server/app/onboarding/integration/page.js.nft.json",
+          "apps/web/.next/server/app/settings/integrations/page.js.nft.json",
+          "apps/web/.next/server/app/_not-found/page.js.nft.json"
+        ]
+      },
+      {
+        "basename": "page_client-reference-manifest.js",
+        "paths": [
+          "apps/web/.next/server/app/debug/audit/page_client-reference-manifest.js",
+          "apps/web/.next/server/app/onboarding/integration/page_client-reference-manifest.js",
+          "apps/web/.next/server/app/settings/integrations/page_client-reference-manifest.js",
+          "apps/web/.next/server/app/_not-found/page_client-reference-manifest.js"
+        ]
+      },
+      {
+        "basename": "font-manifest.json",
+        "paths": [
+          "apps/web/.next/server/chunks/font-manifest.json",
+          "apps/web/.next/server/font-manifest.json"
+        ]
+      },
+      {
+        "basename": "route.ts",
+        "paths": [
+          "apps/web/.next/types/app/api/debug/audit/route.ts",
+          "apps/web/app/api/debug/audit/route.ts"
+        ]
+      },
+      {
+        "basename": "page.ts",
+        "paths": [
+          "apps/web/.next/types/app/debug/audit/page.ts",
+          "apps/web/.next/types/app/onboarding/integration/page.ts",
+          "apps/web/.next/types/app/settings/integrations/page.ts"
+        ]
+      },
+      {
+        "basename": "layout.ts",
+        "paths": [
+          "apps/web/.next/types/app/debug/layout.ts",
+          "apps/web/.next/types/app/layout.ts"
+        ]
+      },
+      {
+        "basename": "page.tsx",
+        "paths": [
+          "apps/web/app/debug/audit/page.tsx",
+          "apps/web/app/onboarding/integration/page.tsx",
+          "apps/web/app/settings/integrations/page.tsx"
+        ]
+      },
+      {
+        "basename": "layout.tsx",
+        "paths": [
+          "apps/web/app/debug/layout.tsx",
+          "apps/web/app/layout.tsx"
+        ]
+      }
+    ],
+    "suspiciousPartials": [
+      {
+        "type": "model_no_route",
+        "detail": "RecordsRequest model may have no API route"
+      },
+      {
+        "type": "model_may_missing_ui",
+        "detail": "Provider model — check admin/providers or providers page"
+      },
+      {
+        "type": "demand_package_ui",
+        "detail": "DemandPackage model — check demand or case UI"
+      }
+    ]
+  },
+  "tenantSecurity": {
+    "warnings": [
+      {
+        "type": "model_missing_firmId",
+        "detail": "Model IntegrationCredential may need firmId for tenant isolation"
+      },
+      {
+        "type": "where_id_without_firm",
+        "detail": "server.ts: where { id } without firmId in same where"
+      },
+      {
+        "type": "where_id_without_firm",
+        "detail": "server.ts: where { id } without firmId in same where"
+      },
+      {
+        "type": "where_id_without_firm",
+        "detail": "server.ts: where { id } without firmId in same where"
+      },
+      {
+        "type": "where_id_without_firm",
+        "detail": "server.ts: where { id } without firmId in same where"
+      },
+      {
+        "type": "where_id_without_firm",
+        "detail": "server.ts: where { id } without firmId in same where"
+      }
+    ],
+    "summary": "6 tenant isolation warning(s)"
+  }
+}

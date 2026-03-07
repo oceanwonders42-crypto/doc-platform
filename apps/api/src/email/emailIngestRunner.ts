@@ -43,12 +43,14 @@ function isFaxEmail(m: EmailMessage): boolean {
   return faxIndicators.some((word) => text.includes(word));
 }
 
-/** Whether this attachment should be sent to the document ingest pipeline (PDFs only). */
+/** Whether this attachment should be sent to the document ingest pipeline (PDF + scanner images). */
 function shouldIngestAttachment(filename: string, mimeType?: string | null): boolean {
   const lower = (filename || "").toLowerCase();
   if (lower.endsWith(".pdf")) return true;
   const mt = (mimeType || "").toLowerCase();
   if (mt === "application/pdf" || mt.startsWith("application/pdf;")) return true;
+  if (lower.endsWith(".tif") || lower.endsWith(".tiff") || mt === "image/tiff" || mt.startsWith("image/tiff;")) return true;
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || mt === "image/jpeg" || mt.startsWith("image/jpeg;")) return true;
   return false;
 }
 
