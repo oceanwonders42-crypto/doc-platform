@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Routing learning</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    a { color: #0066cc; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    h2 { margin: 1rem 0 0.5rem; font-size: 1rem; color: #444; }
+    .back { margin-bottom: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 24rem; padding: 0.5rem; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; margin-right: 0.25rem; margin-bottom: 0.25rem; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .btn.danger { color: #721c24; border-color: #f5c6cb; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; border: 1px solid #e5e5e5; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-size: 0.9rem; }
+    .metrics { display: flex; gap: 1rem; flex-wrap: wrap; margin: 0.5rem 0; }
+    .metrics .m { padding: 0.5rem 1rem; background: #f8f9fa; border-radius: 4px; }
+    .metrics .m .label { font-size: 0.8rem; color: #666; }
+    .metrics .m .value { font-size: 1.1rem; font-weight: 600; }
+    .loading { color: #666; }
+    .form-row { margin-bottom: 0.5rem; }
+    .form-row label { display: inline-block; min-width: 8rem; }
+    input[type="text"], select { padding: 0.35rem 0.5rem; min-width: 12rem; }
+  </style>
+</head>
+<body>
+  <div class="back"><a href="/admin/cases">← Cases</a></div>
+  <h1>Routing learning</h1>
+  <div class="api-key-wrap">
+    <label>API key (Bearer):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+    <button type="button" id="loadBtn" class="btn primary">Load</button>
+  </div>
+  <div id="error" class="error" aria-live="polite"></div>
+  <div id="content" style="display:none;">
+    <div class="card">
+      <h2>Accepted vs corrected</h2>
+      <div id="statsWrap" class="metrics">
+        <span class="m"><span class="label">Accepted</span><span class="value" id="acceptedCount">—</span></span>
+        <span class="m"><span class="label">Corrected</span><span class="value" id="correctedCount">—</span></span>
+      </div>
+      <p><strong>Top wins (recent accepted):</strong></p>
+      <ul id="topWinsList"></ul>
+      <p><strong>Top misses (recent corrected):</strong></p>
+      <ul id="topMissesList"></ul>
+    </div>
+    <div class="card">
+      <h2>Learned patterns</h2>
+      <div id="patternsList"><p class="loading">Loading…</p></div>
+    </div>
+    <div class="card">
+      <h2>Add routing pattern</h2>
+      <div class="form-row"><label>Name</label><input type="text" id="newPatternName" placeholder="e.g. Dr. Smith records" /></div>
+      <div class="form-row"><label>Doc type</label><input type="text" id="newPatternDocType" placeholder="e.g. medical_record" /></div>
+      <div class="form-row"><label>Provider name</label><input type="text" id="newPatternProvider" placeholder="optional" /></div>
+      <div class="form-row"><label>File name pattern</label><input type="text" id="newPatternFileName" placeholder="e.g. *smith* or .*\.pdf" /></div>
+      <div class="form-row"><label>Target case</label><select id="newPatternCaseId"><option value="">— Select case —</option></select></div>
+      <div class="form-row"><label>Priority</label><input type="number" id="newPatternPriority" value="100" min="1" max="1000" style="width:5rem;" /> (lower = higher priority)</div>
+      <p><button type="button" id="addPatternBtn" class="btn primary">Add pattern</button></p>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var API_BASE = '';
+      var keyInput = document.getElementById('apiKey');
+      var loadBtn = document.getElementById('loadBtn');
+      var errorEl = document.getElementById('error');
+      var contentEl = document.getElementById('content');
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+      function setError(msg) { errorEl.textContent = msg || ''; }
+
+      function loadStats() {
+        return fetch(API_BASE + '/routing/learning-stats', { headers: Object.assign({}, getAuth(), { Accept: 'application/json' }), credentials: 'include' })
+          .then(function (r) { if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); }); return r.json(); })
+          .then(function (data) {
+            if (!data.ok) return;
+            var el = function (id) { return document.getElementById(id); };
+            if (el('acceptedCount')) el('acceptedCount').textContent = data.acceptedCount != null ? data.acceptedCount : '—';
+            if (el('correctedCount')) el('correctedCount').textContent = data.correctedCount != null ? data.correctedCount : '—';
+            var winsList = el('topWinsList');
+            if (winsList) {
+              var wins = (data.topWins || []).slice(0, 5);
+              winsList.innerHTML = wins.length ? wins.map(function (w) {
+                return '<li><a href="/documents/' + w.documentId + '">' + w.documentId + '</a> → case ' + (w.finalCaseId || '—') + ' ' + (w.createdAt ? new Date(w.createdAt).toLocaleDateString() : '') + '</li>';
+              }).join('') : '<li class="loading">None yet</li>';
+            }
+            var missesList = el('topMissesList');
+            if (missesList) {
+              var misses = (data.topMisses || []).slice(0, 5);
+              missesList.innerHTML = misses.length ? misses.map(function (m) {
+                return '<li><a href="/documents/' + m.documentId + '">' + m.documentId + '</a> predicted ' + (m.predictedCaseId || '—') + ' → final ' + (m.finalCaseId || 'unmatched') + '</li>';
+              }).join('') : '<li class="loading">None yet</li>';
+            }
+          });
+      }
+
+      function loadPatterns() {
+        var wrap = document.getElementById('patternsList');
+        if (!wrap) return Promise.resolve();
+        return fetch(API_BASE + '/routing/patterns', { headers: Object.assign({}, getAuth(), { Accept: 'application/json' }), credentials: 'include' })
+          .then(function (r) { if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); }); return r.json(); })
+          .then(function (data) {
+            var items = (data.ok && data.items) ? data.items : [];
+            if (items.length === 0) { wrap.innerHTML = '<p class="loading">No patterns yet. Add one below.</p>'; return; }
+            var html = '<table><thead><tr><th>Name</th><th>Doc type</th><th>Provider</th><th>File pattern</th><th>Target case</th><th>Priority</th><th>Active</th><th></th></tr></thead><tbody>';
+            items.forEach(function (p) {
+              html += '<tr><td>' + (p.name || '').replace(/</g, '&lt;') + '</td><td>' + (p.docType || '—') + '</td><td>' + (p.providerName || '—') + '</td><td>' + (p.fileNamePattern || '—') + '</td><td>' + (p.targetCaseId || '—') + '</td><td>' + (p.priority ?? 100) + '</td><td>' + (p.active ? 'Yes' : 'No') + '</td><td><button type="button" class="btn danger delete-pattern-btn" data-id="' + (p.id || '') + '">Delete</button></td></tr>';
+            });
+            html += '</tbody></table>';
+            wrap.innerHTML = html;
+            wrap.querySelectorAll('.delete-pattern-btn').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var id = btn.getAttribute('data-id');
+                if (!id) return;
+                if (!confirm('Delete this pattern?')) return;
+                fetch(API_BASE + '/routing/patterns/' + encodeURIComponent(id), { method: 'DELETE', headers: getAuth(), credentials: 'include' })
+                  .then(function (r) { if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); }); return r.json(); })
+                  .then(function () { loadPatterns(); loadStats(); })
+                  .catch(function (e) { setError(e.message); });
+              });
+            });
+          });
+      }
+
+      function loadCases() {
+        return fetch(API_BASE + '/cases', { headers: getAuth(), credentials: 'include' })
+          .then(function (r) { if (!r.ok) return []; return r.json(); })
+          .then(function (data) {
+            var items = data.items || [];
+            var sel = document.getElementById('newPatternCaseId');
+            if (!sel) return;
+            var opts = '<option value="">— Select case —</option>';
+            items.forEach(function (c) {
+              opts += '<option value="' + c.id + '">' + (c.caseNumber || c.title || c.clientName || c.id) + '</option>';
+            });
+            sel.innerHTML = opts;
+          });
+      }
+
+      function load() {
+        setError('');
+        contentEl.style.display = 'block';
+        loadCases();
+        loadStats();
+        loadPatterns();
+      }
+
+      loadBtn.addEventListener('click', load);
+
+      var addPatternBtn = document.getElementById('addPatternBtn');
+      if (addPatternBtn) addPatternBtn.addEventListener('click', function () {
+        var name = (document.getElementById('newPatternName') && document.getElementById('newPatternName').value || '').trim();
+        if (!name) { setError('Name required'); return; }
+        setError('');
+        var payload = {
+          name: name,
+          docType: (document.getElementById('newPatternDocType') && document.getElementById('newPatternDocType').value) || null,
+          providerName: (document.getElementById('newPatternProvider') && document.getElementById('newPatternProvider').value) || null,
+          fileNamePattern: (document.getElementById('newPatternFileName') && document.getElementById('newPatternFileName').value) || null,
+          targetCaseId: (document.getElementById('newPatternCaseId') && document.getElementById('newPatternCaseId').value) || null,
+          priority: parseInt((document.getElementById('newPatternPriority') && document.getElementById('newPatternPriority').value) || '100', 10),
+        };
+        fetch(API_BASE + '/routing/patterns', {
+          method: 'POST',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify(payload),
+        })
+          .then(function (r) { if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); }); return r.json(); })
+          .then(function () { document.getElementById('newPatternName').value = ''; loadPatterns(); loadStats(); })
+          .catch(function (e) { setError(e.message); });
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.detectLanguageFromText = detectLanguageFromText;
+const ENGLISH_COMMON = /\b(the|and|for|with|patient|medical|record|date|service|insurance|claim|diagnosis|treatment|doctor|hospital)\b/gi;
+const SPANISH_COMMON = /\b(el|la|de|que|en|los|del|las|paciente|fecha|servicio|diagnóstico|tratamiento|médico|hospital)\b/gi;
+const FRENCH_COMMON = /\b(le|la|de|et|les|des|patient|date|service|diagnostic|traitement|médecin|hôpital)\b/gi;
+function detectLanguageFromText(text) {
+    const t = (text || "").trim().slice(0, 10000).toLowerCase();
+    if (t.length < 20) {
+        return { detectedLanguage: "en", possibleLanguages: ["en"], confidence: 0.3 };
+    }
+    const enCount = (t.match(ENGLISH_COMMON) || []).length;
+    const esCount = (t.match(SPANISH_COMMON) || []).length;
+    const frCount = (t.match(FRENCH_COMMON) || []).length;
+    const candidates = [
+        { lang: "en", count: enCount },
+        { lang: "es", count: esCount },
+        { lang: "fr", count: frCount },
+    ];
+    candidates.sort((a, b) => b.count - a.count);
+    const top = candidates[0];
+    const possibleLanguages = candidates.filter((c) => c.count > 0).map((c) => c.lang);
+    if (possibleLanguages.length === 0)
+        possibleLanguages.push("en");
+    const total = enCount + esCount + frCount || 1;
+    const confidence = Math.min(0.95, 0.4 + (top.count / total) * 0.5);
+    return {
+        detectedLanguage: top.count > 0 ? top.lang : "en",
+        possibleLanguages: possibleLanguages.length ? possibleLanguages : ["en"],
+        confidence,
+    };
+}
