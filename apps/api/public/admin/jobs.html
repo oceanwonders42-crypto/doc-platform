@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jobs</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    a { color: #0066cc; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    h2 { margin: 1rem 0 0.5rem; font-size: 1rem; color: #444; }
+    .back { margin-bottom: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 24rem; padding: 0.5rem; }
+    .filters { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+    .filters label { margin-right: 0.25rem; }
+    .filters select, .filters input { padding: 0.35rem 0.5rem; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; margin-right: 0.25rem; margin-bottom: 0.25rem; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .btn.danger { color: #721c24; border-color: #f5c6cb; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-size: 0.9rem; }
+    .badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; }
+    .badge.queued { background: #e2e3e5; color: #383d41; }
+    .badge.running { background: #cce5ff; color: #004085; }
+    .badge.done { background: #d4edda; color: #155724; }
+    .badge.failed { background: #f8d7da; color: #721c24; }
+    .badge.cancelled { background: #f5f5f5; color: #666; }
+    .loading { color: #666; }
+    .empty { color: #888; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="back"><a href="/admin/quality">← Quality</a> <a href="/admin/firms" style="margin-left:0.5rem;">Firms</a></div>
+  <h1>Jobs</h1>
+  <div class="api-key-wrap">
+    <label>API key (Bearer, platform admin):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+    <button type="button" id="loadBtn" class="btn primary">Load</button>
+  </div>
+  <div id="error" class="error" aria-live="polite"></div>
+  <div id="content" style="display:none;">
+    <div class="card" id="queueStatusCard">
+      <h2>Queue status</h2>
+      <div id="queueStatusContent"><p class="loading">Loading…</p></div>
+    </div>
+    <div class="card">
+      <h2>Filters</h2>
+      <div class="filters">
+        <label>Status:</label>
+        <select id="filterStatus">
+          <option value="">All</option>
+          <option value="queued">queued</option>
+          <option value="running">running</option>
+          <option value="done">done</option>
+          <option value="failed">failed</option>
+          <option value="cancelled">cancelled</option>
+        </select>
+        <label>Type:</label>
+        <input type="text" id="filterType" placeholder="e.g. demand_package.generate" style="width:12rem;" />
+        <label>Firm ID:</label>
+        <input type="text" id="filterFirmId" placeholder="optional" style="width:10rem;" />
+        <label><input type="checkbox" id="filterOnlyFailed" /> Only failed</label>
+        <button type="button" id="applyFilters" class="btn primary">Apply</button>
+      </div>
+      <h2>List</h2>
+      <div id="jobsList"><p class="loading">Loading…</p></div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var API_BASE = '';
+      var keyInput = document.getElementById('apiKey');
+      var loadBtn = document.getElementById('loadBtn');
+      var errorEl = document.getElementById('error');
+      var contentEl = document.getElementById('content');
+      var jobsList = document.getElementById('jobsList');
+      var queueStatusContent = document.getElementById('queueStatusContent');
+      var filterStatus = document.getElementById('filterStatus');
+      var filterType = document.getElementById('filterType');
+      var filterFirmId = document.getElementById('filterFirmId');
+      var filterOnlyFailed = document.getElementById('filterOnlyFailed');
+      var applyFilters = document.getElementById('applyFilters');
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+      function setError(msg) { errorEl.textContent = msg || ''; }
+
+      function loadQueueStatus() {
+        fetch(API_BASE + '/admin/queue-status', { headers: Object.assign({}, getAuth(), { Accept: 'application/json' }), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return;
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data || !data.ok) { queueStatusContent.innerHTML = '<p class="empty">Queue status unavailable.</p>'; return; }
+            var r = data.redis || {};
+            var d = data.db || {};
+            queueStatusContent.innerHTML =
+              '<p><strong>Document pipeline (Redis)</strong>: <span class="badge">' + (r.pending ?? 0) + ' pending</span> — ' + (r.description || '') + '</p>' +
+              '<p><strong>DB jobs</strong>: <span class="badge queued">' + (d.queued ?? 0) + ' queued</span> ' +
+              '<span class="badge running">' + (d.running ?? 0) + ' running</span> ' +
+              '<span class="badge failed">' + (d.failed ?? 0) + ' failed</span>' +
+              (d.retryBacklog ? ' <span class="badge">' + d.retryBacklog + ' retry backlog</span>' : '') +
+              ' — ' + (d.description || '') + '</p>';
+          })
+          .catch(function () { queueStatusContent.innerHTML = '<p class="empty">Queue status unavailable.</p>'; });
+      }
+
+      function buildQs() {
+        var q = [];
+        if (filterStatus && filterStatus.value) q.push('status=' + encodeURIComponent(filterStatus.value));
+        if (filterType && filterType.value.trim()) q.push('type=' + encodeURIComponent(filterType.value.trim()));
+        if (filterFirmId && filterFirmId.value.trim()) q.push('firmId=' + encodeURIComponent(filterFirmId.value.trim()));
+        if (filterOnlyFailed && filterOnlyFailed.checked) q.push('onlyFailed=true');
+        q.push('limit=100');
+        return q.length ? '?' + q.join('&') : '?limit=100';
+      }
+
+      function loadJobs() {
+        jobsList.innerHTML = '<p class="loading">Loading…</p>';
+        fetch(API_BASE + '/admin/jobs' + buildQs(), { headers: Object.assign({}, getAuth(), { Accept: 'application/json' }), credentials: 'include' })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            var items = (data.ok && data.items) ? data.items : [];
+            if (items.length === 0) {
+              jobsList.innerHTML = '<p class="empty">No jobs match the filters.</p>';
+              return;
+            }
+            var html = '<table><thead><tr><th>Status</th><th>Type</th><th>Document / Case</th><th>Firm</th><th>Attempts</th><th>runAt</th><th>updatedAt</th><th>Actions</th></tr></thead><tbody>';
+            items.forEach(function (j) {
+              var statusClass = (j.status || 'queued').toLowerCase();
+              var runAt = j.runAt ? new Date(j.runAt).toLocaleString() : '—';
+              var updatedAt = j.updatedAt ? new Date(j.updatedAt).toLocaleString() : '—';
+              var firmName = (j.firm && j.firm.name) ? j.firm.name : (j.firmId || '—');
+              var docCase = [];
+              if (j.documentId) docCase.push('<a href="/documents/' + (j.documentId || '').replace(/"/g, '&quot;') + '">Doc ' + String(j.documentId).slice(0, 8) + '…</a>');
+              if (j.caseId) docCase.push('<a href="/cases/' + (j.caseId || '').replace(/"/g, '&quot;') + '">Case ' + String(j.caseId).slice(0, 8) + '…</a>');
+              var docCaseHtml = docCase.length ? docCase.join(' ') : '—';
+              html += '<tr><td><span class="badge ' + statusClass + '">' + (j.status || '') + '</span></td>';
+              html += '<td>' + (j.type || '').replace(/</g, '&lt;') + '</td><td>' + docCaseHtml + '</td><td>' + String(firmName).replace(/</g, '&lt;') + '</td>';
+              html += '<td>' + (j.attempts ?? 0) + '</td><td>' + runAt + '</td><td>' + updatedAt + '</td><td>';
+              html += '<a href="/admin/jobs/' + (j.id || '').replace(/"/g, '&quot;') + '">Detail</a> ';
+              if (j.status === 'failed') html += '<button type="button" class="btn retry-btn" data-id="' + (j.id || '').replace(/"/g, '&quot;') + '">Retry</button> ';
+              if (j.status === 'queued') html += '<button type="button" class="btn cancel-btn" data-id="' + (j.id || '').replace(/"/g, '&quot;') + '">Cancel</button>';
+              html += '</td></tr>';
+            });
+            html += '</tbody></table>';
+            jobsList.innerHTML = html;
+            jobsList.querySelectorAll('.retry-btn').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var id = btn.getAttribute('data-id');
+                if (!id) return;
+                setError('');
+                btn.disabled = true;
+                fetch(API_BASE + '/admin/jobs/' + encodeURIComponent(id) + '/retry', { method: 'POST', headers: getAuth(), credentials: 'include' })
+                  .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || r.statusText); return d; }); })
+                  .then(function () { loadJobs(); })
+                  .catch(function (e) { setError(e.message); })
+                  .finally(function () { btn.disabled = false; });
+              });
+            });
+            jobsList.querySelectorAll('.cancel-btn').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var id = btn.getAttribute('data-id');
+                if (!id) return;
+                setError('');
+                btn.disabled = true;
+                fetch(API_BASE + '/admin/jobs/' + encodeURIComponent(id) + '/cancel', { method: 'POST', headers: getAuth(), credentials: 'include' })
+                  .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || r.statusText); return d; }); })
+                  .then(function () { loadJobs(); })
+                  .catch(function (e) { setError(e.message); })
+                  .finally(function () { btn.disabled = false; });
+              });
+            });
+          })
+          .catch(function (e) {
+            jobsList.innerHTML = '<p class="empty">Failed to load jobs.</p>';
+            setError(e.message);
+          });
+      }
+
+      loadBtn.addEventListener('click', function () {
+        setError('');
+        contentEl.style.display = 'block';
+        loadQueueStatus();
+        loadJobs();
+      });
+      applyFilters.addEventListener('click', function () {
+        loadJobs();
+      });
+      if (queueStatusContent) setInterval(loadQueueStatus, 30000);
+    })();
+  </script>
+</body>
+</html>

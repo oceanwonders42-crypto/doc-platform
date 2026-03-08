@@ -15,7 +15,11 @@ BEGIN
   END IF;
 END $$;
 
--- RecordsRequest: add providerId (optional), make providerContact nullable
-ALTER TABLE "RecordsRequest" ADD COLUMN IF NOT EXISTS "providerId" TEXT;
-
-ALTER TABLE "RecordsRequest" ALTER COLUMN "providerContact" DROP NOT NULL;
+-- RecordsRequest: add providerId (optional), make providerContact nullable (only if table exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'RecordsRequest') THEN
+    ALTER TABLE "RecordsRequest" ADD COLUMN IF NOT EXISTS "providerId" TEXT;
+    ALTER TABLE "RecordsRequest" ALTER COLUMN "providerContact" DROP NOT NULL;
+  END IF;
+END $$;

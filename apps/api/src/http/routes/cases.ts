@@ -9,19 +9,13 @@ const router = Router();
 router.get("/", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
-    const providerId = typeof req.query.providerId === "string" ? req.query.providerId.trim() : null;
-    const where: { firmId: string; caseProviders?: { some: { providerId: string } } } = { firmId };
-    if (providerId) {
-      where.caseProviders = { some: { providerId } };
-    }
     const items = await prisma.legalCase.findMany({
-      where,
+      where: { firmId },
       select: {
         id: true,
         title: true,
         caseNumber: true,
         clientName: true,
-        status: true,
         createdAt: true,
       },
       orderBy: { createdAt: "desc" },

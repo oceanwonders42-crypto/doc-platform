@@ -158,17 +158,14 @@ export async function rebuildCaseTimeline(caseId: string, firmId: string): Promi
     const eventType = getEventTypeLabel(docType) ?? rec?.doc_type ?? null;
 
     let facilityId: string | null = null;
-    let facility: string | null = null;
     let provider: string | null = null;
     let diagnosis: string | null = null;
     let procedure: string | null = null;
-    const metadata: Record<string, unknown> = { docType };
     if (track === "medical") {
       const medical = ef.medicalRecord as Record<string, unknown> | undefined;
       if (medical) {
         const facilityText = (medical.facility as string) ?? null;
         const providerText = (medical.provider as string) ?? null;
-        facility = facilityText || null;
         provider = providerText || facilityText || null;
         diagnosis = (medical.diagnosis as string) ?? null;
         procedure = (medical.procedure as string) ?? null;
@@ -177,12 +174,7 @@ export async function rebuildCaseTimeline(caseId: string, firmId: string): Promi
           matchProviderText(providers, facilityText);
         if (matchedId) facilityId = matchedId;
       }
-    } else if (track === "legal") {
-      const court = ef.court as Record<string, unknown> | undefined;
-      facility = (court?.courtName as string) ?? null;
     }
-
-    if (facility) metadata.facility = facility;
 
     await prisma.caseTimelineEvent.create({
       data: {
@@ -197,7 +189,7 @@ export async function rebuildCaseTimeline(caseId: string, firmId: string): Promi
         diagnosis,
         procedure,
         amount,
-        metadataJson: metadata as Prisma.InputJsonValue,
+        metadataJson: track !== "medical" ? ({ docType } as Prisma.InputJsonValue) : undefined,
       },
     });
   }

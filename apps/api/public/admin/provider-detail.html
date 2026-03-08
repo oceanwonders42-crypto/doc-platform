@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Provider – Summary</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    a { color: #0066cc; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    h2 { margin: 1rem 0 0.5rem; font-size: 1rem; color: #444; }
+    .back { margin-bottom: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .api-key-wrap button { padding: 0.5rem 0.75rem; margin-left: 0.25rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+    .card dl { margin: 0; }
+    .card dt { font-weight: 600; margin-top: 0.5rem; }
+    .card dd { margin: 0 0 0 1rem; }
+    table { border-collapse: collapse; background: #fff; width: 100%; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-weight: 600; font-size: 0.9rem; }
+    .loading { color: #666; }
+    .badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; }
+    .badge.active { background: #d4edda; color: #155724; }
+    .badge.inactive { background: #f8d7da; color: #721c24; }
+    .badge.open { background: #fff3cd; color: #856404; }
+    .badge.paid { background: #d4edda; color: #155724; }
+    .empty { color: #888; font-style: italic; }
+    .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+    .tabs a { padding: 0.5rem 1rem; background: #e0e0e0; border-radius: 4px; text-decoration: none; color: #333; }
+    .tabs a.active { background: #fff; font-weight: 600; border: 1px solid #ccc; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; margin-right: 0.25rem; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .hint { font-size: 0.9rem; color: #666; margin: 0.25rem 0 0.5rem; }
+    .hour-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+    .hour-row select { min-width: 7rem; }
+    .hour-row input[type="time"] { width: 6rem; }
+    .service-area-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+    .service-area-row input { flex: 1; max-width: 20rem; }
+    .badge.sent { background: #cce5ff; color: #004085; }
+    .badge.accepted { background: #d4edda; color: #155724; }
+    .badge.declined { background: #f8d7da; color: #721c24; }
+    .badge.pending { background: #fff3cd; color: #856404; }
+  </style>
+</head>
+<body>
+  <div class="back"><a href="/admin/providers" id="backLink">← Providers</a></div>
+  <h1 id="title">Provider summary</h1>
+  <div class="api-key-wrap">
+    <label>API key (Bearer):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+    <button type="button" id="loadBtn">Load summary</button>
+  </div>
+  <div id="error" class="error" aria-live="polite"></div>
+  <div id="content">
+    <div class="tabs">
+      <a href="#summary" data-tab="summary" class="active">Summary</a>
+      <a href="#edit" data-tab="edit">Edit</a>
+      <a href="#referrals" data-tab="referrals">Referrals</a>
+      <a href="#billing" data-tab="billing">Billing</a>
+    </div>
+    <div id="panel-summary" class="tab-panel active">
+      <p class="loading">Enter API key and click Load summary, or open this page with the provider ID in the path (e.g. /providers/PROVIDER_ID).</p>
+    </div>
+    <div id="panel-edit" class="tab-panel">
+      <div class="card">
+        <h2>Office hours</h2>
+        <p class="hint">Add one row per day/slot. Leave open/close empty for closed.</p>
+        <div id="hoursContainer"></div>
+        <button type="button" id="addHourRow" class="btn">+ Add row</button>
+      </div>
+      <div class="card">
+        <h2>Service areas</h2>
+        <p class="hint">List of areas this provider serves (e.g. counties, regions).</p>
+        <div id="serviceAreasContainer"></div>
+        <button type="button" id="addServiceArea" class="btn">+ Add area</button>
+      </div>
+      <div class="card">
+        <h2>Intake instructions</h2>
+        <textarea id="intakeInstructions" rows="6" placeholder="Instructions for clients requesting records or intake…" style="width:100%; max-width: 40rem;"></textarea>
+      </div>
+      <p>
+        <button type="button" id="saveProviderBtn" class="btn primary">Save</button>
+        <span id="editSaveStatus"></span>
+      </p>
+    </div>
+    <div id="panel-referrals" class="tab-panel">
+      <div class="card">
+        <h2>Referrals</h2>
+        <p class="hint">Cases referred to this provider by your firm.</p>
+        <div id="referralsList"><p class="loading">Load provider first, then open Referrals tab.</p></div>
+      </div>
+    </div>
+    <div id="panel-billing" class="tab-panel">
+      <div class="card">
+        <h2>Invoices</h2>
+        <p style="margin:0.5rem 0;">
+          <button type="button" id="addInvoiceBtn" class="btn primary">Create invoice</button>
+        </p>
+        <div id="invoicesList"><p class="loading">Load provider first, then open Billing tab.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const API_BASE = '';
+      const keyInput = document.getElementById('apiKey');
+      const loadBtn = document.getElementById('loadBtn');
+      const errorEl = document.getElementById('error');
+      const contentEl = document.getElementById('content');
+      const titleEl = document.getElementById('title');
+      const panelSummary = document.getElementById('panel-summary');
+      const panelBilling = document.getElementById('panel-billing');
+      const invoicesListEl = document.getElementById('invoicesList');
+      const addInvoiceBtn = document.getElementById('addInvoiceBtn');
+      const referralsListEl = document.getElementById('referralsList');
+
+      var currentProvider = null;
+
+      function getProviderId() {
+        var path = window.location.pathname || '';
+        var parts = path.replace(/\/$/, '').split('/');
+        var id = parts[parts.length - 1];
+        if (id && id !== 'providers' && id !== 'admin') return id;
+        var q = window.location.search && window.location.search.slice(1).split('&').filter(Boolean);
+        for (var i = 0; i < q.length; i++) {
+          var kv = q[i].split('=');
+          if (kv[0] === 'id') return decodeURIComponent(kv[1] || '');
+        }
+        return '';
+      }
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) {
+        errorEl.textContent = msg || '';
+      }
+
+      function loadSummary() {
+        var id = getProviderId();
+        if (!id) {
+          setError('No provider ID in URL (e.g. /providers/PROVIDER_ID)');
+          return Promise.reject(new Error('Missing provider ID'));
+        }
+        var headers = Object.assign({}, getAuth(), { Accept: 'application/json' });
+        return fetch(API_BASE + '/providers/' + encodeURIComponent(id) + '/summary', { headers, credentials: 'include' })
+          .then(function (r) {
+            if (r.ok) return r.json();
+            if (r.status === 404) throw new Error('Provider not found');
+            if (r.status === 401) throw new Error('Invalid or missing API key');
+            return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          });
+      }
+
+      function formatDate(d) {
+        if (!d) return '—';
+        try { return new Date(d).toLocaleDateString(); } catch (e) { return d; }
+      }
+
+      function getProviderReferrals() {
+        var id = getProviderId();
+        if (!id) return Promise.resolve({ items: [] });
+        return fetch(API_BASE + '/providers/' + encodeURIComponent(id) + '/referrals', {
+          headers: Object.assign({}, getAuth(), { Accept: 'application/json' }),
+          credentials: 'include',
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function referralStatusBadgeClass(status) {
+        if (!status) return 'sent';
+        var s = (status + '').toLowerCase();
+        if (s === 'accepted' || s === 'declined' || s === 'pending') return s;
+        return 'sent';
+      }
+
+      function renderProviderReferralsList(items) {
+        if (!referralsListEl) return;
+        if (!items || items.length === 0) {
+          referralsListEl.innerHTML = '<p class="empty">No referrals to this provider yet.</p>';
+          return;
+        }
+        var html = '<table><thead><tr><th>Case</th><th>Client</th><th>Referred</th><th>Status</th><th>Notes</th></tr></thead><tbody>';
+        items.forEach(function (r) {
+          var c = r.case || {};
+          var caseLabel = c.caseNumber || c.title || c.id || '—';
+          var caseUrl = '/cases/' + (r.caseId || '');
+          var clientName = c.clientName || '—';
+          var dateStr = r.referredAt ? formatDate(r.referredAt) : '—';
+          var statusClass = referralStatusBadgeClass(r.status);
+          var statusLabel = r.status || 'sent';
+          html += '<tr>';
+          html += '<td><a href="' + caseUrl + '">' + (caseLabel) + '</a></td>';
+          html += '<td>' + clientName + '</td>';
+          html += '<td>' + dateStr + '</td>';
+          html += '<td><span class="badge ' + statusClass + '">' + statusLabel + '</span></td>';
+          html += '<td>' + (r.notes ? String(r.notes).replace(/</g, '&lt;').substring(0, 60) + (r.notes.length > 60 ? '…' : '') : '—') + '</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        referralsListEl.innerHTML = html;
+      }
+
+      function refreshProviderReferrals() {
+        getProviderReferrals().then(renderProviderReferralsList).catch(function () {
+          if (referralsListEl) referralsListEl.innerHTML = '<p class="empty">Could not load referrals.</p>';
+        });
+      }
+
+      function renderProviderCard(p) {
+        if (!p) return '';
+        var html = '<div class="card"><h2>Provider</h2><dl>';
+        html += '<dt>Name</dt><dd>' + (p.name || '—') + '</dd>';
+        html += '<dt>Address</dt><dd>' + (p.address || '') + ', ' + (p.city || '') + ', ' + (p.state || '') + '</dd>';
+        html += '<dt>Phone</dt><dd>' + (p.phone || '—') + '</dd>';
+        html += '<dt>Email</dt><dd>' + (p.email || '—') + '</dd>';
+        html += '<dt>Specialty</dt><dd>' + (p.specialty || '—') + '</dd>';
+        html += '<dt>Verified</dt><dd>' + (p.verified ? 'Yes' : 'No') + '</dd>';
+        html += '<dt>Tier</dt><dd>' + (p.subscriptionTier || '—') + '</dd>';
+        if (p.hoursJson && Array.isArray(p.hoursJson) && p.hoursJson.length) {
+          html += '<dt>Office hours</dt><dd>' + p.hoursJson.map(function (h) {
+            return (h.day || '') + (h.open || h.close ? ': ' + (h.open || '—') + '–' + (h.close || '—') : '');
+          }).filter(Boolean).join('; ') + '</dd>';
+        }
+        if (p.serviceAreasJson && Array.isArray(p.serviceAreasJson) && p.serviceAreasJson.length) {
+          html += '<dt>Service areas</dt><dd>' + p.serviceAreasJson.map(function (a) { return typeof a === 'string' ? a : (a && a.name) || ''; }).filter(Boolean).join(', ') + '</dd>';
+        }
+        if (p.intakeInstructions) {
+          html += '<dt>Intake instructions</dt><dd>' + String(p.intakeInstructions).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</dd>';
+        }
+        html += '</dl></div>';
+        return html;
+      }
+
+      function renderRelatedCases(data) {
+        var count = data.relatedCasesCount != null ? data.relatedCasesCount : (data.relatedCases && data.relatedCases.length);
+        var list = data.relatedCases || [];
+        var html = '<div class="card"><h2>Related cases (' + count + ')</h2>';
+        if (list.length === 0) {
+          html += '<p class="empty">No related cases.</p>';
+        } else {
+          html += '<table><thead><tr><th>Case</th><th>Client</th><th>Relationship</th><th>Created</th></tr></thead><tbody>';
+          list.forEach(function (c) {
+            html += '<tr><td>' + (c.title || c.caseNumber || c.id) + '</td><td>' + (c.clientName || '—') + '</td><td>' + (c.relationship || '—') + '</td><td>' + formatDate(c.createdAt) + '</td></tr>';
+          });
+          html += '</tbody></table>';
+        }
+        html += '</div>';
+        return html;
+      }
+
+      function renderRecentRequests(data) {
+        var count = data.recordsRequestsCount != null ? data.recordsRequestsCount : (data.recentRecordsRequests && data.recentRecordsRequests.length);
+        var list = data.recentRecordsRequests || [];
+        var html = '<div class="card"><h2>Records requests (' + count + ')</h2>';
+        if (list.length === 0) {
+          html += '<p class="empty">No recent records requests.</p>';
+        } else {
+          html += '<table><thead><tr><th>Provider name</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>';
+          list.forEach(function (r) {
+            html += '<tr><td>' + (r.providerName || '—') + '</td><td>' + (r.status || '—') + '</td><td>' + formatDate(r.createdAt) + '</td><td><a href="/records-requests/' + (r.id || '') + '">View</a></td></tr>';
+          });
+          html += '</tbody></table>';
+        }
+        html += '</div>';
+        return html;
+      }
+
+      function renderTimelineEvents(data) {
+        var list = data.recentTimelineEvents || [];
+        var html = '<div class="card"><h2>Recent timeline events</h2>';
+        if (list.length === 0) {
+          html += '<p class="empty">No recent timeline events.</p>';
+        } else {
+          html += '<table><thead><tr><th>Date</th><th>Type</th><th>Track</th><th>Provider</th><th>Diagnosis</th></tr></thead><tbody>';
+          list.forEach(function (e) {
+            html += '<tr><td>' + formatDate(e.eventDate) + '</td><td>' + (e.eventType || '—') + '</td><td>' + (e.track || '—') + '</td><td>' + (e.provider || '—') + '</td><td>' + (e.diagnosis || '—') + '</td></tr>';
+          });
+          html += '</tbody></table>';
+        }
+        html += '</div>';
+        return html;
+      }
+
+      function renderRecentDocuments(data) {
+        var list = data.recentDocuments || [];
+        var html = '<div class="card"><h2>Recent documents</h2>';
+        if (list.length === 0) {
+          html += '<p class="empty">No recent documents linked to this provider.</p>';
+        } else {
+          html += '<table><thead><tr><th>Name</th><th>Status</th><th>Stage</th><th>Processed</th></tr></thead><tbody>';
+          list.forEach(function (d) {
+            html += '<tr><td>' + (d.originalName || d.id) + '</td><td>' + (d.status || '—') + '</td><td>' + (d.processingStage || '—') + '</td><td>' + formatDate(d.processedAt) + '</td></tr>';
+          });
+          html += '</tbody></table>';
+        }
+        html += '</div>';
+        return html;
+      }
+
+      function render(data) {
+        if (!data || !data.provider) return '';
+        currentProvider = data.provider;
+        titleEl.textContent = data.provider.name || 'Provider summary';
+        var html = renderProviderCard(data.provider);
+        html += renderRelatedCases(data);
+        html += renderRecentRequests(data);
+        html += renderTimelineEvents(data);
+        html += renderRecentDocuments(data);
+        return html;
+      }
+
+      function loadInvoices() {
+        var id = getProviderId();
+        if (!id) return Promise.resolve({ items: [] });
+        return fetch(API_BASE + '/providers/' + encodeURIComponent(id) + '/invoices', {
+          headers: Object.assign({}, getAuth(), { Accept: 'application/json' }),
+          credentials: 'include',
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) { return data.items || []; });
+      }
+
+      function renderInvoicesList(items) {
+        if (!invoicesListEl) return;
+        if (!items || items.length === 0) {
+          invoicesListEl.innerHTML = '<p class="empty">No invoices. Click Create invoice to add one.</p>';
+          return;
+        }
+        var html = '<table><thead><tr><th>Period</th><th>Amount</th><th>Status</th><th>Due</th><th>Paid</th><th></th></tr></thead><tbody>';
+        items.forEach(function (inv) {
+          var statusClass = (inv.status || '').toLowerCase() === 'paid' ? 'paid' : 'open';
+          var statusLabel = (inv.status || 'open') === 'paid' ? 'Paid' : 'Open';
+          var amount = '$' + ((inv.amountCents || 0) / 100).toFixed(2);
+          html += '<tr>';
+          html += '<td>' + (inv.billingPeriod || '—') + '</td>';
+          html += '<td>' + amount + '</td>';
+          html += '<td><span class="badge ' + statusClass + '">' + statusLabel + '</span></td>';
+          html += '<td>' + formatDate(inv.dueAt) + '</td>';
+          html += '<td>' + formatDate(inv.paidAt) + '</td>';
+          html += '<td>' + (inv.status !== 'paid' ? '<button type="button" class="btn mark-paid-btn" data-invoice-id="' + (inv.id || '') + '">Mark paid</button>' : '') + '</td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        invoicesListEl.innerHTML = html;
+        invoicesListEl.querySelectorAll('.mark-paid-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var invoiceId = btn.getAttribute('data-invoice-id');
+            if (!invoiceId) return;
+            setError('');
+            fetch(API_BASE + '/provider-invoices/' + encodeURIComponent(invoiceId) + '/pay-status', {
+              method: 'PATCH',
+              headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+              credentials: 'include',
+              body: JSON.stringify({ status: 'paid' }),
+            })
+              .then(function (r) {
+                if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+                return r.json();
+              })
+              .then(function () { loadInvoices().then(renderInvoicesList); })
+              .catch(function (e) { setError(e.message); });
+          });
+        });
+      }
+
+      function refreshBilling() {
+        loadInvoices().then(renderInvoicesList).catch(function () {
+          if (invoicesListEl) invoicesListEl.innerHTML = '<p class="empty">Could not load invoices.</p>';
+        });
+      }
+
+      var DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+      function addHourRow(data) {
+        var container = document.getElementById('hoursContainer');
+        if (!container) return;
+        var row = document.createElement('div');
+        row.className = 'hour-row';
+        var dayVal = (data && data.day) ? data.day : '';
+        var openVal = (data && data.open) ? data.open : '';
+        var closeVal = (data && data.close) ? data.close : '';
+        row.innerHTML =
+          '<select class="hour-day">' +
+          DAYS.map(function (d) { return '<option value="' + d + '"' + (d === dayVal ? ' selected' : '') + '>' + d + '</option>'; }).join('') +
+          '</select>' +
+          '<label>Open <input type="time" class="hour-open" value="' + (openVal || '') + '"></label>' +
+          '<label>Close <input type="time" class="hour-close" value="' + (closeVal || '') + '"></label>' +
+          '<button type="button" class="btn remove-hour-row">Remove</button>';
+        container.appendChild(row);
+        row.querySelector('.remove-hour-row').addEventListener('click', function () { row.remove(); });
+      }
+
+      function addServiceAreaRow(value) {
+        var container = document.getElementById('serviceAreasContainer');
+        if (!container) return;
+        var row = document.createElement('div');
+        row.className = 'service-area-row';
+        row.innerHTML = '<input type="text" class="service-area-input" placeholder="e.g. County A" value="' + (value || '').replace(/"/g, '&quot;') + '">' +
+          '<button type="button" class="btn remove-service-area">Remove</button>';
+        container.appendChild(row);
+        row.querySelector('.remove-service-area').addEventListener('click', function () { row.remove(); });
+      }
+
+      function populateEditForm() {
+        var p = currentProvider;
+        var hoursContainer = document.getElementById('hoursContainer');
+        var serviceAreasContainer = document.getElementById('serviceAreasContainer');
+        var intakeEl = document.getElementById('intakeInstructions');
+        if (!hoursContainer || !serviceAreasContainer || !intakeEl) return;
+        hoursContainer.innerHTML = '';
+        var hours = (p && p.hoursJson && Array.isArray(p.hoursJson)) ? p.hoursJson : [];
+        if (hours.length === 0) hours = [{ day: 'Monday', open: '', close: '' }];
+        hours.forEach(function (h) { addHourRow(h); });
+        serviceAreasContainer.innerHTML = '';
+        var areas = (p && p.serviceAreasJson && Array.isArray(p.serviceAreasJson)) ? p.serviceAreasJson : [];
+        if (areas.length === 0) addServiceAreaRow('');
+        else areas.forEach(function (a) { addServiceAreaRow(typeof a === 'string' ? a : (a && a.name) || ''); });
+        intakeEl.value = (p && p.intakeInstructions) ? p.intakeInstructions : '';
+      }
+
+      function collectEditForm() {
+        var hours = [];
+        document.querySelectorAll('#hoursContainer .hour-row').forEach(function (row) {
+          var day = row.querySelector('.hour-day');
+          var open = row.querySelector('.hour-open');
+          var close = row.querySelector('.hour-close');
+          if (day && open && close) {
+            hours.push({ day: day.value, open: (open.value || '').trim(), close: (close.value || '').trim() });
+          }
+        });
+        var areas = [];
+        document.querySelectorAll('#serviceAreasContainer .service-area-row .service-area-input').forEach(function (inp) {
+          var v = (inp.value || '').trim();
+          if (v) areas.push(v);
+        });
+        var intake = (document.getElementById('intakeInstructions') && document.getElementById('intakeInstructions').value) ? document.getElementById('intakeInstructions').value.trim() : '';
+        return { hoursJson: hours, serviceAreasJson: areas, intakeInstructions: intake || null };
+      }
+
+      function bindEditTab() {
+        var addHourBtn = document.getElementById('addHourRow');
+        var addAreaBtn = document.getElementById('addServiceArea');
+        var saveBtn = document.getElementById('saveProviderBtn');
+        var saveStatus = document.getElementById('editSaveStatus');
+        if (addHourBtn) addHourBtn.addEventListener('click', function () { addHourRow({}); });
+        if (addAreaBtn) addAreaBtn.addEventListener('click', function () { addServiceAreaRow(''); });
+        if (saveBtn && saveStatus) {
+          saveBtn.addEventListener('click', function () {
+            var id = getProviderId();
+            if (!id) { setError('No provider ID'); return; }
+            var payload = collectEditForm();
+            saveStatus.textContent = 'Saving…';
+            saveBtn.disabled = true;
+            fetch(API_BASE + '/providers/' + encodeURIComponent(id), {
+              method: 'PATCH',
+              headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+              credentials: 'include',
+              body: JSON.stringify(payload),
+            })
+              .then(function (r) {
+                if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+                return r.json();
+              })
+              .then(function (updated) {
+                currentProvider = updated;
+                saveStatus.textContent = 'Saved.';
+                setTimeout(function () { saveStatus.textContent = ''; }, 2000);
+              })
+              .catch(function (e) {
+                saveStatus.textContent = '';
+                setError(e.message);
+              })
+              .finally(function () { saveBtn.disabled = false; });
+          });
+        }
+      }
+      bindEditTab();
+
+      loadBtn.addEventListener('click', function () {
+        setError('');
+        panelSummary.innerHTML = '<p class="loading">Loading…</p>';
+        loadSummary()
+          .then(function (data) {
+            panelSummary.innerHTML = render(data);
+          })
+          .catch(function (e) {
+            panelSummary.innerHTML = '';
+            setError(e.message);
+          });
+      });
+
+      document.querySelectorAll('.tabs a').forEach(function (a) {
+        a.addEventListener('click', function (e) {
+          e.preventDefault();
+          var t = a.getAttribute('data-tab');
+          document.querySelectorAll('.tabs a').forEach(function (x) { x.classList.remove('active'); });
+          document.querySelectorAll('.tab-panel').forEach(function (x) { x.classList.remove('active'); });
+          a.classList.add('active');
+          var panel = document.getElementById('panel-' + t);
+          if (panel) panel.classList.add('active');
+          if (t === 'billing') refreshBilling();
+          if (t === 'edit') populateEditForm();
+          if (t === 'referrals') refreshProviderReferrals();
+        });
+      });
+
+      if (addInvoiceBtn) {
+        addInvoiceBtn.addEventListener('click', function () {
+          var id = getProviderId();
+          if (!id) { setError('No provider ID'); return; }
+          var period = prompt('Billing period (e.g. 2025-03):');
+          if (period === null || !period.trim()) return;
+          var amountStr = prompt('Amount in dollars (e.g. 150.00):');
+          if (amountStr === null || amountStr === '') return;
+          var amountCents = Math.round(parseFloat(amountStr) * 100);
+          if (isNaN(amountCents) || amountCents < 0) { setError('Invalid amount'); return; }
+          setError('');
+          addInvoiceBtn.disabled = true;
+          fetch(API_BASE + '/providers/' + encodeURIComponent(id) + '/invoices', {
+            method: 'POST',
+            headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+            credentials: 'include',
+            body: JSON.stringify({ billingPeriod: period.trim(), amountCents: amountCents }),
+          })
+            .then(function (r) {
+              if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+              return r.json();
+            })
+            .then(function () { refreshBilling(); })
+            .catch(function (e) { setError(e.message); })
+            .finally(function () { addInvoiceBtn.disabled = false; });
+        });
+      }
+
+      try {
+        var saved = sessionStorage.getItem('providerApiKey');
+        if (saved && keyInput) keyInput.value = saved;
+      } catch (e) {}
+      var id = getProviderId();
+      if (id && keyInput && keyInput.value.trim()) {
+        loadBtn.click();
+      }
+    })();
+  </script>
+</body>
+</html>

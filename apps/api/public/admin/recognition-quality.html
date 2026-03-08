@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Recognition quality</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; }
+    a { color: #0066cc; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    h2 { margin: 1rem 0 0.5rem; font-size: 1rem; color: #444; }
+    .back { margin-bottom: 1rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 24rem; padding: 0.5rem; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; border: 1px solid #e5e5e5; }
+    .metrics { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+    .metrics .metric { padding: 0.5rem 1rem; background: #f8f9fa; border-radius: 4px; }
+    .metrics .metric .label { font-size: 0.8rem; color: #666; }
+    .metrics .metric .value { font-size: 1.1rem; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #f8f9fa; font-weight: 600; }
+    .loading { color: #666; }
+  </style>
+</head>
+<body>
+  <div class="back"><a href="/admin/quality">← Quality</a></div>
+  <h1>Recognition quality</h1>
+  <div class="api-key-wrap">
+    <label>API key (Bearer):</label>
+    <input type="password" id="apiKey" placeholder="Paste API key" />
+    <button type="button" id="loadBtn" class="btn primary">Load</button>
+  </div>
+  <div id="error" class="error" aria-live="polite"></div>
+  <div id="content" style="display:none;">
+    <div class="card">
+      <h2>Summary</h2>
+      <div class="metrics" id="summaryMetrics"></div>
+    </div>
+    <div class="card">
+      <h2>Documents by doc type</h2>
+      <table>
+        <thead><tr><th>Doc type</th><th>Count</th></tr></thead>
+        <tbody id="byDocTypeBody"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Top quality issues</h2>
+      <table>
+        <thead><tr><th>Issue</th><th>Count</th></tr></thead>
+        <tbody id="topIssuesBody"></tbody>
+      </table>
+      <p id="topIssuesNone" class="loading" style="display:none;">None recorded.</p>
+    </div>
+    <div class="card">
+      <h2>Low-confidence classifications</h2>
+      <table>
+        <thead><tr><th>Document</th><th>Doc type</th><th>Confidence</th></tr></thead>
+        <tbody id="lowConfBody"></tbody>
+      </table>
+      <p id="lowConfNone" class="loading" style="display:none;">None.</p>
+    </div>
+    <div class="card">
+      <h2>Extraction correction rate by field</h2>
+      <table>
+        <thead><tr><th>Field</th><th>Total</th><th>Correct</th><th>Correction %</th></tr></thead>
+        <tbody id="extractionBody"></tbody>
+      </table>
+      <p id="extractionNone" class="loading" style="display:none;">No extraction feedback yet.</p>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const API_BASE = '';
+      const apiKeyEl = document.getElementById("apiKey");
+      const loadBtn = document.getElementById("loadBtn");
+      const errorEl = document.getElementById("error");
+      const contentEl = document.getElementById("content");
+
+      function getAuth() {
+        const key = (apiKeyEl && apiKeyEl.value) ? apiKeyEl.value.trim() : "";
+        return key ? { "Authorization": "Bearer " + key } : {};
+      }
+
+      loadBtn.addEventListener("click", load);
+
+      function setError(msg) {
+        errorEl.textContent = msg || "";
+      }
+
+      function render(data) {
+        if (!data || !data.ok) return;
+        const d = data;
+
+        document.getElementById("summaryMetrics").innerHTML = [
+          "<span class=\"metric\"><span class=\"label\">Avg quality score</span><span class=\"value\">" + (d.avgQualityScore != null ? d.avgQualityScore.toFixed(3) : "—") + "</span></span>",
+          "<span class=\"metric\"><span class=\"label\">Settlement offers detected</span><span class=\"value\">" + (d.settlementOffersDetectedCount ?? 0) + "</span></span>"
+        ].join("");
+
+        const byDocTypeBody = document.getElementById("byDocTypeBody");
+        byDocTypeBody.innerHTML = (d.byDocType || []).map(function (r) {
+          return "<tr><td>" + escapeHtml(r.docType) + "</td><td>" + r.count + "</td></tr>";
+        }).join("") || "<tr><td colspan=\"2\">No data</td></tr>";
+
+        const topIssues = d.topQualityIssues || [];
+        const topIssuesBody = document.getElementById("topIssuesBody");
+        const topIssuesNone = document.getElementById("topIssuesNone");
+        if (topIssues.length) {
+          topIssuesNone.style.display = "none";
+          topIssuesBody.innerHTML = topIssues.map(function (r) {
+            return "<tr><td>" + escapeHtml(r.issue) + "</td><td>" + r.count + "</td></tr>";
+          }).join("");
+        } else {
+          topIssuesBody.innerHTML = "";
+          topIssuesNone.style.display = "block";
+        }
+
+        const lowConf = d.lowConfidenceClassifications || [];
+        const lowConfBody = document.getElementById("lowConfBody");
+        const lowConfNone = document.getElementById("lowConfNone");
+        if (lowConf.length) {
+          lowConfNone.style.display = "none";
+          lowConfBody.innerHTML = lowConf.map(function (r) {
+            return "<tr><td><a href=\"/admin/cases?doc=" + escapeHtml(r.documentId) + "\">" + escapeHtml(r.documentId.slice(0, 12)) + "…</a></td><td>" + escapeHtml(r.docType || "—") + "</td><td>" + (r.confidence != null ? (r.confidence * 100).toFixed(1) + "%" : "—") + "</td></tr>";
+          }).join("");
+        } else {
+          lowConfBody.innerHTML = "";
+          lowConfNone.style.display = "block";
+        }
+
+        const extraction = d.extractionCorrectionByField || [];
+        const extractionBody = document.getElementById("extractionBody");
+        const extractionNone = document.getElementById("extractionNone");
+        if (extraction.length) {
+          extractionNone.style.display = "none";
+          extractionBody.innerHTML = extraction.map(function (r) {
+            return "<tr><td>" + escapeHtml(r.fieldKey) + "</td><td>" + r.total + "</td><td>" + r.correctCount + "</td><td>" + (r.correctionRatePct != null ? r.correctionRatePct + "%" : "—") + "</td></tr>";
+          }).join("");
+        } else {
+          extractionBody.innerHTML = "";
+          extractionNone.style.display = "block";
+        }
+
+        contentEl.style.display = "block";
+      }
+
+      function escapeHtml(s) {
+        if (s == null) return "";
+        const div = document.createElement("div");
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function load() {
+        setError("");
+        fetch(API_BASE + "/admin/quality/recognition", {
+          headers: Object.assign({ "Accept": "application/json" }, getAuth()),
+          credentials: "include"
+        })
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            if (data && data.ok) render(data);
+            else setError(data && data.error ? data.error : "Failed to load");
+          })
+          .catch(function (err) {
+            setError(err && err.message ? err.message : "Request failed");
+          });
+      }
+    })();
+  </script>
+</body>
+</html>

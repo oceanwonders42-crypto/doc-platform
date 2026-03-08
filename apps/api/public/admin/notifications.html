@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Notifications</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #f5f5f5; }
+    a { color: #0066cc; }
+    .header-bar { background: #fff; padding: 0.5rem 1rem; border-bottom: 1px solid #e0e0e0; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .header-bar a { text-decoration: none; color: #333; }
+    .header-bar a:hover { color: #0066cc; }
+    .header-bar .spacer { flex: 1; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    .api-key-wrap { margin-bottom: 1rem; }
+    .api-key-wrap input { width: 20rem; padding: 0.5rem; }
+    .error { color: #c00; margin-bottom: 0.5rem; }
+    .card { background: #fff; padding: 1rem; border-radius: 6px; margin: 1rem; }
+    .filters { margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .filters label { margin-right: 0.25rem; }
+    .filters select { padding: 0.35rem 0.5rem; min-width: 180px; }
+    .btn { padding: 0.35rem 0.75rem; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+    .btn.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+    .notif-list { list-style: none; padding: 0; margin: 0; }
+    .notif-list li { padding: 0.75rem; border-bottom: 1px solid #eee; display: flex; align-items: flex-start; justify-content: space-between; gap: 0.5rem; }
+    .notif-list li:last-child { border-bottom: none; }
+    .notif-list li.unread { background: #f8f9fa; }
+    .notif-list .notif-type { font-size: 0.8rem; color: #666; margin-bottom: 0.2rem; }
+    .notif-list .notif-title { font-weight: 600; }
+    .notif-list .notif-message { color: #444; font-size: 0.9rem; margin-top: 0.25rem; }
+    .notif-list .notif-date { font-size: 0.8rem; color: #888; white-space: nowrap; }
+    .notif-list .notif-actions { flex-shrink: 0; }
+    .empty-state { color: #666; padding: 2rem; text-align: center; }
+    .loading { color: #666; }
+  </style>
+</head>
+<body>
+  <div class="header-bar">
+    <a href="/admin/cases">Cases</a>
+    <a href="/search">Search</a>
+    <a href="/notifications">Notifications</a>
+    <a href="/dashboard">Dashboard</a>
+    <span class="spacer"></span>
+    <div id="headerBell"></div>
+  </div>
+  <div style="padding: 1rem;">
+    <h1>Notifications</h1>
+    <div class="api-key-wrap">
+      <label>API key (Bearer):</label>
+      <input type="password" id="apiKey" placeholder="Paste API key" />
+    </div>
+    <div id="error" class="error" aria-live="polite"></div>
+    <div class="card">
+      <div class="filters">
+        <label>Type:</label>
+        <select id="typeFilter">
+          <option value="">All types</option>
+          <option value="settlement_offer_detected">Settlement offer</option>
+          <option value="timeline_updated">Timeline updated</option>
+          <option value="narrative_generated">Narrative generated</option>
+          <option value="records_request_pdf_generated">Records request PDF</option>
+          <option value="records_request_sent">Records request sent</option>
+          <option value="mailbox_poll_failed">Mailbox poll failed</option>
+          <option value="case_created_from_doc">Case created from doc</option>
+          <option value="retention_cleanup">Retention cleanup</option>
+          <option value="overdue_task_reminder">Overdue task</option>
+        </select>
+        <label><input type="checkbox" id="unreadOnly" /> Unread only</label>
+        <button type="button" id="applyFilters" class="btn primary">Apply</button>
+        <span class="spacer" style="flex: 1;"></span>
+        <button type="button" id="markAllReadBtn" class="btn">Mark all as read</button>
+      </div>
+      <div id="listWrap">
+        <p class="loading">Loading…</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var API_BASE = '';
+      var keyInput = document.getElementById('apiKey');
+      var typeFilter = document.getElementById('typeFilter');
+      var unreadOnly = document.getElementById('unreadOnly');
+      var applyFilters = document.getElementById('applyFilters');
+      var markAllReadBtn = document.getElementById('markAllReadBtn');
+      var errorEl = document.getElementById('error');
+      var listWrap = document.getElementById('listWrap');
+      var headerBell = document.getElementById('headerBell');
+
+      function getAuth() {
+        var key = (keyInput && keyInput.value) ? keyInput.value.trim() : '';
+        return key ? { 'Authorization': 'Bearer ' + key } : {};
+      }
+
+      function setError(msg) { errorEl.textContent = msg || ''; }
+
+      function loadNotifications() {
+        var type = (typeFilter && typeFilter.value) ? typeFilter.value : '';
+        var unread = unreadOnly && unreadOnly.checked;
+        var qs = '?limit=50';
+        if (type) qs += '&type=' + encodeURIComponent(type);
+        if (unread) qs += '&unread=true';
+        return fetch(API_BASE + '/notifications' + qs, {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        });
+      }
+
+      function renderList(data) {
+        var items = (data && data.items) || [];
+        if (items.length === 0) {
+          listWrap.innerHTML = '<p class="empty-state">No notifications.</p>';
+          return;
+        }
+        var html = '<ul class="notif-list">';
+        items.forEach(function (n) {
+          var cls = n.read ? '' : ' unread';
+          var dateStr = n.createdAt ? new Date(n.createdAt).toLocaleString() : '';
+          var meta = n.meta || {};
+          var caseId = meta.caseId;
+          var link = caseId ? ('/cases/' + caseId) : '#';
+          html += '<li class="' + cls + '" data-id="' + (n.id || '') + '">';
+          html += '<div>';
+          html += '<div class="notif-type">' + escapeHtml(n.type || '') + '</div>';
+          html += '<div class="notif-title">' + (caseId ? '<a href="' + link + '">' + escapeHtml(n.title || '') + '</a>' : escapeHtml(n.title || '')) + '</div>';
+          if (n.message) html += '<div class="notif-message">' + escapeHtml(n.message) + '</div>';
+          html += '</div>';
+          html += '<div class="notif-date">' + escapeHtml(dateStr) + '</div>';
+          html += '<div class="notif-actions">';
+          if (!n.read) html += '<button type="button" class="btn mark-read-btn">Mark read</button>';
+          html += '</div></li>';
+        });
+        html += '</ul>';
+        listWrap.innerHTML = html;
+        listWrap.querySelectorAll('.mark-read-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var li = btn.closest('li');
+            var id = li && li.getAttribute('data-id');
+            if (!id) return;
+            fetch(API_BASE + '/notifications/' + encodeURIComponent(id) + '/read', {
+              method: 'PATCH',
+              headers: getAuth(),
+              credentials: 'include',
+            }).then(function (r) {
+              if (r.ok) { li.classList.remove('unread'); btn.remove(); refreshHeaderBell(); }
+            });
+          });
+        });
+      }
+
+      function escapeHtml(s) {
+        if (s == null) return '';
+        var div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+
+      function refreshHeaderBell() {
+        if (!headerBell) return;
+        fetch(API_BASE + '/notifications?limit=5', {
+          headers: Object.assign({}, getAuth(), { 'Accept': 'application/json' }),
+          credentials: 'include',
+        }).then(function (r) {
+          if (!r.ok) return;
+          return r.json();
+        }).then(function (data) {
+          if (!data) return;
+          var count = data.unreadCount || 0;
+          var items = (data.items || []).slice(0, 5);
+          var html = '<div class="bell-dropdown" style="position:relative;">';
+          html += '<a href="/notifications" style="text-decoration:none;color:#333;display:inline-flex;align-items:center;gap:0.25rem;">';
+          html += '🔔';
+          if (count > 0) html += '<span style="background:#c00;color:#fff;font-size:0.7rem;padding:0.1rem 0.35rem;border-radius:10px;min-width:1.2em;">' + (count > 99 ? '99+' : count) + '</span>';
+          html += '</a>';
+          html += '</div>';
+          headerBell.innerHTML = html;
+        }).catch(function () {});
+      }
+
+      applyFilters.addEventListener('click', function () {
+        setError('');
+        listWrap.innerHTML = '<p class="loading">Loading…</p>';
+        loadNotifications().then(function (data) {
+          renderList(data);
+          try { sessionStorage.setItem('providerApiKey', (keyInput && keyInput.value) ? keyInput.value.trim() : ''); } catch (e) {}
+        }).catch(function (e) {
+          setError(e.message);
+          listWrap.innerHTML = '';
+        });
+      });
+
+      markAllReadBtn.addEventListener('click', function () {
+        setError('');
+        fetch(API_BASE + '/notifications/read-all', {
+          method: 'PATCH',
+          headers: Object.assign({}, getAuth(), { 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: '{}',
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || r.statusText); });
+          return r.json();
+        }).then(function () {
+          if (unreadOnly) unreadOnly.checked = false;
+          loadNotifications().then(renderList);
+          refreshHeaderBell();
+        }).catch(function (e) { setError(e.message); });
+      });
+
+      try {
+        var saved = sessionStorage.getItem('providerApiKey');
+        if (saved && keyInput) keyInput.value = saved;
+      } catch (e) {}
+      loadNotifications().then(function (data) {
+        renderList(data);
+        refreshHeaderBell();
+      }).catch(function (e) {
+        listWrap.innerHTML = '';
+        setError(e.message);
+      });
+    })();
+  </script>
+</body>
+</html>
