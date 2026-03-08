@@ -1,0 +1,16 @@
+{
+  "name": "doc-platform",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "snapshot": "bash scripts/snapshot.sh",
+    "smoke": "bash scripts/smoke_test.sh",
+    "cleanup:run": "pnpm --filter api cleanup:run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.30.3"
+}

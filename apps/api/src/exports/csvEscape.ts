@@ -1,0 +1,39 @@
+/**
+ * CSV escaping for RFC 4180 compliant output.
+ * Ensures valid UTF-8 and sanitizes commas, newlines, and double quotes.
+ */
+
+/**
+ * Escape a value for CSV. Wraps in double quotes if the value contains
+ * comma, newline, or double quote. Doubles internal double quotes.
+ */
+export function escapeCsvValue(value: string | number | null | undefined): string {
+  if (value == null) return "";
+  const s = String(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const needsQuoting = /[,"\n]/.test(s);
+  if (needsQuoting) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+/**
+ * Build a CSV row from an array of values.
+ */
+export function csvRow(values: (string | number | null | undefined)[]): string {
+  return values.map(escapeCsvValue).join(",") + "\n";
+}
+
+/**
+ * Encode a string as valid UTF-8, replacing invalid sequences.
+ */
+export function toValidUtf8(s: string): string {
+  try {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    const bytes = encoder.encode(s);
+    return decoder.decode(bytes);
+  } catch {
+    return s.replace(/[\uFFFD]/g, "").replace(/[^\u0000-\uFFFF]/g, "?");
+  }
+}
