@@ -1,0 +1,44 @@
+# E2E smoke tests. Runs Playwright smoke pack against the web app.
+# Does not start or assume the API; for full pass run API with valid env or accept env-error states.
+name: E2E Smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers (chromium)
+        run: cd apps/web && pnpm exec playwright install --with-deps chromium
+
+      - name: Start web app
+        run: |
+          cd apps/web && pnpm run dev &
+          for i in $(seq 1 30); do curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/dashboard 2>/dev/null | grep -q 200 && break; sleep 2; done
+          sleep 3
+        env:
+          CI: "1"
+
+      - name: Run smoke tests
+        run: cd apps/web && pnpm test:e2e tests/smoke.spec.ts
+        env:
+          CI: "1"
+          PLAYWRIGHT_BASE_URL: "http://localhost:3000"

@@ -21,6 +21,11 @@ Run through this checklist to validate core UI flows in ~2 minutes after generat
 
 ## Smoke Test Steps
 
+### 0. Login / access (API key)
+- [ ] Open http://localhost:3000/dashboard (app uses API key auth; no login form)
+- [ ] Page loads without "Missing DOC_API_URL" or "Missing DOC_API_KEY"
+- [ ] Dev banner shows "DOC_API_KEY: set (prefix: ...)" when key is configured
+
 ### 1. Dashboard loads and lists docs
 - [ ] Open http://localhost:3000/dashboard
 - [ ] Page loads without error
@@ -37,33 +42,58 @@ Run through this checklist to validate core UI flows in ~2 minutes after generat
 - [ ] Some docs have case links (routed docs)
 - [ ] Click a document name → document detail page loads
 
-### 4. Review queue and Preview drawer
+### 4. Documents list and document detail
+- [ ] From dashboard, click a document name in "Recent documents" → /documents/[id] loads
+- [ ] Document detail shows metadata, recognition, case link if routed
+- [ ] Back or Dashboard nav returns to dashboard
+
+### 5. Review queue and Preview drawer
 - [ ] Click **Review queue** in the nav
 - [ ] http://localhost:3000/dashboard/review loads
 - [ ] Queue shows NEEDS_REVIEW documents with suggested case
 - [ ] Click a document row → Preview drawer opens on the right
 - [ ] Drawer shows document metadata, recognition, suggested case link
 
-### 5. Confirm/Reject/Route moves docs and auto-advances
+### 6. Confirm/Reject/Route moves docs and auto-advances
 - [ ] With Preview drawer open, click **Confirm** (or **Route** if suggested case exists)
 - [ ] Document is routed, drawer closes or advances to next
 - [ ] Click **Reject** on a document → it is rejected, queue updates
 - [ ] Confirm/Reject buttons work without breaking the UI
 
-### 6. Case detail page and documents list
+### 7. Case detail page and documents list
 - [ ] From Review queue, click a **Case** link (e.g. "DEMO-001 – Smith v. State Farm")
 - [ ] Or: Open /cases/{id} (demo uses demo-case-1, demo-case-2, demo-case-3)
 - [ ] Case page loads: title, case number (e.g. DEMO-001), client name
 - [ ] "Documents" section lists documents linked to this case
 - [ ] "Medical Timeline" link is visible
 
-### 7. Timeline renders events
+### 8. Timeline renders events
 - [ ] Click **Medical Timeline** (or open /cases/{id}/timeline)
 - [ ] Timeline page loads
 - [ ] At least one event appears (e.g. "Records received", "Settlement offer")
 - [ ] Events show provider, document, date
 
-### 8. Narrative generation (if feature enabled)
+### 9. Cases list
+- [ ] Click **Cases** in the nav (or open /cases)
+- [ ] Cases list loads with at least 3 demo cases (DEMO-001, DEMO-002, DEMO-003)
+- [ ] Click a case → case detail page
+
+### 10. Providers
+- [ ] Click **Providers** in the nav (or open /providers)
+- [ ] Providers page loads (may be empty or show demo providers)
+- [ ] No console errors or broken layout
+
+### 11. Records requests
+- [ ] Click **Records requests** in the nav (or open /records-requests)
+- [ ] Records requests page loads (list or empty state)
+- [ ] No console errors; "New request" or similar action visible if applicable
+
+### 12. One admin page
+- [ ] Open /admin/firms (or another admin route if available)
+- [ ] Page loads (may require PLATFORM_ADMIN_API_KEY in .env.local for data)
+- [ ] No uncaught errors; empty state or list is acceptable
+
+### 13. Narrative generation (if feature enabled)
 - [ ] Open case page: /cases/{id}
 - [ ] If "Demand narratives" feature is enabled: "Generate narrative" or similar control appears
 - [ ] Click to generate → narrative text loads (or spinner then text)
@@ -73,13 +103,18 @@ Run through this checklist to validate core UI flows in ~2 minutes after generat
 
 ## Quick Reference
 
-| Screen        | URL                          |
-|---------------|------------------------------|
-| Dashboard     | /dashboard                   |
-| Review queue  | /dashboard/review            |
-| Case detail   | /cases/{id} (demo: demo-case-1, demo-case-2, demo-case-3) |
-| Timeline      | /cases/{id}/timeline         |
-| Narrative     | /cases/{id}/narrative (page or section) |
+| Screen           | URL |
+|------------------|-----|
+| Dashboard        | /dashboard |
+| Review queue     | /dashboard/review |
+| Cases list       | /cases |
+| Case detail      | /cases/{id} (demo: demo-case-1, demo-case-2, demo-case-3) |
+| Document detail  | /documents/{id} |
+| Timeline         | /cases/{id}/timeline |
+| Providers        | /providers |
+| Records requests | /records-requests |
+| Admin firms      | /admin/firms |
+| Narrative        | /cases/{id}/narrative (page or section) |
 
 Demo labels show as "DEMO-001", "DEMO-002", "DEMO-003" (case number) with titles like "Smith v. State Farm".
 
