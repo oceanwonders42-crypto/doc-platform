@@ -14,6 +14,14 @@ export type LetterPdfInput = {
   letterBody: string;
   providerName: string;
   providerContact?: string | null;
+  firmName?: string | null;
+  providerAddress?: string | null;
+  caseTitle?: string | null;
+  caseNumber?: string | null;
+  clientName?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  notes?: string | null;
 };
 
 /**

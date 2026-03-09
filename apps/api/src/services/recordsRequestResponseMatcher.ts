@@ -21,7 +21,7 @@ export type MatchDocumentToRecordsRequestInput = {
 };
 
 export type MatchDocumentToRecordsRequestResult =
-  | { matched: true; recordsRequestId: string; attached: true }
+  | { matched: true; recordsRequestId: string; attached: boolean }
   | { matched: false; reason?: string };
 
 /**

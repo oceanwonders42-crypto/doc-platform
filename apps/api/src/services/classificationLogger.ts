@@ -26,15 +26,6 @@ export interface ClassificationDecisionContext {
   reason?: string | null;
   signalCount?: number;
 }
-  documentId: string;
-  firmId: string;
-  docType: string;
-  suggestedDocType?: string | null;
-  confidence: number;
-  status: ClassificationDecisionStatus;
-  reason?: string | null;
-  signalCount?: number;
-}
 
 export function logClassificationDecision(ctx: ClassificationDecisionContext): void {
   const payload = {

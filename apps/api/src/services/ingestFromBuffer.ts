@@ -4,6 +4,7 @@
  */
 import crypto from "crypto";
 import { prisma } from "../db/prisma";
+import { Prisma } from "@prisma/client";
 import { putObject } from "./storage";
 import { enqueueDocumentJob } from "./queue";
 import { validateUploadFile } from "./fileSecurity/index";
@@ -113,7 +114,7 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
           duplicateOfId: existing.id,
           ingestedAt: new Date(),
           processedAt: new Date(),
-          metaJson: meta,
+          metaJson: meta as unknown as Prisma.InputJsonValue,
         },
       });
       return { ok: true, documentId: doc.id, spacesKey: existing.spacesKey, duplicate: true, existingId: existing.id };
@@ -144,7 +145,7 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
       file_sha256: fileSha256,
       fileSizeBytes,
       ingestedAt: new Date(),
-      metaJson: originalMeta,
+      metaJson: originalMeta as unknown as Prisma.InputJsonValue,
     },
   });
 

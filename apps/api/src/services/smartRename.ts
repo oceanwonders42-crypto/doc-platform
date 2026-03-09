@@ -148,7 +148,7 @@ export async function renameDocumentInStorage(documentId: string, firmId: string
   );
   const rec = rows[0];
 
-  const uploadDate = doc.ingestedAt?.toISOString?.() ?? new Date().toISOString();
+  const uploadDate: string = doc.ingestedAt?.toISOString?.() ?? new Date().toISOString() ?? "";
   const serviceDateRaw =
     rec?.incident_date ??
     (rec?.insurance_fields != null && typeof rec.insurance_fields === "object"
@@ -157,9 +157,9 @@ export async function renameDocumentInStorage(documentId: string, firmId: string
       : null);
 
   const ctx: SmartRenameContext = {
-    documentType: rec?.doc_type ?? "other",
-    providerName: rec?.provider_name ?? null,
-    serviceDate: serviceDateRaw,
+    documentType: (rec?.doc_type ?? "other") as string,
+    providerName: (rec?.provider_name ?? null) as string | null,
+    serviceDate: serviceDateRaw ?? null,
     uploadDate,
   };
 
@@ -176,7 +176,9 @@ export async function renameDocumentInStorage(documentId: string, firmId: string
   const newSpacesKey = `${keyPrefix}/${fileName}`;
 
   if (newSpacesKey === doc.spacesKey) {
-    return { ok: true, newSpacesKey: doc.spacesKey, newOriginalName: doc.originalName ?? fileName };
+    const name: string = (doc.originalName ?? fileName ?? "").toString();
+    const key: string = (doc.spacesKey ?? "").toString();
+    return { ok: true, newSpacesKey: key, newOriginalName: name };
   }
 
   try {

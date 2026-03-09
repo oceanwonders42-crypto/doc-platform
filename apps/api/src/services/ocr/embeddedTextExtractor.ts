@@ -11,17 +11,17 @@ export async function extractEmbeddedText(buffer: Buffer): Promise<OcrResult | n
   const trimmed = fullText.trim();
   if (trimmed.length < 10) return null;
 
-  const pageDiagnostics: PageDiagnostic[] = pageTexts.map((p) => ({
+  const pageDiagnostics: PageDiagnostic[] = pageTexts.map((p: { page: number; text: string }) => ({
     pageNumber: p.page,
     ocrMethod: "embedded",
-    status: p.text.trim().length > 20 ? "GOOD" : "LOW_CONFIDENCE",
+    status: (p.text.trim().length > 20 ? "GOOD" : "LOW_CONFIDENCE") as PageDiagnostic["status"],
     textLength: p.text.length,
     averageConfidence: 0.95,
   }));
 
   return {
     fullText: trimmed,
-    pageTexts: pageTexts.map((p) => ({ page: p.page, text: p.text })),
+    pageTexts: pageTexts.map((p: { page: number; text: string }) => ({ page: p.page, text: p.text })),
     ocrEngine: "embedded",
     ocrConfidence: 0.95,
     pageDiagnostics,

@@ -64,10 +64,13 @@ import { pushDocumentToClio } from "../integrations/clioAdapter";
 import { getPresignedGetUrl } from "../services/storage";
 import { hasFeature } from "../services/featureFlags";
 import casesRouter from "./routes/cases";
+import trafficRouter from "./routes/traffic";
 import { Prisma, Role } from "@prisma/client";
 import { generateClioContactsCsv, generateClioMattersCsv } from "../exports/clioExport";
 import { importClioMappingsFromCsv } from "../services/clioMappingsImport";
 import { logSystemError } from "../services/errorLog";
+import { signToken } from "../lib/jwt";
+import { WEBHOOK_EVENTS } from "../services/webhooks";
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -95,7 +98,93 @@ app.get("/readyz", async (_req, res) => {
   res.json({ ok: true });
 });
 
+// --- Dashboard auth (browser login flow) ---
+// POST /auth/login — email + password; returns JWT for use as Bearer.
+app.post("/auth/login", async (req, res) => {
+  try {
+    const body = req.body as { email?: string; password?: string };
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!email || !password) {
+      return res.status(400).json({ ok: false, error: "Email and password required" });
+    }
+    const user = await prisma.user.findUnique({
+      where: { email },
+      include: { firm: { select: { id: true, name: true, plan: true, status: true } } },
+    });
+    if (!user) {
+      return res.status(401).json({ ok: false, error: "Invalid email or password" });
+    }
+    const isDemo =
+      process.env.NODE_ENV !== "production" &&
+      !user.passwordHash &&
+      (password === "demo" || password === "password");
+    const passwordOk =
+      isDemo || (user.passwordHash && (await bcrypt.compare(password, user.passwordHash)));
+    if (!passwordOk) {
+      return res.status(401).json({ ok: false, error: "Invalid email or password" });
+    }
+    const token = signToken({
+      userId: user.id,
+      firmId: user.firmId,
+      role: user.role,
+      email: user.email,
+    });
+    return res.json({ ok: true, token });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: String(e?.message ?? e) });
+  }
+});
+
+// GET /auth/me — requires Bearer (JWT or API key). Returns current user/firm for dashboard.
+app.get("/auth/me", auth, async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const userId = (req as any).userId as string | null;
+    const authRole = (req as any).authRole as Role;
+    const [user, firm] = await Promise.all([
+      userId
+        ? prisma.user.findUnique({
+            where: { id: userId },
+            select: { id: true, email: true, role: true },
+          })
+        : null,
+      prisma.firm.findUnique({
+        where: { id: firmId },
+        select: { id: true, name: true, plan: true, status: true },
+      }),
+    ]);
+    if (!firm) {
+      return res.status(404).json({ ok: false, error: "Firm not found" });
+    }
+    const role = (user?.role ?? authRole) as string;
+    return res.json({
+      ok: true,
+      user: user
+        ? { id: user.id, email: user.email, role: user.role }
+        : { id: "", email: "", role },
+      firm: { id: firm.id, name: firm.name, plan: firm.plan, status: firm.status },
+      role,
+    });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: String(e?.message ?? e) });
+  }
+});
+
+// Stub OAuth: redirect back to web app with error so login page can show "use email/password"
+app.get("/auth/google", (req, res) => {
+  const redirectUri = typeof req.query.redirect_uri === "string" ? req.query.redirect_uri : "";
+  if (redirectUri) res.redirect(302, `${redirectUri}?error=oauth_not_implemented`);
+  else res.status(501).json({ ok: false, error: "OAuth not configured; use email/password" });
+});
+app.get("/auth/microsoft", (req, res) => {
+  const redirectUri = typeof req.query.redirect_uri === "string" ? req.query.redirect_uri : "";
+  if (redirectUri) res.redirect(302, `${redirectUri}?error=oauth_not_implemented`);
+  else res.status(501).json({ ok: false, error: "OAuth not configured; use email/password" });
+});
+
 app.use("/cases", casesRouter);
+app.use("/traffic", trafficRouter);
 
 // Admin: list firms with stats (requires PLATFORM_ADMIN_API_KEY)
 app.get("/admin/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res) => {
@@ -1331,6 +1420,44 @@ app.post("/ingest", authWithScope("ingest"), rateLimitEndpoint(60, "ingest"), up
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4000;
 // === Firm-scoped endpoints ===
+
+// Audit events list for dashboard /dashboard/audit
+app.get("/me/audit-events", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const limit = Math.min(parseInt(String(req.query.limit), 10) || 100, 500);
+    const events = await prisma.documentAuditEvent.findMany({
+      where: { firmId },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        documentId: true,
+        actor: true,
+        action: true,
+        fromCaseId: true,
+        toCaseId: true,
+        metaJson: true,
+        createdAt: true,
+      },
+    });
+    res.json({
+      ok: true,
+      items: events.map((e) => ({
+        id: e.id,
+        documentId: e.documentId,
+        actor: e.actor,
+        action: e.action,
+        fromCaseId: e.fromCaseId,
+        toCaseId: e.toCaseId,
+        metaJson: e.metaJson,
+        createdAt: e.createdAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
 
 // Notifications (key events: settlement offer, timeline updated, narrative generated)
 app.get("/me/notifications", auth, requireRole(Role.STAFF), async (req, res) => {

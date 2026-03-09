@@ -42,3 +42,16 @@ export function detectLanguageFromText(text: string): LanguageDetectionResult {
     confidence,
   };
 }
+
+/** Alias for callers expecting detectLanguage(text). */
+export function detectLanguage(text: string): LanguageDetectionResult {
+  return detectLanguageFromText(text);
+}
+
+/** Heuristic: true when text contains a substantial proportion of non-Latin script. */
+export function hasNonLatinScript(text: string): boolean {
+  const t = (text || "").trim().slice(0, 5000);
+  if (t.length < 50) return false;
+  const nonLatin = t.replace(/[\x00-\x7F]/g, "").length;
+  return nonLatin / t.length > 0.15;
+}

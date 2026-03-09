@@ -87,7 +87,9 @@ export async function runNextJob(): Promise<boolean> {
   });
 
   try {
-    await handler(job.firmId, job.payload as object);
+    const firmId = job.firmId;
+    if (!firmId) throw new Error("Job missing firmId");
+    await handler(firmId, job.payload as object);
     await prisma.job.update({
       where: { id: job.id },
       data: { status: "done", lastError: null, updatedAt: new Date() },

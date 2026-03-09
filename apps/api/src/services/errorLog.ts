@@ -19,11 +19,13 @@ function writeLog(service: string, message: string, stack: string | null): Promi
  * @param service - Service name (e.g. "api", "worker")
  * @param messageOrErr - Error message string, or an Error object
  * @param stack - Optional stack trace (ignored if messageOrErr is Error)
+ * @param _meta - Optional extra context (ignored; for API compatibility)
  */
 export async function logSystemError(
   service: string,
   messageOrErr: string | Error | unknown,
-  stack?: string
+  stack?: string,
+  _meta?: unknown
 ): Promise<void> {
   let message: string;
   let stackVal: string | null;

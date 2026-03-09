@@ -57,6 +57,7 @@ model Firm {
   notifications  Notification[]
   jobs           Job[]
   webhookEndpoints WebhookEndpoint[]
+  trafficMatters TrafficMatter[]
 }
 
 enum JobStatus {
@@ -86,11 +87,12 @@ model Job {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  firmId    String
-  email     String   @unique
-  role      Role     @default(STAFF)
-  createdAt DateTime @default(now())
+  id           String   @id @default(cuid())
+  firmId       String
+  email        String   @unique
+  role         Role     @default(STAFF)
+  passwordHash String?  // optional: migration 20260610000000; set for email/password login
+  createdAt    DateTime @default(now())
 
   firm Firm @relation(fields: [firmId], references: [id])
 }
@@ -459,4 +461,46 @@ model WebhookEndpoint {
   firm Firm @relation(fields: [firmId], references: [id], onDelete: Cascade)
 
   @@index([firmId])
+}
+
+// Traffic matter: citation / traffic court workflow. Separate from LegalCase (PI).
+model TrafficMatter {
+  id                    String    @id @default(cuid())
+  firmId                String
+  caseId                String?   // nullable: optional link to broader LegalCase
+  crmRecordId           String?
+  crmProvider           String?
+  matterType             String    @default("TRAFFIC")
+  status                 String    @default("NEW_CITATION") // NEW_CITATION | REVIEW_REQUIRED | RESPONSE_DUE | HEARING_PENDING | DRAFT_READY | CLOSED
+  documentTypeOfOrigin   String?   // citation | traffic_hearing_notice | traffic_court_notice | traffic_disposition | traffic_order
+  sourceDocumentId       String?   // document that created/updated this matter
+  defendantName          String?
+  defendantDob           DateTime?
+  citationNumber         String?
+  statuteCodeRaw         String?
+  statuteCodeNormalized  String?
+  chargeDescriptionRaw  String?
+  chargeListJson         Json?
+  jurisdictionState      String?
+  jurisdictionCounty     String?
+  courtName              String?
+  courtType              String?
+  issueDate              DateTime?
+  dueDate                DateTime?
+  hearingDate            DateTime?
+  extractedFactsJson     Json?
+  extractionConfidenceJson Json?
+  routingConfidence      Float?
+  reviewRequired         Boolean   @default(false)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  firm Firm @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@index([firmId])
+  @@index([firmId, citationNumber])
+  @@index([firmId, jurisdictionState])
+  @@index([firmId, dueDate])
+  @@index([firmId, status])
+  @@index([firmId, createdAt])
 }

@@ -6,10 +6,13 @@ export type NotificationType =
   | "narrative_generated"
   | "records_request_pdf_generated"
   | "records_request_sent"
+  | "records_request_send_failed"
   | "mailbox_poll_failed"
   | "case_created_from_doc"
   | "retention_cleanup"
-  | "overdue_task_reminder";
+  | "overdue_task_reminder"
+  | "demand_package_ready"
+  | "job_failed";
 
 export async function createNotification(
   firmId: string,

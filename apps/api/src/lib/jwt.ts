@@ -15,7 +15,7 @@ export interface JwtPayload {
 }
 
 export function signToken(payload: JwtPayload, expiresIn: string = DEFAULT_EXPIRES_IN): string {
-  const options: jwt.SignOptions = { expiresIn, algorithm: "HS256" };
+  const options: jwt.SignOptions = { algorithm: "HS256", expiresIn: expiresIn as jwt.SignOptions["expiresIn"] };
   return jwt.sign(payload as object, secret, options);
 }
 

@@ -24,11 +24,6 @@ function getBackupDir(): string {
   return dir;
 }
 
-/** Re-export for callers that need to verify a backup file. */
-export function verifyBackupFile(filePath: string, expectedChecksum: string): boolean {
-  return verifyBackupFileHelper(filePath, expectedChecksum);
-}
-
 /**
  * Run pg_dump and write to a file. Returns path and size.
  * Requires pg_dump on PATH and DATABASE_URL set.
@@ -62,7 +57,7 @@ async function runPgDump(): Promise<{ filePath: string; size: number }> {
       try {
         fs.unlinkSync(filePath);
       } catch {}
-      reject(new Error(`pg_dump failed: ${err.message}`));
+      reject(new Error(`pg_dump failed: ${(err as Error).message}`));
     });
 
     child.on("close", (code) => {
@@ -81,17 +76,9 @@ async function runPgDump(): Promise<{ filePath: string; size: number }> {
   });
 }
 
-/**
- * Verify backup file exists and checksum matches. Returns true if valid.
- */
+/** Re-export for callers that need to verify a backup file. */
 export function verifyBackupFile(filePath: string, expectedChecksum: string): boolean {
-  try {
-    if (!fs.existsSync(filePath)) return false;
-    const actual = sha256Hex(filePath);
-    return actual === expectedChecksum;
-  } catch {
-    return false;
-  }
+  return verifyBackupFileHelper(filePath, expectedChecksum);
 }
 
 export interface TriggerBackupResult {

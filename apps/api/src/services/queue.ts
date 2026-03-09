@@ -43,6 +43,9 @@ export async function enqueueTimelineRebuildJob(payload: { caseId: string; firmI
   await redis.lpush(QUEUE_KEY, JSON.stringify({ type: "timeline_rebuild", ...payload }));
 }
 
+/** Alias for migration/bulk ingest; uses same OCR queue. */
+export const enqueueMigrationOcrJob = enqueueOcrJob;
+
 export async function popJob(): Promise<JobPayload | null> {
   const raw = await redis.rpop(QUEUE_KEY);
   return raw ? (JSON.parse(raw) as JobPayload) : null;

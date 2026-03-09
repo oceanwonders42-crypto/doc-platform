@@ -51,6 +51,41 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
   return fullText.trim();
 }
 
+export type PdfPageText = { page: number; text: string };
+
+/** Extract text per page; returns full concatenated text and per-page array. */
+export async function extractTextFromPdfPerPage(buffer: Buffer): Promise<{ fullText: string; pageTexts: PdfPageText[] }> {
+  const pdfjs = getPdfjs();
+
+  if (typeof (pdfjs as any).GlobalWorkerOptions !== "undefined") {
+    (pdfjs as any).GlobalWorkerOptions.workerSrc = "";
+  }
+
+  const data = buffer instanceof Buffer ? new Uint8Array(buffer) : buffer;
+  let loadingTask: any;
+  try {
+    loadingTask = (pdfjs as any).getDocument({ data });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`PDF parse failed: ${msg}`);
+  }
+  const pdf = await loadingTask.promise;
+  const pageTexts: PdfPageText[] = [];
+  let fullText = "";
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    const pageText = (content.items as any[])
+      .map((it: any) => (typeof it.str === "string" ? it.str : ""))
+      .join(" ");
+    pageTexts.push({ page: pageNum, text: pageText });
+    fullText += pageText + "\n";
+  }
+
+  return { fullText: fullText.trim(), pageTexts };
+}
+
 // KEEP your existing classify logic, but make sure it's inside this function
 export function classifyAndExtract(textRaw: string) {
   const text = clean(textRaw);

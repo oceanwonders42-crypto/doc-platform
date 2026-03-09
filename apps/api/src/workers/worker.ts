@@ -15,9 +15,13 @@ import { analyzeRisks } from "../ai/riskAnalyzer";
 import { analyzeDocumentInsights } from "../ai/documentInsights";
 import { summarizeDocument } from "../ai/documentSummary";
 import { classify } from "../ai/docClassifier";
+import { detectTrafficMatterType } from "../ai/trafficMatterDetector";
 import { runExtractors } from "../ai/extractors";
 import { extractInsuranceOfferFields } from "../ai/extractors/insuranceOfferExtractor";
 import { extractCourtFields } from "../ai/extractors/courtExtractor";
+import { extractTrafficCitationFields } from "../ai/extractors/trafficCitationExtractor";
+import { extractTrafficStatuteCode } from "../ai/extractors/trafficStatuteExtractor";
+import { createOrUpdateTrafficMatter } from "../services/trafficMatterService";
 import { matchDocumentToCase } from "../services/caseMatching";
 import { routeDocument } from "../services/documentRouting";
 import { hasFeature } from "../services/featureFlags";
@@ -176,8 +180,27 @@ async function handleClassificationJob(documentId: string, firmId: string): Prom
       finalConfidence,
     ]
   );
+
+  const matterDetection = detectTrafficMatterType(text, finalDocType, doc.originalName ?? "");
+  await pgPool.query(
+    `
+    update document_recognition set
+      suggested_matter_type = $1,
+      matter_routing_reason = $2,
+      matter_review_required = $3,
+      updated_at = now()
+    where document_id = $4
+    `,
+    [
+      matterDetection.matterType,
+      matterDetection.reason,
+      matterDetection.reviewRequired,
+      documentId,
+    ]
+  );
+
   await enqueueExtractionJob({ documentId, firmId });
-  console.log(`Classification done, queued extraction: ${documentId} (docType=${finalDocType})`);
+  console.log(`Classification done, queued extraction: ${documentId} (docType=${finalDocType}, matterType=${matterDetection.matterType})`);
 }
 
 async function handleExtractionJob(documentId: string, firmId: string): Promise<void> {
@@ -191,8 +214,10 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
     case_number: string | null;
     incident_date: string | null;
     confidence: number | null;
+    suggested_matter_type: string | null;
   }>(
-    `select text_excerpt, doc_type, client_name, case_number, incident_date, confidence
+    `select text_excerpt, doc_type, client_name, case_number, incident_date, confidence,
+     coalesce(suggested_matter_type, 'PI') as suggested_matter_type
      from document_recognition where document_id = $1`,
     [documentId]
   );
@@ -200,6 +225,7 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
   if (!rec?.text_excerpt || !rec.doc_type) throw new Error(`Missing recognition data for ${documentId}`);
   const text = rec.text_excerpt;
   const finalDocType = rec.doc_type;
+  const suggestedMatterType = rec.suggested_matter_type ?? "PI";
 
   await prisma.document.update({
     where: { id: documentId },
@@ -221,7 +247,8 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
   ]);
   let insuranceFields: { settlementOffer?: number } | null = null;
   if (insuranceOn && finalDocType.startsWith("insurance_")) {
-    insuranceFields = await extractInsuranceOfferFields({ text, fileName: doc.originalName ?? undefined });
+    const raw = await extractInsuranceOfferFields({ text, fileName: doc.originalName ?? undefined });
+    insuranceFields = raw ? { settlementOffer: raw.settlementOffer ?? undefined } : null;
   }
   const insuranceFieldsJson = insuranceFields ? JSON.stringify(insuranceFields) : null;
   const courtFieldsJson =
@@ -285,9 +312,43 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
     data: {
       extractedFields: extractedFields as Prisma.InputJsonValue,
       confidence: finalConfidence,
-      processingStage: "case_match",
+      processingStage: suggestedMatterType === "TRAFFIC" ? "complete" : "case_match",
     },
   });
+
+  if (suggestedMatterType === "TRAFFIC") {
+    const matterDetection = detectTrafficMatterType(text, finalDocType, doc.originalName ?? "");
+    const citationResult = extractTrafficCitationFields(text);
+    const statuteResult = extractTrafficStatuteCode(text);
+    const reviewRequired =
+      matterDetection.reviewRequired ||
+      statuteResult.reviewRecommended ||
+      !citationResult.fields.citationNumber ||
+      (citationResult.confidence.citationNumber ?? 0) < 0.8;
+
+    const { id: trafficMatterId, created } = await createOrUpdateTrafficMatter({
+      firmId,
+      sourceDocumentId: documentId,
+      documentTypeOfOrigin: finalDocType,
+      citationFields: citationResult.fields,
+      citationConfidence: citationResult.confidence,
+      statuteResult,
+      routingConfidence: matterDetection.routingConfidence,
+      reviewRequired,
+    });
+
+    emitWebhookEvent(firmId, "document.processed", {
+      documentId,
+      status: "UPLOADED",
+      processingStage: "complete",
+      trafficMatterId,
+      trafficMatterCreated: created,
+    }).catch((e) => console.warn("[webhooks] document.processed (traffic) emit failed", e));
+    console.log(
+      `Traffic matter ${created ? "created" : "updated"}: ${trafficMatterId} from document ${documentId}`
+    );
+    return;
+  }
 
   const ym = yearMonth(new Date());
   if (finalDocType.startsWith("insurance_")) {
@@ -328,6 +389,25 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
 }
 
 async function handleCaseMatchJob(documentId: string, firmId: string): Promise<void> {
+  const { rows: matterRows } = await pgPool.query<{ suggested_matter_type: string | null }>(
+    `select coalesce(suggested_matter_type, 'PI') as suggested_matter_type
+     from document_recognition where document_id = $1`,
+    [documentId]
+  );
+  if (matterRows[0]?.suggested_matter_type === "TRAFFIC") {
+    await prisma.document.update({
+      where: { id: documentId },
+      data: { processingStage: "complete" },
+    });
+    emitWebhookEvent(firmId, "document.processed", {
+      documentId,
+      status: "UPLOADED",
+      processingStage: "complete",
+    }).catch((e) => console.warn("[webhooks] document.processed emit failed", e));
+    console.log(`Case match skipped (TRAFFIC matter): ${documentId}`);
+    return;
+  }
+
   const { rows } = await pgPool.query<{
     case_number: string | null;
     client_name: string | null;

@@ -8,6 +8,7 @@ import { prisma } from "../src/db/prisma";
 import { pgPool } from "../src/db/pg";
 
 const DEMO_FIRM_NAME = "Demo Firm";
+const DEMO_USER_EMAIL = "demo@example.com";
 const CASE_IDS = ["demo-case-1", "demo-case-2", "demo-case-3", "demo-case-4", "demo-case-5"];
 
 async function main() {
@@ -33,7 +34,30 @@ async function main() {
 
   const firmId = firm.id;
 
-  const providers = await ensureProviders();
+  // Ensure demo dashboard user exists (no passwordHash => password "demo" or "password" works in non-production)
+  await prisma.user.upsert({
+    where: { email: DEMO_USER_EMAIL },
+    create: { email: DEMO_USER_EMAIL, firmId, role: "STAFF" },
+    update: { firmId },
+  });
+
+  // Ensure LegalCase rows exist so /dashboard/cases and document routing work
+  const caseTitles = ["Smith v. State Farm", "Jones Medical Records", "Wilson PI Claim", "Brown Insurance", "Demo Case 5"];
+  for (let i = 0; i < CASE_IDS.length; i++) {
+    await prisma.legalCase.upsert({
+      where: { id: CASE_IDS[i] },
+      create: {
+        id: CASE_IDS[i],
+        firmId,
+        title: caseTitles[i],
+        caseNumber: `DEMO-00${i + 1}`,
+        clientName: ["Alice Smith", "Bob Jones", "Carol Wilson", "Dan Brown", "Eve Wilson"][i],
+      },
+      update: { firmId, title: caseTitles[i], caseNumber: `DEMO-00${i + 1}`, clientName: ["Alice Smith", "Bob Jones", "Carol Wilson", "Dan Brown", "Eve Wilson"][i] },
+    });
+  }
+
+  const providers = await ensureProviders(firmId);
   const docIds: string[] = [];
   const now = new Date();
 
@@ -128,32 +152,84 @@ async function main() {
     ],
   });
 
+  // Traffic demo: one clean citation, one that needs review (for /dashboard/traffic)
+  const trafficMatters = await prisma.trafficMatter.findMany({ where: { firmId }, select: { id: true } });
+  if (trafficMatters.length === 0) {
+    await prisma.trafficMatter.createMany({
+      data: [
+        {
+          firmId,
+          status: "NEW_CITATION",
+          documentTypeOfOrigin: "citation",
+          defendantName: "Jane Doe",
+          citationNumber: "FL-2024-001234",
+          statuteCodeRaw: "316.1925(1)",
+          statuteCodeNormalized: "Fla. Stat. § 316.1925(1)",
+          chargeDescriptionRaw: "Reckless driving",
+          jurisdictionState: "FL",
+          jurisdictionCounty: "Miami-Dade",
+          courtName: "Miami-Dade County Court",
+          courtType: "County",
+          issueDate: new Date("2024-02-15"),
+          dueDate: new Date("2024-03-20"),
+          hearingDate: new Date("2024-03-25"),
+          routingConfidence: 0.92,
+          reviewRequired: false,
+          extractionConfidenceJson: { citationNumber: 0.95, defendantName: 0.9, jurisdictionState: 0.85 },
+        },
+        {
+          firmId,
+          status: "REVIEW_REQUIRED",
+          documentTypeOfOrigin: "traffic_hearing_notice",
+          defendantName: "John Smith",
+          citationNumber: null,
+          statuteCodeRaw: "Sec. 46-102",
+          statuteCodeNormalized: "Sec. 46-102",
+          chargeDescriptionRaw: "Speeding",
+          jurisdictionState: "FL",
+          jurisdictionCounty: null,
+          courtName: null,
+          courtType: null,
+          issueDate: null,
+          dueDate: new Date("2024-04-01"),
+          hearingDate: null,
+          routingConfidence: 0.62,
+          reviewRequired: true,
+          extractionConfidenceJson: { defendantName: 0.7, dueDate: 0.8 },
+        },
+      ],
+    });
+    console.log("Created 2 demo traffic matters (clean + review-required).");
+  }
+
   console.log("\nDemo data seeded.");
   console.log("Firm ID:    ", firmId);
+  console.log("Demo login: ", DEMO_USER_EMAIL, "/ demo (or password)");
   console.log("Case IDs:   ", CASE_IDS.slice(0, 3).join(", "), "...");
   console.log("Doc IDs:    ", docIds.slice(0, 3).join(", "), "...");
   console.log("Providers:  ", providers.length);
   console.log("Audit events: 20");
 }
 
-async function ensureProviders() {
+async function ensureProviders(firmId: string) {
   const names = ["Demo Provider A", "Demo Provider B", "Demo Provider C"];
-  const existing = await prisma.provider.findMany({ where: { name: { in: names } } });
+  const existing = await prisma.provider.findMany({ where: { firmId, name: { in: names } } });
   const toCreate = names.filter((n) => !existing.some((p) => p.name === n));
   if (toCreate.length > 0) {
     await prisma.provider.createMany({
       data: toCreate.map((name, i) => ({
+        firmId,
         name,
         address: `${100 + i} Demo St`,
         city: "Demo City",
         state: "CA",
         phone: "555-0100",
-        email: `demo${i + 1}@example.com`,
+        email: `demoprov${i + 1}@example.com`,
         specialtiesJson: (i % 2 === 0 ? ["General"] : ["Specialty"]),
       })),
     });
   }
-  return prisma.provider.findMany({ where: { name: { in: names } } });
+  return prisma.provider.findMany({ where: { firmId, name: { in: names } } });
 }
 
 main()

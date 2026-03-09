@@ -1,11 +1,12 @@
 /**
- * Unified auth middleware: Bearer API key or session user.
+ * Unified auth middleware: Bearer API key, JWT (dashboard login), or PLATFORM_ADMIN_API_KEY.
  * Resolves firmId, userId, role (PLATFORM_ADMIN > FIRM_ADMIN > STAFF).
  */
 import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import { prisma } from "../../db/prisma";
 import { Role } from "@prisma/client";
+import { verifyToken, API_KEY_PREFIX } from "../../lib/jwt";
 
 const DEFAULT_MAX_PER_MINUTE = 120;
 const WINDOW_MS = 60 * 1000;
@@ -63,6 +64,18 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
     (req as any).authRole = Role.PLATFORM_ADMIN;
     (req as any).authScopes = new Set<string>();
     return next();
+  }
+
+  // Dashboard login: Bearer is a JWT (does not look like an API key)
+  if (token && !token.startsWith(API_KEY_PREFIX)) {
+    const payload = verifyToken(token);
+    if (payload) {
+      (req as any).firmId = payload.firmId;
+      (req as any).userId = payload.userId;
+      (req as any).authRole = payload.role as Role;
+      (req as any).authScopes = new Set<string>();
+      return next();
+    }
   }
 
   if (!token) {

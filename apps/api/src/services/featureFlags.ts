@@ -14,3 +14,8 @@ export async function hasFeature(firmId: string, feature: string): Promise<boole
   if (!Array.isArray(arr)) return false;
   return arr.includes(feature);
 }
+
+/** Whether the firm has premium workflow (e.g. bulk operations, advanced reporting). */
+export async function hasPremiumWorkflow(firmId: string): Promise<boolean> {
+  return hasFeature(firmId, "premium_workflow");
+}
