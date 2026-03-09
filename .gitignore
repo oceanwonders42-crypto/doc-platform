@@ -42,3 +42,6 @@ coverage
 
 # Prisma generated (if at root)
 /src/generated/prisma
+
+# Local backup of apps/web (do not commit)
+apps/web-backup-main/
