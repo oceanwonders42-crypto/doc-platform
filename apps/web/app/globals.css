@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /* Onyx Intel – token-based themes: dark (default), light, gradient */
 :root,
 [data-theme="dark"] {
@@ -475,4 +479,117 @@ body {
 }
 .support-report-card .support-report-field {
   margin-bottom: 1.25rem;
+}
+
+/* ——— Landing (public homepage) ——— */
+:root {
+  --bg-primary: #08080a;
+  --bg-elevated: #0e0e10;
+  --bg-section: #0c0c0e;
+  --bg-card: #131316;
+  --bg-card-hover: #18181b;
+  --border-subtle: #1a1a1e;
+  --border-default: #252528;
+  --border-refined: #353538;
+  --border-focus: #454548;
+  --text-primary: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --text-inverse: #08080a;
+  --accent-blue: #3b82f6;
+  --accent-teal: #14b8a6;
+  --accent-success: #22c55e;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-card-hover: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-glow: 0 0 0 1px rgba(255, 255, 255, 0.03);
+  --shadow-btn: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-btn-hover: 0 4px 12px rgba(0, 0, 0, 0.25);
+  --landing-spacing-section: 5rem;
+  --landing-spacing-block: 1.5rem;
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-lg border border-[var(--border-refined)] bg-white px-6 py-3.5 text-sm font-semibold tracking-wide text-[var(--text-inverse)] antialiased;
+    box-shadow: var(--shadow-btn);
+    border-radius: var(--radius-lg);
+    transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+  }
+  .btn-primary:hover {
+    border-color: #e4e4e7;
+    background-color: #fafafa;
+    box-shadow: var(--shadow-btn-hover);
+    transform: translateY(-1px);
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-lg px-6 py-3.5 text-sm font-semibold tracking-wide text-[var(--text-primary)] antialiased;
+    border-radius: var(--radius-lg);
+    box-shadow: inset 0 0 0 1px var(--border-default);
+    background: transparent;
+    transition: box-shadow 0.2s ease, background-color 0.2s ease, color 0.2s ease;
+  }
+  .btn-secondary:hover {
+    box-shadow: inset 0 0 0 1px var(--border-refined);
+    background-color: var(--bg-card);
+    color: var(--text-primary);
+  }
+  .btn-secondary-muted {
+    @apply inline-flex items-center justify-center rounded-lg px-6 py-3.5 text-sm font-medium tracking-wide text-[var(--text-secondary)] antialiased;
+    border-radius: var(--radius-lg);
+    box-shadow: inset 0 0 0 1px var(--border-default);
+    background: transparent;
+    transition: box-shadow 0.2s ease, color 0.2s ease, background-color 0.2s ease;
+  }
+  .btn-secondary-muted:hover {
+    color: var(--text-primary);
+    box-shadow: inset 0 0 0 1px var(--border-refined);
+    background-color: var(--bg-card);
+  }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .card:hover {
+    border-color: var(--border-refined);
+    box-shadow: var(--shadow-card-hover);
+  }
+  .landing-eyebrow {
+    @apply text-xs font-medium uppercase tracking-widest text-[var(--text-muted)];
+  }
+  .landing-heading {
+    @apply font-semibold tracking-tight text-[var(--text-primary)] antialiased;
+  }
+  .landing-body {
+    @apply text-[var(--text-secondary)] leading-relaxed antialiased;
+  }
+  .input-base {
+    @apply mt-2 block w-full rounded-md border bg-[var(--bg-section)] px-4 py-3 text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors;
+    border-color: var(--border-default);
+    border-radius: var(--radius-md);
+  }
+  .input-base:focus {
+    outline: none;
+    border-color: var(--border-refined);
+    box-shadow: 0 0 0 3px rgba(61, 62, 66, 0.25);
+  }
+  .input-error {
+    border-color: #ef4444;
+    background: rgba(239, 68, 68, 0.05);
+  }
+  .input-error:focus {
+    border-color: #ef4444;
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2);
+  }
+}
+
+html {
+  scroll-behavior: smooth;
 }

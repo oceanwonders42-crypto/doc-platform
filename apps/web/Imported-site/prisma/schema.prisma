@@ -1,0 +1,28 @@
+// Onyx Intel — database schema
+// Run: npx prisma generate && npx prisma migrate dev
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Lead {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  firstName String
+  lastName  String
+  email     String
+  phone     String
+  firm      String
+
+  cms       String?
+  firmSize  String?
+  message   String?
+
+  source    String?  @default("demo")
+}
