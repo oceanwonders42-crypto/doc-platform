@@ -1,0 +1,73 @@
+{
+  "common": {
+    "loading": "Cargando…",
+    "justNow": "Ahora mismo",
+    "error": "Error",
+    "retry": "Reintentar",
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "close": "Cerrar",
+    "back": "Atrás",
+    "next": "Siguiente",
+    "done": "Hecho",
+    "noData": "Sin datos",
+    "viewAll": "Ver todo"
+  },
+  "nav": {
+    "dashboard": "Panel",
+    "cases": "Casos",
+    "traffic": "Tráfico",
+    "documents": "Documentos",
+    "providers": "Proveedores",
+    "recordsRequests": "Solicitudes de expedientes",
+    "reviewQueue": "Cola de revisión",
+    "analytics": "Análisis",
+    "audit": "Auditoría",
+    "usage": "Uso",
+    "integrations": "Integraciones",
+    "support": "Soporte",
+    "settings": "Configuración",
+    "logOut": "Cerrar sesión",
+    "toggleMenu": "Abrir menú"
+  },
+  "theme": {
+    "dark": "Oscuro",
+    "light": "Claro",
+    "gradient": "Degradado",
+    "label": "Tema"
+  },
+  "language": {
+    "label": "Idioma",
+    "en": "English",
+    "es": "Español"
+  },
+  "dashboard": {
+    "title": "Panel",
+    "description": "Resumen de tus casos, documentación y actividad",
+    "activeCases": "Casos activos",
+    "documentsProcessed": "Documentos procesados",
+    "thisMonth": "Este mes",
+    "needsReview": "Pendientes de revisión",
+    "documents": "Documentos",
+    "unmatched": "Sin asignar",
+    "notYetRouted": "Documentos aún no asignados",
+    "recordsRequests": "Solicitudes de expedientes",
+    "queueStatus": "Estado de cola",
+    "allClear": "Todo al día",
+    "inQueue": "{{count}} en cola",
+    "inQueueSubtext": "en cola",
+    "recentActivity": "Actividad reciente",
+    "noRecentActivity": "Aún no hay actividad. Aparecerá al trabajar.",
+    "quickActions": "Acciones rápidas",
+    "viewAllCases": "Ver todos los casos",
+    "uploadDocuments": "Subir documentos",
+    "reviewQueue": "Cola de revisión",
+    "newRecordsRequest": "Nueva solicitud de expedientes",
+    "trendsAndInsights": "Tendencias e insights",
+    "trendEmpty": "Aún no hay datos de tendencia. Aparecerán al procesar documentos.",
+    "last30Days": "Últimos 30 días",
+    "docsProcessed": "Docs procesados",
+    "emptyStateTitle": "Bienvenido a tu centro de control",
+    "emptyStateDescription": "Sube documentos, crea casos y envía solicitudes de expedientes para ver actividad y métricas aquí."
+  }
+}
