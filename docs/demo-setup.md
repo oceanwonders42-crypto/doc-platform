@@ -40,15 +40,15 @@ PORT=4000
 
 ### Web app (`apps/web/.env.local`)
 
-Copy `apps/web/.env.example` to `apps/web/.env.local` and set at least:
+Copy `apps/web/.env.local.example` to `apps/web/.env.local` and set at least:
 
 ```env
-DOC_API_URL=http://127.0.0.1:4000
-DOC_API_KEY=sk_live_your_api_key_here
+NEXT_PUBLIC_API_URL=http://localhost:4000
 ```
 
-- **DOC_API_URL** — API base URL. Use `http://127.0.0.1:4000` for local dev.
-- **DOC_API_KEY** — Set after you have a firm and API key (see step 5). The web app uses this to call the API; without it, the dashboard will error.
+- **NEXT_PUBLIC_API_URL** — API base URL (e.g. `http://localhost:4000`). Required for login and dashboard.
+- For **browser login**: run `pnpm run seed:demo` in `apps/api`, then use **demo@example.com** / **demo** (see step 5).
+- Optional: **DOC_API_KEY** or **window.__API_KEY** for API-key auth without login.
 
 Optional (see `.env.example`):
 
@@ -90,9 +90,11 @@ Leave both running.
 
 ## 5. Demo credentials (first-time)
 
-The app uses **API key** auth (no login form). You need one firm and one API key, then set `DOC_API_KEY` in `apps/web/.env.local`.
+**Browser login (recommended):** Run `cd apps/api && pnpm run seed:demo`. Then open http://localhost:3000/login and sign in with **demo@example.com** / **demo** (or **password**). Set `NEXT_PUBLIC_API_URL=http://localhost:4000` in `apps/web/.env.local`.
 
-**Option A — Create firm and key, then seed (recommended)**
+**API key (alternative):** The app also supports API key auth. You need one firm and one API key, then set `DOC_API_KEY` in `apps/web/.env.local` (or use the browser login above).
+
+**Option A — Create firm and key, then seed (recommended)****
 
 1. With the API running, create a firm and API key:
 

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS "Case" (
 
 -- CreateIndex
 CREATE INDEX IF NOT EXISTS "Case_firmId_idx" ON "Case"("firmId");
+CREATE INDEX IF NOT EXISTS "Case_firmId_createdAt_idx" ON "Case"("firmId", "createdAt");
 
 -- AddForeignKey (skip if exists)
 DO $$

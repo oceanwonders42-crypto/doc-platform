@@ -29,4 +29,5 @@ CREATE TABLE IF NOT EXISTS "DocumentAuditEvent" (
 );
 CREATE INDEX IF NOT EXISTS "DocumentAuditEvent_documentId_idx" ON "DocumentAuditEvent"("documentId");
 CREATE INDEX IF NOT EXISTS "DocumentAuditEvent_firmId_idx" ON "DocumentAuditEvent"("firmId");
+CREATE INDEX IF NOT EXISTS "DocumentAuditEvent_firmId_createdAt_idx" ON "DocumentAuditEvent"("firmId", "createdAt");
 CREATE INDEX IF NOT EXISTS "DocumentAuditEvent_action_idx" ON "DocumentAuditEvent"("action");
