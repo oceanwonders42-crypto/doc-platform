@@ -13,4 +13,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'Provider' AND column_name = 'expiresAt') THEN
     ALTER TABLE "Provider" ADD COLUMN "expiresAt" TIMESTAMP(3);
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'Provider' AND column_name = 'specialtiesJson') THEN
+    ALTER TABLE "Provider" ADD COLUMN "specialtiesJson" JSONB;
+  END IF;
 END $$;
