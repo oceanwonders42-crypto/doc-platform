@@ -8,7 +8,12 @@ import { prisma } from "../src/db/prisma";
 import { pgPool } from "../src/db/pg";
 
 const DEMO_FIRM_NAME = "Demo Firm";
-const DEMO_USER_EMAIL = "demo@example.com";
+const DEMO_USERS: { email: string; role: "PLATFORM_ADMIN" | "FIRM_ADMIN" | "PARALEGAL" | "STAFF" }[] = [
+  { email: "owner@onyxintel.com", role: "PLATFORM_ADMIN" },
+  { email: "admin@demo.com", role: "FIRM_ADMIN" },
+  { email: "paralegal@demo.com", role: "PARALEGAL" },
+  { email: "demo@example.com", role: "STAFF" },
+];
 const CASE_IDS = ["demo-case-1", "demo-case-2", "demo-case-3", "demo-case-4", "demo-case-5"];
 
 async function main() {
@@ -34,12 +39,14 @@ async function main() {
 
   const firmId = firm.id;
 
-  // Ensure demo dashboard user exists (no passwordHash => password "demo" or "password" works in non-production)
-  await prisma.user.upsert({
-    where: { email: DEMO_USER_EMAIL },
-    create: { email: DEMO_USER_EMAIL, firmId, role: "STAFF" },
-    update: { firmId },
-  });
+  // Ensure all demo users exist with correct roles (no passwordHash => password "demo" in non-production)
+  for (const { email, role } of DEMO_USERS) {
+    await prisma.user.upsert({
+      where: { email },
+      create: { email, firmId, role },
+      update: { firmId, role },
+    });
+  }
 
   // Ensure LegalCase rows exist so /dashboard/cases and document routing work
   const caseTitles = ["Smith v. State Farm", "Jones Medical Records", "Wilson PI Claim", "Brown Insurance", "Demo Case 5"];
@@ -204,7 +211,8 @@ async function main() {
 
   console.log("\nDemo data seeded.");
   console.log("Firm ID:    ", firmId);
-  console.log("Demo login: ", DEMO_USER_EMAIL, "/ demo (or password)");
+  console.log("Demo logins (password: demo):");
+  DEMO_USERS.forEach(({ email, role }) => console.log("  ", email, "→", role));
   console.log("Case IDs:   ", CASE_IDS.slice(0, 3).join(", "), "...");
   console.log("Doc IDs:    ", docIds.slice(0, 3).join(", "), "...");
   console.log("Providers:  ", providers.length);

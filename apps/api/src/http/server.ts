@@ -116,7 +116,7 @@ app.post("/auth/login", async (req, res) => {
       return res.status(401).json({ ok: false, error: "Invalid email or password" });
     }
     const isDemo =
-      process.env.NODE_ENV !== "production" &&
+      (process.env.NODE_ENV !== "production" || process.env.DEMO_MODE === "true") &&
       !user.passwordHash &&
       (password === "demo" || password === "password");
     const passwordOk =
@@ -158,6 +158,7 @@ app.get("/auth/me", auth, async (req, res) => {
       return res.status(404).json({ ok: false, error: "Firm not found" });
     }
     const role = (user?.role ?? authRole) as string;
+    const isPlatformAdmin = role === Role.PLATFORM_ADMIN;
     return res.json({
       ok: true,
       user: user
@@ -165,6 +166,7 @@ app.get("/auth/me", auth, async (req, res) => {
         : { id: "", email: "", role },
       firm: { id: firm.id, name: firm.name, plan: firm.plan, status: firm.status },
       role,
+      isPlatformAdmin,
     });
   } catch (e: any) {
     return res.status(500).json({ ok: false, error: String(e?.message ?? e) });

@@ -1,6 +1,6 @@
 /**
  * requireRole(minRole): enforce minimum role.
- * Order: PLATFORM_ADMIN > FIRM_ADMIN > STAFF
+ * Order: PLATFORM_ADMIN > FIRM_ADMIN > PARALEGAL = STAFF (PARALEGAL can access STAFF routes only).
  */
 import type { Request, Response, NextFunction } from "express";
 import { Role } from "@prisma/client";
@@ -8,6 +8,7 @@ import { Role } from "@prisma/client";
 const ROLE_RANK: Record<Role, number> = {
   [Role.PLATFORM_ADMIN]: 3,
   [Role.FIRM_ADMIN]: 2,
+  [Role.PARALEGAL]: 1,
   [Role.STAFF]: 1,
 };
 

@@ -1,4 +1,5 @@
 import CTASection from "@landing/components/ui/CTASection";
+import DashboardShowcaseSection from "@landing/components/DashboardShowcaseSection";
 import Features from "@landing/components/Features";
 import Footer from "@landing/components/Footer";
 import Header from "@landing/components/Header";
@@ -21,6 +22,7 @@ export default function HomePage() {
         <Hero />
         <WhoUsesOnyxIntel />
         <PlatformModules />
+        <DashboardShowcaseSection />
         <Features />
         <HowItWorks />
         <Solution />
@@ -31,11 +33,11 @@ export default function HomePage() {
         <CTASection
           id="contact"
           title="Ready to turn records into case-ready output?"
-          description="See how Onyx Intel can work for your firm. Book a 15-minute demo—no commitment."
-          primaryLabel="Book a demo"
+          description="Sign in to access the platform dashboard, or book a 15-minute demo—no commitment."
+          primaryLabel="Sign in to Dashboard"
           primaryHref="/login"
-          secondaryLabel="See Platform"
-          secondaryHref="/#platform-modules"
+          secondaryLabel="Book a demo"
+          secondaryHref="/login"
           note="Enterprise security · HIPAA-ready · Built for PI firms"
         />
       </main>

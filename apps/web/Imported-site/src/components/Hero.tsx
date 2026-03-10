@@ -31,13 +31,13 @@ export default function Hero() {
         </p>
         <div className="mt-12 flex flex-col items-center justify-center gap-3 sm:flex-row sm:flex-wrap sm:gap-4">
           <Link href="/login" className="btn-primary w-full min-w-[10rem] sm:w-auto">
-            Book Demo
+            Sign in to Dashboard
           </Link>
-          <Link href="/#platform-modules" className="btn-secondary w-full min-w-[10rem] sm:w-auto">
+          <Link href="/login" className="btn-secondary w-full min-w-[10rem] sm:w-auto">
+            Book a demo
+          </Link>
+          <Link href="/#platform-modules" className="btn-secondary-muted w-full min-w-[10rem] sm:w-auto">
             See Platform
-          </Link>
-          <Link href="/login" className="btn-secondary-muted w-full min-w-[10rem] sm:w-auto">
-            View Dashboard
           </Link>
         </div>
         <p className="mt-6 text-sm text-[var(--text-muted)]">

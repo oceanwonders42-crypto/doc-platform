@@ -9,6 +9,7 @@ datasource db {
 enum Role {
   PLATFORM_ADMIN
   FIRM_ADMIN
+  PARALEGAL
   STAFF
 }
 

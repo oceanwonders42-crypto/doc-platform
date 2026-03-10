@@ -202,13 +202,13 @@ function LoginContent() {
         </form>
 
         <p className="login-support-line">Secure access for authorized firm staff only.</p>
-        {typeof window !== "undefined" && process.env.NODE_ENV !== "production" && (
+        {(typeof window === "undefined" || process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_DEMO_MODE === "true") && (
           <details style={{ marginTop: "0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-            <summary style={{ cursor: "pointer", fontWeight: 500 }}>Demo accounts (dev only)</summary>
+            <summary style={{ cursor: "pointer", fontWeight: 500 }}>Demo accounts</summary>
             <ul style={{ margin: "0.5rem 0 0 1rem", paddingLeft: "0.5rem" }}>
+              <li>owner@onyxintel.com → Platform Admin</li>
               <li>admin@demo.com → Firm Admin</li>
               <li>paralegal@demo.com → Paralegal</li>
-              <li>owner@onyxintel.com → Platform Admin</li>
               <li>demo@example.com → Staff</li>
             </ul>
             <p style={{ margin: "0.25rem 0 0", fontSize: "0.75rem" }}>Password: demo</p>
