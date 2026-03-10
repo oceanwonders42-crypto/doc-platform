@@ -4,6 +4,42 @@ exports.rebuildCaseTimeline = rebuildCaseTimeline;
 const prisma_1 = require("../db/prisma");
 const pg_1 = require("../db/pg");
 const notifications_1 = require("./notifications");
+const MATCH_CONFIDENCE_THRESHOLD = 0.8;
+/**
+ * Match provider/facility text against firm's Provider records.
+ * Returns Provider id when confidence >= threshold, else null.
+ */
+function matchProviderText(providers, providerText) {
+    const text = typeof providerText === "string" ? providerText.trim() : "";
+    if (!text || text.length < 2 || providers.length === 0)
+        return null;
+    const lower = text.toLowerCase();
+    let best = null;
+    for (const p of providers) {
+        const pName = (p.name || "").trim();
+        if (!pName)
+            continue;
+        const pLower = pName.toLowerCase();
+        let score = 0;
+        if (pLower === lower) {
+            score = 1;
+        }
+        else if (pLower.startsWith(lower) || lower.startsWith(pLower)) {
+            score = 0.9;
+        }
+        else if (pLower.includes(lower) || lower.includes(pLower)) {
+            const longer = pLower.length >= lower.length ? pLower : lower;
+            const shorter = pLower.length >= lower.length ? lower : pLower;
+            score = shorter.length / longer.length;
+            if (score < 0.5)
+                score = 0.5;
+        }
+        if (score >= MATCH_CONFIDENCE_THRESHOLD && (!best || score > best.score)) {
+            best = { id: p.id, score };
+        }
+    }
+    return best?.id ?? null;
+}
 const DOC_TYPE_LABELS = {
     court_filing: "Court: Filing",
     court_complaint: "Court: Complaint",
@@ -42,10 +78,16 @@ function getEventTypeLabel(docType) {
     return DOC_TYPE_LABELS[docType] ?? docType;
 }
 async function rebuildCaseTimeline(caseId, firmId) {
-    const docs = await prisma_1.prisma.document.findMany({
-        where: { routedCaseId: caseId, firmId },
-        select: { id: true, extractedFields: true },
-    });
+    const [docs, providers] = await Promise.all([
+        prisma_1.prisma.document.findMany({
+            where: { routedCaseId: caseId, firmId },
+            select: { id: true, extractedFields: true },
+        }),
+        prisma_1.prisma.provider.findMany({
+            where: { firmId },
+            select: { id: true, name: true },
+        }),
+    ]);
     const docIds = docs.map((d) => d.id);
     if (docIds.length === 0) {
         await prisma_1.prisma.caseTimelineEvent.deleteMany({ where: { caseId, firmId } });
@@ -100,10 +142,15 @@ async function rebuildCaseTimeline(caseId, firmId) {
         if (track === "medical") {
             const medical = ef.medicalRecord;
             if (medical) {
-                facilityId = medical.facility ?? null;
-                provider = medical.provider ?? null;
+                const facilityText = medical.facility ?? null;
+                const providerText = medical.provider ?? null;
+                provider = providerText || facilityText || null;
                 diagnosis = medical.diagnosis ?? null;
                 procedure = medical.procedure ?? null;
+                const matchedId = matchProviderText(providers, providerText) ??
+                    matchProviderText(providers, facilityText);
+                if (matchedId)
+                    facilityId = matchedId;
             }
         }
         await prisma_1.prisma.caseTimelineEvent.create({

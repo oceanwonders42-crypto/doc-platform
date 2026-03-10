@@ -16,7 +16,7 @@ async function extractEmbeddedText(buffer) {
     const pageDiagnostics = pageTexts.map((p) => ({
         pageNumber: p.page,
         ocrMethod: "embedded",
-        status: p.text.trim().length > 20 ? "GOOD" : "LOW_CONFIDENCE",
+        status: (p.text.trim().length > 20 ? "GOOD" : "LOW_CONFIDENCE"),
         textLength: p.text.length,
         averageConfidence: 0.95,
     }));

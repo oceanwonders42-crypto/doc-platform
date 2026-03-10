@@ -1,5 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.PROVIDER_CONFIDENCE_FOR_NAME = void 0;
+exports.extractProviderCandidateFromText = extractProviderCandidateFromText;
+exports.isProviderCandidateConfident = isProviderCandidateConfident;
 exports.extractProviderFromText = extractProviderFromText;
 exports.normalizeProviderNameForMatch = normalizeProviderNameForMatch;
 exports.matchProvider = matchProvider;
@@ -8,6 +11,8 @@ exports.createProviderSuggestion = createProviderSuggestion;
  * Queue 2: Provider detection and normalization from document text.
  * Extracts provider name, facility, specialty, phone, fax, address.
  * Normalizes names and matches existing providers; creates suggestions when unmatched.
+ * Core provider detection: extractProviderCandidateFromText returns a candidate with confidence
+ * so weak guesses are flagged rather than forced into provider_name.
  */
 const prisma_1 = require("../db/prisma");
 const pg_1 = require("../db/pg");
@@ -119,6 +124,66 @@ function extractProviderName(text) {
     if (firstLines.length > 0)
         return normalizeProviderName(firstLines[0]);
     return null;
+}
+/** Provider/Physician/Attending label patterns for high-confidence extraction. */
+const PROVIDER_LABEL = /\b(?:provider|physician|doctor|attending|md|do)\s*[:\-#]?\s*([A-Z][a-zA-Z\s\.\-]{2,80}?)(?=\n|$|date|diagnosis|facility|patient)/i;
+/**
+ * Extract a single provider candidate with confidence and source.
+ * Used by classification and extraction to avoid forcing weak guesses into provider_name.
+ */
+function extractProviderCandidateFromText(text, docType) {
+    const t = text.slice(0, 15000);
+    const source = docType === "medical_record" || docType === "medical" || docType === "police_report"
+        ? "records"
+        : docType === "medical_bill" || docType === "billing_statement" || docType === "ledger_statement"
+            ? "bills"
+            : "generic";
+    const labelMatch = t.match(PROVIDER_LABEL);
+    const nameFromLabel = labelMatch ? normalizeProviderName(labelMatch[1]) : null;
+    const nameFromMd = text.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})\s*,?\s*(?:MD|DO|NP|PA)\.?/);
+    const nameFromMdNorm = nameFromMd ? normalizeProviderName(nameFromMd[1]) : null;
+    const facility = extractFacility(t);
+    const groupMatch = t.match(/\b((?:[A-Za-z][A-Za-z\s&]{4,60})\s*(?:medical group|clinic|associates|hospital|center))\b/i);
+    const nameFromGroup = groupMatch ? normalizeProviderName(groupMatch[1]) : null;
+    const firstLines = t.split(/\n/).map((l) => normalizeWhitespace(l)).filter((l) => l.length >= 6 && l.length <= 80);
+    const nameFromFirstLine = firstLines.length > 0 ? normalizeProviderName(firstLines[0]) : null;
+    let name = null;
+    let confidence = "low";
+    if (nameFromLabel && nameFromLabel.length >= 2) {
+        name = nameFromLabel;
+        confidence = "high";
+    }
+    else if (nameFromMdNorm && nameFromMdNorm.length >= 2) {
+        name = nameFromMdNorm;
+        confidence = "high";
+    }
+    else if (nameFromGroup && nameFromGroup.length >= 2) {
+        name = nameFromGroup;
+        confidence = "medium";
+    }
+    else if (facility && facility.length >= 2) {
+        name = facility;
+        confidence = "medium";
+    }
+    else if (nameFromFirstLine && nameFromFirstLine.length >= 2) {
+        name = nameFromFirstLine;
+        confidence = "low";
+    }
+    if (!name && facility) {
+        name = facility;
+        confidence = confidence === "low" ? "medium" : confidence;
+    }
+    return {
+        name: name || null,
+        facility: facility || null,
+        confidence,
+        source,
+    };
+}
+/** Confidence levels that are safe to set as document_recognition.provider_name. Low is stored only in metadata. */
+exports.PROVIDER_CONFIDENCE_FOR_NAME = ["high", "medium"];
+function isProviderCandidateConfident(c) {
+    return exports.PROVIDER_CONFIDENCE_FOR_NAME.includes(c.confidence);
 }
 function extractProviderFromText(text) {
     const t = text.slice(0, 15000);

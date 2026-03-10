@@ -4,6 +4,8 @@ exports.s3 = exports.bucket = void 0;
 exports.putObject = putObject;
 exports.getObjectBuffer = getObjectBuffer;
 exports.getPresignedGetUrl = getPresignedGetUrl;
+exports.deleteObject = deleteObject;
+exports.objectExists = objectExists;
 const client_s3_1 = require("@aws-sdk/client-s3");
 const s3_request_presigner_1 = require("@aws-sdk/s3-request-presigner");
 const endpoint = process.env.S3_ENDPOINT;
@@ -47,4 +49,21 @@ async function getObjectBuffer(key) {
 async function getPresignedGetUrl(key, expiresInSeconds = 3600) {
     const command = new client_s3_1.GetObjectCommand({ Bucket: exports.bucket, Key: key });
     return (0, s3_request_presigner_1.getSignedUrl)(exports.s3, command, { expiresIn: expiresInSeconds });
+}
+/** Delete object from storage. Does not throw if object does not exist. */
+async function deleteObject(key) {
+    await exports.s3.send(new client_s3_1.DeleteObjectCommand({
+        Bucket: exports.bucket,
+        Key: key,
+    }));
+}
+/** Check if an object exists. Returns false on 404 or error. */
+async function objectExists(key) {
+    try {
+        await exports.s3.send(new client_s3_1.HeadObjectCommand({ Bucket: exports.bucket, Key: key }));
+        return true;
+    }
+    catch {
+        return false;
+    }
 }

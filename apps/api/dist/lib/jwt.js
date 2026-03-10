@@ -14,7 +14,7 @@ const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET || process.env.API_SECRET || "onyx-intel-dev-jwt-change-in-production";
 const DEFAULT_EXPIRES_IN = "7d";
 function signToken(payload, expiresIn = DEFAULT_EXPIRES_IN) {
-    const options = { expiresIn, algorithm: "HS256" };
+    const options = { algorithm: "HS256", expiresIn: expiresIn };
     return jsonwebtoken_1.default.sign(payload, secret, options);
 }
 function verifyToken(token) {

@@ -34,6 +34,9 @@ function validateFileType(originalName, mimeType) {
     return { accepted: true, ok: true, scannerUsed: "basic" };
 }
 function validateSize(sizeBytes) {
+    if (sizeBytes <= 0 || !Number.isFinite(sizeBytes)) {
+        return { accepted: false, ok: false, reason: "File is empty or invalid size", severity: "medium", scannerUsed: "basic" };
+    }
     if (sizeBytes > exports.MAX_UPLOAD_BYTES) {
         return { accepted: false, ok: false, reason: "File too large", severity: "medium", scannerUsed: "basic" };
     }

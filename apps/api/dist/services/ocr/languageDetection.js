@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.detectLanguageFromText = detectLanguageFromText;
+exports.detectLanguage = detectLanguage;
+exports.hasNonLatinScript = hasNonLatinScript;
 const ENGLISH_COMMON = /\b(the|and|for|with|patient|medical|record|date|service|insurance|claim|diagnosis|treatment|doctor|hospital)\b/gi;
 const SPANISH_COMMON = /\b(el|la|de|que|en|los|del|las|paciente|fecha|servicio|diagnóstico|tratamiento|médico|hospital)\b/gi;
 const FRENCH_COMMON = /\b(le|la|de|et|les|des|patient|date|service|diagnostic|traitement|médecin|hôpital)\b/gi;
@@ -29,4 +31,16 @@ function detectLanguageFromText(text) {
         possibleLanguages: possibleLanguages.length ? possibleLanguages : ["en"],
         confidence,
     };
+}
+/** Alias for callers expecting detectLanguage(text). */
+function detectLanguage(text) {
+    return detectLanguageFromText(text);
+}
+/** Heuristic: true when text contains a substantial proportion of non-Latin script. */
+function hasNonLatinScript(text) {
+    const t = (text || "").trim().slice(0, 5000);
+    if (t.length < 50)
+        return false;
+    const nonLatin = t.replace(/[\x00-\x7F]/g, "").length;
+    return nonLatin / t.length > 0.15;
 }

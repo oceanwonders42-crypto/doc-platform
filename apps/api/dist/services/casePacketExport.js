@@ -49,15 +49,35 @@ function sanitizeFileName(name) {
 }
 /**
  * Build ZIP buffer from a pre-built ExportBundle (used by all export destinations).
+ * Uses exportFileName and exportFolderPath from naming rules when present; otherwise documents/originalName.
+ * Deduplicates paths by appending _2, _3 if needed.
  */
 async function buildCasePacketZipFromBundle(bundle) {
     const zip = new jszip_1.default();
+    const usedPaths = new Set();
+    function uniquePath(folderPath, fileName) {
+        const base = folderPath ? `${folderPath}/${fileName}` : fileName;
+        let path = base;
+        let n = 2;
+        while (usedPaths.has(path)) {
+            const extIdx = fileName.lastIndexOf(".");
+            const name = extIdx > 0 ? fileName.slice(0, extIdx) : fileName;
+            const ext = extIdx > 0 ? fileName.slice(extIdx) : "";
+            path = folderPath ? `${folderPath}/${name}_${n}${ext}` : `${name}_${n}${ext}`;
+            n += 1;
+        }
+        usedPaths.add(path);
+        return path;
+    }
     for (const doc of bundle.documents) {
         try {
             const buf = await (0, storage_1.getObjectBuffer)(doc.storageKey);
             const baseName = sanitizeFileName(doc.originalName || doc.id);
             const ext = (doc.originalName || "").split(".").pop()?.toLowerCase() || "bin";
-            zip.file(`documents/${baseName}.${ext}`, buf, { binary: true });
+            const folderPath = (doc.exportFolderPath ?? "").trim();
+            const fileName = doc.exportFileName?.trim() || `${baseName}.${ext}`;
+            const zipPath = uniquePath(folderPath || "documents", fileName);
+            zip.file(zipPath, buf, { binary: true });
         }
         catch (e) {
             console.warn("[export-packet] Failed to fetch document", doc.id, e);

@@ -47,6 +47,10 @@ const recordsRequestService_1 = require("../../services/recordsRequestService");
 const recordsRequestDelivery_1 = require("../../services/recordsRequestDelivery");
 const recordsRequestPdf_1 = require("../../services/recordsRequestPdf");
 const router = (0, express_1.Router)();
+function idParam(req) {
+    const p = req.params.id;
+    return Array.isArray(p) ? p[0] : p;
+}
 function getCreatedByUserId(req) {
     return req.userId ?? null;
 }
@@ -129,7 +133,7 @@ router.patch("/templates/:id", auth_1.auth, (0, requireRole_1.requireRole)(clien
         return;
     if (!(0, tenant_1.forbidCrossTenantAccess)(req, res))
         return;
-    const id = req.params.id;
+    const id = idParam(req);
     const existing = await prisma_1.prisma.recordsRequestTemplate.findFirst({
         where: (0, tenant_1.buildFirmWhere)(firmId, { id }),
     });
@@ -214,7 +218,7 @@ router.get("/:id", auth_1.auth, (0, requireRole_1.requireRole)(client_1.Role.STA
     const firmId = (0, tenant_1.requireFirmIdFromRequest)(req, res);
     if (!firmId)
         return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await (0, recordsRequestService_1.getRequestWithRelations)(id, firmId);
     if (!request)
         return (0, tenant_1.sendNotFound)(res);
@@ -227,7 +231,7 @@ router.post("/:id/send", auth_1.auth, (0, requireRole_1.requireRole)(client_1.Ro
     const firmId = (0, tenant_1.requireFirmIdFromRequest)(req, res);
     if (!firmId)
         return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await prisma_1.prisma.recordsRequest.findFirst({
         where: (0, tenant_1.buildFirmWhere)(firmId, { id }),
     });
@@ -280,7 +284,7 @@ router.post("/:id/follow-up", auth_1.auth, (0, requireRole_1.requireRole)(client
     const firmId = (0, tenant_1.requireFirmIdFromRequest)(req, res);
     if (!firmId)
         return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await prisma_1.prisma.recordsRequest.findFirst({
         where: (0, tenant_1.buildFirmWhere)(firmId, { id }),
     });
@@ -332,7 +336,7 @@ router.post("/:id/complete", auth_1.auth, (0, requireRole_1.requireRole)(client_
     const firmId = (0, tenant_1.requireFirmIdFromRequest)(req, res);
     if (!firmId)
         return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await prisma_1.prisma.recordsRequest.findFirst({
         where: (0, tenant_1.buildFirmWhere)(firmId, { id }),
     });
@@ -354,12 +358,82 @@ router.post("/:id/complete", auth_1.auth, (0, requireRole_1.requireRole)(client_
     const updated = await (0, recordsRequestService_1.getRequestWithRelations)(id, firmId);
     return res.json({ ok: true, request: updated });
 });
+// POST /records-requests/:id/receive — set RECEIVED and completedAt
+router.post("/:id/receive", auth_1.auth, (0, requireRole_1.requireRole)(client_1.Role.STAFF), async (req, res) => {
+    const firmId = (0, tenant_1.requireFirmIdFromRequest)(req, res);
+    if (!firmId)
+        return;
+    const id = idParam(req);
+    const request = await prisma_1.prisma.recordsRequest.findFirst({
+        where: (0, tenant_1.buildFirmWhere)(firmId, { id }),
+    });
+    if (!request)
+        return (0, tenant_1.sendNotFound)(res);
+    const allowedFrom = ["SENT", "FOLLOW_UP_DUE", "DRAFT"];
+    if (!allowedFrom.includes(request.status)) {
+        return res.status(400).json({
+            ok: false,
+            error: `Cannot mark as received from status ${request.status}. Allowed: ${allowedFrom.join(", ")}`,
+        });
+    }
+    await prisma_1.prisma.recordsRequest.update({
+        where: { id },
+        data: { status: "RECEIVED", completedAt: new Date() },
+    });
+    await prisma_1.prisma.recordsRequestEvent.create({
+        data: {
+            firmId,
+            recordsRequestId: id,
+            eventType: "RESPONSE_RECEIVED",
+            status: "RECEIVED",
+            message: "Records received",
+            metaJson: req.body?.note ? { note: req.body.note } : undefined,
+        },
+    });
+    const updated = await (0, recordsRequestService_1.getRequestWithRelations)(id, firmId);
+    return res.json({ ok: true, request: updated });
+});
+// POST /records-requests/:id/mark-failed — set FAILED
+router.post("/:id/mark-failed", auth_1.auth, (0, requireRole_1.requireRole)(client_1.Role.STAFF), async (req, res) => {
+    const firmId = (0, tenant_1.requireFirmIdFromRequest)(req, res);
+    if (!firmId)
+        return;
+    const id = idParam(req);
+    const request = await prisma_1.prisma.recordsRequest.findFirst({
+        where: (0, tenant_1.buildFirmWhere)(firmId, { id }),
+    });
+    if (!request)
+        return (0, tenant_1.sendNotFound)(res);
+    const allowedFrom = ["DRAFT", "SENT", "FOLLOW_UP_DUE"];
+    if (!allowedFrom.includes(request.status)) {
+        return res.status(400).json({
+            ok: false,
+            error: `Cannot mark as failed from status ${request.status}. Allowed: ${allowedFrom.join(", ")}`,
+        });
+    }
+    const message = req.body?.message?.trim() ?? "Marked as failed";
+    await prisma_1.prisma.recordsRequest.update({
+        where: { id },
+        data: { status: "FAILED" },
+    });
+    await prisma_1.prisma.recordsRequestEvent.create({
+        data: {
+            firmId,
+            recordsRequestId: id,
+            eventType: "STATUS_CHANGED",
+            status: "FAILED",
+            message,
+        },
+    });
+    const updated = await (0, recordsRequestService_1.getRequestWithRelations)(id, firmId);
+    return res.json({ ok: true, request: updated });
+});
 // POST /records-requests/:id/cancel
 router.post("/:id/cancel", auth_1.auth, (0, requireRole_1.requireRole)(client_1.Role.STAFF), async (req, res) => {
     const firmId = (0, tenant_1.requireFirmIdFromRequest)(req, res);
     if (!firmId)
         return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await prisma_1.prisma.recordsRequest.findFirst({
         where: (0, tenant_1.buildFirmWhere)(firmId, { id }),
     });
@@ -388,7 +462,7 @@ router.post("/:id/attach-document", auth_1.auth, (0, requireRole_1.requireRole)(
         return;
     if (!(0, tenant_1.forbidCrossTenantAccess)(req, res))
         return;
-    const id = req.params.id;
+    const id = idParam(req);
     const body = req.body;
     if (!body.documentId || typeof body.documentId !== "string") {
         return res.status(400).json({ ok: false, error: "documentId is required" });

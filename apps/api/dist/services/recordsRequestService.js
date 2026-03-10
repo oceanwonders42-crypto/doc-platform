@@ -54,6 +54,11 @@ async function createRecordsRequestDraft(input) {
     ]);
     if (!caseRow)
         return { ok: false, error: "Case not found" };
+    const hasProvider = !!provider;
+    const hasName = !!(input.providerName?.trim() || input.patientName?.trim());
+    if (!hasProvider && !hasName) {
+        return { ok: false, error: "providerId or providerName (or patientName) is required" };
+    }
     const requestType = (input.requestType || "RECORDS");
     const subject = input.subject?.trim() ||
         (requestType === "BILLS"
@@ -89,10 +94,10 @@ async function createRecordsRequestDraft(input) {
             d.setDate(d.getDate() + 14);
             return d;
         })();
-    const providerName = provider?.name ?? input.patientName ?? "Provider";
+    const providerName = provider?.name ?? (input.providerName?.trim() || null) ?? input.patientName ?? "Provider";
     const providerContact = provider?.email || provider?.phone || provider?.fax
         ? [provider?.email, provider?.phone, provider?.fax].filter(Boolean).join(" | ")
-        : input.destinationValue ?? null;
+        : (input.providerContact?.trim() || null) ?? input.destinationValue ?? null;
     const record = await prisma_1.prisma.recordsRequest.create({
         data: {
             firmId,

@@ -11,15 +11,20 @@ const riskAnalyzer_1 = require("../ai/riskAnalyzer");
 const documentInsights_1 = require("../ai/documentInsights");
 const documentSummary_1 = require("../ai/documentSummary");
 const docClassifier_1 = require("../ai/docClassifier");
+const trafficMatterDetector_1 = require("../ai/trafficMatterDetector");
 const extractors_1 = require("../ai/extractors");
 const insuranceOfferExtractor_1 = require("../ai/extractors/insuranceOfferExtractor");
 const courtExtractor_1 = require("../ai/extractors/courtExtractor");
+const trafficCitationExtractor_1 = require("../ai/extractors/trafficCitationExtractor");
+const trafficStatuteExtractor_1 = require("../ai/extractors/trafficStatuteExtractor");
+const trafficMatterService_1 = require("../services/trafficMatterService");
 const caseMatching_1 = require("../services/caseMatching");
 const documentRouting_1 = require("../services/documentRouting");
 const featureFlags_1 = require("../services/featureFlags");
 const caseTimeline_1 = require("../services/caseTimeline");
 const pushService_1 = require("../integrations/crm/pushService");
 const notifications_1 = require("../services/notifications");
+const webhooks_1 = require("../services/webhooks");
 async function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
 }
@@ -78,6 +83,12 @@ async function handleOcrJob(documentId, firmId) {
             where: { id: documentId },
             data: { processingStage: "complete" },
         });
+        (0, webhooks_1.emitWebhookEvent)(firmId, "document.processed", {
+            documentId,
+            status: "UPLOADED",
+            pageCount: pages,
+            processingStage: "complete",
+        }).catch((e) => console.warn("[webhooks] document.processed emit failed", e));
         console.log(`Done (non-PDF): ${documentId} (pages=${pages})`);
         return;
     }
@@ -141,20 +152,36 @@ async function handleClassificationJob(documentId, firmId) {
         generic.incidentDate,
         finalConfidence,
     ]);
+    const matterDetection = (0, trafficMatterDetector_1.detectTrafficMatterType)(text, finalDocType, doc.originalName ?? "");
+    await pg_1.pgPool.query(`
+    update document_recognition set
+      suggested_matter_type = $1,
+      matter_routing_reason = $2,
+      matter_review_required = $3,
+      updated_at = now()
+    where document_id = $4
+    `, [
+        matterDetection.matterType,
+        matterDetection.reason,
+        matterDetection.reviewRequired,
+        documentId,
+    ]);
     await (0, queue_1.enqueueExtractionJob)({ documentId, firmId });
-    console.log(`Classification done, queued extraction: ${documentId} (docType=${finalDocType})`);
+    console.log(`Classification done, queued extraction: ${documentId} (docType=${finalDocType}, matterType=${matterDetection.matterType})`);
 }
 async function handleExtractionJob(documentId, firmId) {
     const doc = await prisma_1.prisma.document.findUnique({ where: { id: documentId } });
     if (!doc)
         throw new Error(`Document not found: ${documentId}`);
-    const { rows } = await pg_1.pgPool.query(`select text_excerpt, doc_type, client_name, case_number, incident_date, confidence
+    const { rows } = await pg_1.pgPool.query(`select text_excerpt, doc_type, client_name, case_number, incident_date, confidence,
+     coalesce(suggested_matter_type, 'PI') as suggested_matter_type
      from document_recognition where document_id = $1`, [documentId]);
     const rec = rows[0];
     if (!rec?.text_excerpt || !rec.doc_type)
         throw new Error(`Missing recognition data for ${documentId}`);
     const text = rec.text_excerpt;
     const finalDocType = rec.doc_type;
+    const suggestedMatterType = rec.suggested_matter_type ?? "PI";
     await prisma_1.prisma.document.update({
         where: { id: documentId },
         data: { processingStage: "extraction" },
@@ -173,7 +200,8 @@ async function handleExtractionJob(documentId, firmId) {
     ]);
     let insuranceFields = null;
     if (insuranceOn && finalDocType.startsWith("insurance_")) {
-        insuranceFields = await (0, insuranceOfferExtractor_1.extractInsuranceOfferFields)({ text, fileName: doc.originalName ?? undefined });
+        const raw = await (0, insuranceOfferExtractor_1.extractInsuranceOfferFields)({ text, fileName: doc.originalName ?? undefined });
+        insuranceFields = raw ? { settlementOffer: raw.settlementOffer ?? undefined } : null;
     }
     const insuranceFieldsJson = insuranceFields ? JSON.stringify(insuranceFields) : null;
     const courtFieldsJson = courtOn && finalDocType.startsWith("court_")
@@ -196,7 +224,25 @@ async function handleExtractionJob(documentId, firmId) {
     where document_id = $6
     `, [insuranceFieldsJson, courtFieldsJson, risksJson, insightsJson, summaryJson, documentId]);
     if (insuranceFields?.settlementOffer != null && insuranceFields.settlementOffer > 0) {
-        (0, notifications_1.createNotification)(firmId, "settlement_offer_detected", "Settlement offer extracted", `A settlement offer of $${Number(insuranceFields.settlementOffer).toLocaleString()} was extracted from a document.`, { documentId, amount: insuranceFields.settlementOffer }).catch((e) => console.warn("[notifications] settlement_offer_detected (extraction) failed", e));
+        const caseId = doc.routedCaseId ?? null;
+        (0, notifications_1.createNotification)(firmId, "settlement_offer_detected", "Settlement offer extracted", `A settlement offer of $${Number(insuranceFields.settlementOffer).toLocaleString()} was extracted from a document.`, { documentId, amount: insuranceFields.settlementOffer, ...(caseId ? { caseId } : {}) }).catch((e) => console.warn("[notifications] settlement_offer_detected (extraction) failed", e));
+        if (!finalDocType.startsWith("insurance_")) {
+            const ym = yearMonth(new Date());
+            await prisma_1.prisma.usageMonthly.upsert({
+                where: { firmId_yearMonth: { firmId, yearMonth: ym } },
+                create: {
+                    firmId,
+                    yearMonth: ym,
+                    pagesProcessed: 0,
+                    docsProcessed: 0,
+                    insuranceDocsExtracted: 1,
+                    courtDocsExtracted: 0,
+                    narrativeGenerated: 0,
+                    duplicateDetected: 0,
+                },
+                update: { insuranceDocsExtracted: { increment: 1 } },
+            });
+        }
     }
     const finalConfidence = rec.confidence ?? 0;
     await prisma_1.prisma.document.update({
@@ -204,9 +250,37 @@ async function handleExtractionJob(documentId, firmId) {
         data: {
             extractedFields: extractedFields,
             confidence: finalConfidence,
-            processingStage: "case_match",
+            processingStage: suggestedMatterType === "TRAFFIC" ? "complete" : "case_match",
         },
     });
+    if (suggestedMatterType === "TRAFFIC") {
+        const matterDetection = (0, trafficMatterDetector_1.detectTrafficMatterType)(text, finalDocType, doc.originalName ?? "");
+        const citationResult = (0, trafficCitationExtractor_1.extractTrafficCitationFields)(text);
+        const statuteResult = (0, trafficStatuteExtractor_1.extractTrafficStatuteCode)(text);
+        const reviewRequired = matterDetection.reviewRequired ||
+            statuteResult.reviewRecommended ||
+            !citationResult.fields.citationNumber ||
+            (citationResult.confidence.citationNumber ?? 0) < 0.8;
+        const { id: trafficMatterId, created } = await (0, trafficMatterService_1.createOrUpdateTrafficMatter)({
+            firmId,
+            sourceDocumentId: documentId,
+            documentTypeOfOrigin: finalDocType,
+            citationFields: citationResult.fields,
+            citationConfidence: citationResult.confidence,
+            statuteResult,
+            routingConfidence: matterDetection.routingConfidence,
+            reviewRequired,
+        });
+        (0, webhooks_1.emitWebhookEvent)(firmId, "document.processed", {
+            documentId,
+            status: "UPLOADED",
+            processingStage: "complete",
+            trafficMatterId,
+            trafficMatterCreated: created,
+        }).catch((e) => console.warn("[webhooks] document.processed (traffic) emit failed", e));
+        console.log(`Traffic matter ${created ? "created" : "updated"}: ${trafficMatterId} from document ${documentId}`);
+        return;
+    }
     const ym = yearMonth(new Date());
     if (finalDocType.startsWith("insurance_")) {
         await prisma_1.prisma.usageMonthly.upsert({
@@ -244,6 +318,21 @@ async function handleExtractionJob(documentId, firmId) {
     console.log(`Extraction done, queued case_match: ${documentId}`);
 }
 async function handleCaseMatchJob(documentId, firmId) {
+    const { rows: matterRows } = await pg_1.pgPool.query(`select coalesce(suggested_matter_type, 'PI') as suggested_matter_type
+     from document_recognition where document_id = $1`, [documentId]);
+    if (matterRows[0]?.suggested_matter_type === "TRAFFIC") {
+        await prisma_1.prisma.document.update({
+            where: { id: documentId },
+            data: { processingStage: "complete" },
+        });
+        (0, webhooks_1.emitWebhookEvent)(firmId, "document.processed", {
+            documentId,
+            status: "UPLOADED",
+            processingStage: "complete",
+        }).catch((e) => console.warn("[webhooks] document.processed emit failed", e));
+        console.log(`Case match skipped (TRAFFIC matter): ${documentId}`);
+        return;
+    }
     const { rows } = await pg_1.pgPool.query(`select case_number, client_name from document_recognition where document_id = $1`, [documentId]);
     const rec = rows[0];
     const caseNumber = rec?.case_number ?? null;
@@ -252,9 +341,62 @@ async function handleCaseMatchJob(documentId, firmId) {
     const minAutoRouteConfidence = rule?.minAutoRouteConfidence ?? 0.9;
     const autoRouteEnabled = rule?.autoRouteEnabled ?? false;
     const match = await (0, caseMatching_1.matchDocumentToCase)(firmId, { caseNumber, clientName }, null);
-    const matchConfidence = match.matchConfidence;
-    const matchedCaseId = match.caseId;
-    const suggestedCaseId = matchedCaseId;
+    let matchConfidence = match.matchConfidence;
+    let matchedCaseId = match.caseId;
+    let suggestedCaseId = matchedCaseId;
+    // Auto-create case from unmatched doc when enabled and clientName extracted
+    if (matchedCaseId == null &&
+        clientName &&
+        String(clientName).trim().length >= 2) {
+        const firm = await prisma_1.prisma.firm.findUnique({
+            where: { id: firmId },
+            select: { settings: true },
+        });
+        const settings = firm?.settings ?? {};
+        const autoCreate = settings.autoCreateCaseFromDoc === true;
+        if (autoCreate) {
+            const name = String(clientName).trim();
+            const newCase = await prisma_1.prisma.legalCase.create({
+                data: {
+                    firmId,
+                    title: name,
+                    clientName: name,
+                },
+            });
+            (0, webhooks_1.emitWebhookEvent)(firmId, "case.created", {
+                caseId: newCase.id,
+                title: name,
+                clientName: name,
+                source: "auto_create_from_doc",
+            }).catch((e) => console.warn("[webhooks] case.created emit failed", e));
+            matchedCaseId = newCase.id;
+            suggestedCaseId = newCase.id;
+            matchConfidence = 1;
+            const routed = await (0, documentRouting_1.routeDocument)(firmId, documentId, newCase.id, {
+                actor: "system",
+                action: "auto_created_case",
+                routedSystem: "auto",
+                routingStatus: "routed",
+                metaJson: { reason: "auto_create_from_doc", clientName: name },
+            });
+            if (routed.ok) {
+                (0, notifications_1.createNotification)(firmId, "case_created_from_doc", "Case created from document", `A new case "${name}" was created from an unmatched document and the document was routed to it.`, { caseId: newCase.id, documentId, clientName: name }).catch((e) => console.warn("[notifications] case_created_from_doc failed", e));
+                await prisma_1.prisma.document.update({
+                    where: { id: documentId },
+                    data: { processingStage: "complete" },
+                });
+                (0, webhooks_1.emitWebhookEvent)(firmId, "document.processed", {
+                    documentId,
+                    status: "UPLOADED",
+                    processingStage: "complete",
+                    caseId: newCase.id,
+                }).catch((e) => console.warn("[webhooks] document.processed emit failed", e));
+                await pg_1.pgPool.query(`update document_recognition set match_confidence = 1, match_reason = $1, suggested_case_id = $3, updated_at = now() where document_id = $2`, ["Case auto-created from document", documentId, newCase.id]);
+                console.log(`Auto-created case ${newCase.id} from document ${documentId}, routed`);
+                return;
+            }
+        }
+    }
     if (autoRouteEnabled &&
         suggestedCaseId != null &&
         matchedCaseId != null &&
@@ -272,6 +414,12 @@ async function handleCaseMatchJob(documentId, firmId) {
                 where: { id: documentId },
                 data: { processingStage: "complete" },
             });
+            (0, webhooks_1.emitWebhookEvent)(firmId, "document.processed", {
+                documentId,
+                status: "UPLOADED",
+                processingStage: "complete",
+                caseId: matchedCaseId,
+            }).catch((e) => console.warn("[webhooks] document.processed emit failed", e));
         }
         else {
             await prisma_1.prisma.document.update({
@@ -282,6 +430,12 @@ async function handleCaseMatchJob(documentId, firmId) {
                     processingStage: "complete",
                 },
             });
+            (0, webhooks_1.emitWebhookEvent)(firmId, "document.processed", {
+                documentId,
+                status: "NEEDS_REVIEW",
+                processingStage: "complete",
+                suggestedCaseId: matchedCaseId,
+            }).catch((e) => console.warn("[webhooks] document.processed emit failed", e));
             await prisma_1.prisma.documentAuditEvent.create({
                 data: {
                     firmId,
@@ -304,6 +458,12 @@ async function handleCaseMatchJob(documentId, firmId) {
                 processingStage: "complete",
             },
         });
+        (0, webhooks_1.emitWebhookEvent)(firmId, "document.processed", {
+            documentId,
+            status: "NEEDS_REVIEW",
+            processingStage: "complete",
+            suggestedCaseId: suggestedCaseId ?? undefined,
+        }).catch((e) => console.warn("[webhooks] document.processed emit failed", e));
         if (suggestedCaseId != null) {
             await prisma_1.prisma.documentAuditEvent.create({
                 data: {

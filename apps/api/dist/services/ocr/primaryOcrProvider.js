@@ -5,17 +5,17 @@ exports.runPrimaryOcr = runPrimaryOcr;
  * Primary OCR provider: embedded text first, then full text extraction.
  * Builds diagnostics (language, handwriting heuristic, page status).
  */
-const docRecognition_1 = require("../../../ai/docRecognition");
+const docRecognition_1 = require("../../ai/docRecognition");
 const languageDetection_1 = require("./languageDetection");
 const handwritingDetection_1 = require("./handwritingDetection");
 async function runPrimaryOcr(buffer) {
     const pageTexts = [];
     let fullText = "";
     try {
-        const { fullText: text, pageTexts: pts } = await (0, docRecognition_1.extractTextFromPdfPerPage)(buffer);
-        fullText = text.trim();
-        for (const p of pts) {
-            pageTexts.push({ pageNumber: p.page, text: p.text });
+        const result = await (0, docRecognition_1.extractTextFromPdfPerPage)(buffer);
+        fullText = result.fullText.trim();
+        for (const p of result.pageTexts) {
+            pageTexts.push({ page: p.page, text: p.text });
         }
     }
     catch (e) {
@@ -23,47 +23,38 @@ async function runPrimaryOcr(buffer) {
         return {
             fullText: "",
             pageTexts: [],
-            diagnostics: {
-                ocrEngine: "pdfjs",
-                ocrConfidence: 0,
-                pageDiagnostics: [],
-                preprocessingApplied: [],
-            },
-            fromEmbeddedText: false,
+            ocrEngine: "pdfjs",
+            ocrConfidence: 0,
+            pageDiagnostics: [],
+            preprocessingApplied: [],
         };
     }
     const lang = (0, languageDetection_1.detectLanguage)(fullText);
     const nonLatin = (0, languageDetection_1.hasNonLatinScript)(fullText);
-    const handwriting = (0, handwritingDetection_1.detectHandwritingFromText)(pageTexts, fullText.length > 0 ? 0.9 : undefined);
-    const pageResults = pageTexts.map((p) => {
+    const handwriting = (0, handwritingDetection_1.detectHandwritingFromText)(fullText);
+    const pageDiagnostics = pageTexts.map((p) => {
         const wordCount = p.text.trim().split(/\s+/).filter(Boolean).length;
-        let qualityStatus = "GOOD";
+        let status = "GOOD";
         if (wordCount < 10 && fullText.length > 100)
-            qualityStatus = "LOW_CONFIDENCE";
+            status = "LOW_CONFIDENCE";
         if (handwriting.hasHandwriting)
-            qualityStatus = handwriting.handwritingHeavy ? "HANDWRITTEN" : "NEEDS_REVIEW";
+            status = handwriting.handwritingHeavy ? "HANDWRITTEN" : "NEEDS_REVIEW";
         if (nonLatin)
-            qualityStatus = "MIXED_LANGUAGE";
+            status = "MIXED_LANGUAGE";
         return {
-            pageNumber: p.pageNumber,
-            text: p.text,
-            confidence: 0.9,
-            language: lang.detectedLanguage,
+            pageNumber: p.page,
+            ocrMethod: "pdfjs",
+            status,
+            averageConfidence: 0.9,
+            detectedLanguage: lang.detectedLanguage,
             hasHandwriting: handwriting.hasHandwriting,
-            qualityStatus,
+            needsHumanReview: status !== "GOOD",
+            textLength: p.text.length,
         };
     });
-    const pageDiagnostics = pageResults.map((p) => ({
-        pageNumber: p.pageNumber,
-        ocrMethod: "pdfjs",
-        averageConfidence: p.confidence,
-        detectedLanguage: p.language,
-        hasHandwriting: p.hasHandwriting,
-        qualityStatus: p.qualityStatus ?? "GOOD",
-        needsHumanReview: p.qualityStatus !== "GOOD",
-        wordCount: p.text.trim().split(/\s+/).filter(Boolean).length,
-    }));
-    const diagnostics = {
+    return {
+        fullText,
+        pageTexts,
         ocrEngine: "pdfjs",
         ocrConfidence: fullText.length > 50 ? 0.85 : 0.5,
         detectedLanguage: lang.detectedLanguage,
@@ -73,11 +64,5 @@ async function runPrimaryOcr(buffer) {
         handwritingConfidence: handwriting.confidence,
         pageDiagnostics,
         preprocessingApplied: [],
-    };
-    return {
-        fullText,
-        pageTexts: pageResults,
-        diagnostics,
-        fromEmbeddedText: false,
     };
 }

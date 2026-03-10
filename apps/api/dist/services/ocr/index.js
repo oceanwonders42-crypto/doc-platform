@@ -33,7 +33,8 @@ async function runOcrPipeline(pdfBuffer, options) {
         });
         if (result && result.fullText.trim().length > fallback.fullText.trim().length)
             return result;
-        return fallback;
+        const merged = fallback.fullText.trim().length > 0 ? fallback : { ...fallback, lowQualityExtraction: true };
+        return merged;
     }
     const lang = (0, languageDetection_1.detectLanguageFromText)(result.fullText);
     result.detectedLanguage = lang.detectedLanguage;

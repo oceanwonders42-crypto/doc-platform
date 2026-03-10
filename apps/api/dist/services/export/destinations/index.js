@@ -4,13 +4,15 @@
  * and registering here under the same "crm" kind or a new kind.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.emailPacketDestination = exports.crmDestination = exports.cloudFolderDestination = exports.downloadBundleDestination = void 0;
+exports.emailPacketDestination = exports.crmDestination = exports.cloudDriveDestination = exports.cloudFolderDestination = exports.downloadBundleDestination = void 0;
 exports.getExportDestination = getExportDestination;
 exports.getSupportedDestinationKinds = getSupportedDestinationKinds;
 const downloadBundle_1 = require("./downloadBundle");
 Object.defineProperty(exports, "downloadBundleDestination", { enumerable: true, get: function () { return downloadBundle_1.downloadBundleDestination; } });
 const cloudFolder_1 = require("./cloudFolder");
 Object.defineProperty(exports, "cloudFolderDestination", { enumerable: true, get: function () { return cloudFolder_1.cloudFolderDestination; } });
+const cloudDrive_1 = require("./cloudDrive");
+Object.defineProperty(exports, "cloudDriveDestination", { enumerable: true, get: function () { return cloudDrive_1.cloudDriveDestination; } });
 const crmAdapter_1 = require("./crmAdapter");
 Object.defineProperty(exports, "crmDestination", { enumerable: true, get: function () { return crmAdapter_1.crmDestination; } });
 const emailPacket_1 = require("./emailPacket");
@@ -18,6 +20,7 @@ Object.defineProperty(exports, "emailPacketDestination", { enumerable: true, get
 const byKind = {
     download_bundle: downloadBundle_1.downloadBundleDestination,
     cloud_folder: cloudFolder_1.cloudFolderDestination,
+    cloud_drive: cloudDrive_1.cloudDriveDestination,
     crm: crmAdapter_1.crmDestination,
     email_packet: emailPacket_1.emailPacketDestination,
 };
@@ -28,5 +31,5 @@ function getExportDestination(kind) {
     return d;
 }
 function getSupportedDestinationKinds() {
-    return ["download_bundle", "cloud_folder", "crm", "email_packet"];
+    return ["download_bundle", "cloud_folder", "cloud_drive", "crm", "email_packet"];
 }

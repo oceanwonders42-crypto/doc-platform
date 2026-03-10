@@ -25,6 +25,11 @@ import { generateAndStoreRecordsRequestLetter } from "../../services/recordsRequ
 
 const router = Router();
 
+function idParam(req: Request): string {
+  const p = req.params.id;
+  return Array.isArray(p) ? p[0] : p;
+}
+
 function getCreatedByUserId(req: Request): string | null {
   return (req as Request & { userId?: string }).userId ?? null;
 }
@@ -124,7 +129,7 @@ router.patch(
     const firmId = requireFirmIdFromRequest(req, res);
     if (!firmId) return;
     if (!forbidCrossTenantAccess(req, res)) return;
-    const id = req.params.id;
+    const id = idParam(req);
     const existing = await prisma.recordsRequestTemplate.findFirst({
       where: buildFirmWhere(firmId, { id }),
     });
@@ -220,7 +225,7 @@ router.get(
   async (req: Request, res: Response) => {
     const firmId = requireFirmIdFromRequest(req, res);
     if (!firmId) return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await getRequestWithRelations(id, firmId);
     if (!request) return sendNotFound(res);
     if (!assertRecordBelongsToFirm((request as any).firmId, firmId, res)) return;
@@ -236,7 +241,7 @@ router.post(
   async (req: Request, res: Response) => {
     const firmId = requireFirmIdFromRequest(req, res);
     if (!firmId) return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await prisma.recordsRequest.findFirst({
       where: buildFirmWhere(firmId, { id }),
     });
@@ -295,7 +300,7 @@ router.post(
   async (req: Request, res: Response) => {
     const firmId = requireFirmIdFromRequest(req, res);
     if (!firmId) return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await prisma.recordsRequest.findFirst({
       where: buildFirmWhere(firmId, { id }),
     });
@@ -350,7 +355,7 @@ router.post(
   async (req: Request, res: Response) => {
     const firmId = requireFirmIdFromRequest(req, res);
     if (!firmId) return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await prisma.recordsRequest.findFirst({
       where: buildFirmWhere(firmId, { id }),
     });
@@ -381,7 +386,7 @@ router.post(
   async (req: Request, res: Response) => {
     const firmId = requireFirmIdFromRequest(req, res);
     if (!firmId) return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await prisma.recordsRequest.findFirst({
       where: buildFirmWhere(firmId, { id }),
     });
@@ -420,7 +425,7 @@ router.post(
   async (req: Request, res: Response) => {
     const firmId = requireFirmIdFromRequest(req, res);
     if (!firmId) return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await prisma.recordsRequest.findFirst({
       where: buildFirmWhere(firmId, { id }),
     });
@@ -459,7 +464,7 @@ router.post(
   async (req: Request, res: Response) => {
     const firmId = requireFirmIdFromRequest(req, res);
     if (!firmId) return;
-    const id = req.params.id;
+    const id = idParam(req);
     const request = await prisma.recordsRequest.findFirst({
       where: buildFirmWhere(firmId, { id }),
     });
@@ -491,7 +496,7 @@ router.post(
     const firmId = requireFirmIdFromRequest(req, res);
     if (!firmId) return;
     if (!forbidCrossTenantAccess(req, res)) return;
-    const id = req.params.id;
+    const id = idParam(req);
     const body = req.body as { documentId: string; kind: string };
     if (!body.documentId || typeof body.documentId !== "string") {
       return res.status(400).json({ ok: false, error: "documentId is required" });

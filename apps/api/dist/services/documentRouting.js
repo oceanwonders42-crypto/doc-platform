@@ -9,6 +9,7 @@ const prisma_1 = require("../db/prisma");
 const pg_1 = require("../db/pg");
 const caseTimeline_1 = require("./caseTimeline");
 const notifications_1 = require("./notifications");
+const webhooks_1 = require("./webhooks");
 async function routeDocument(firmId, documentId, toCaseId, options) {
     const { actor, action, routedSystem, routingStatus, metaJson } = options;
     const doc = await prisma_1.prisma.document.findFirst({
@@ -56,5 +57,12 @@ async function routeDocument(firmId, documentId, toCaseId, options) {
             }
         }
     }
+    (0, webhooks_1.emitWebhookEvent)(firmId, "document.routed", {
+        documentId,
+        caseId: toCaseId ?? undefined,
+        fromCaseId: doc.routedCaseId ?? undefined,
+        actor,
+        action,
+    }).catch((e) => console.warn("[webhooks] document.routed emit failed", e));
     return { ok: true };
 }

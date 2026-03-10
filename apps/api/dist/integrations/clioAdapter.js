@@ -28,6 +28,14 @@ async function pushDocumentToClio(params) {
     if (!accessToken || typeof accessToken !== "string") {
         return { ok: false, error: "Clio OAuth token not configured" };
     }
+    const mapping = await prisma_1.prisma.crmCaseMapping.findUnique({
+        where: { firmId_caseId: { firmId, caseId } },
+        select: { externalMatterId: true },
+    });
+    const clioMatterId = mapping?.externalMatterId?.trim();
+    if (!clioMatterId) {
+        return { ok: false, error: "No Clio matter mapping for this case. Import mappings in Settings > CRM." };
+    }
     const headers = {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
@@ -38,7 +46,7 @@ async function pushDocumentToClio(params) {
         headers,
         body: JSON.stringify({
             name: fileName || documentId,
-            parent: { id: String(caseId), type: "Matter" },
+            parent: { id: clioMatterId, type: "Matter" },
         }),
     });
     if (!createRes.ok) {

@@ -1,9 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runEmailPollOnce = runEmailPollOnce;
+exports.runEmailPollForMailbox = runEmailPollForMailbox;
 require("dotenv/config");
 const imapPoller_1 = require("./imapPoller");
 const pg_1 = require("../db/pg");
+const notifications_1 = require("../services/notifications");
 // TODO: replace with real decrypt later. For now your existing behavior is plaintext.
 function decryptMaybePlaintext(s) {
     return s;
@@ -77,14 +79,39 @@ async function runEmailPollOnce() {
          set last_error=$2, status='active', updated_at=now()
          where id=$1`, [mb.id, msg]);
             console.error(`[email] mailbox ${mb.id} error:`, msg);
+            (0, notifications_1.createNotification)(mb.firm_id, "mailbox_poll_failed", "Mailbox poll failed", `Poll failed for mailbox ${mb.imap_username ?? mb.id}: ${msg.slice(0, 200)}`, { mailboxId: mb.id }).catch((e) => console.warn("[notifications] mailbox_poll_failed failed", e));
         }
     }
 }
-async function handleImapMailbox(mb) {
-    if (!mb.imap_host || !mb.imap_username || !mb.imap_password_enc) {
-        throw new Error("Mailbox missing imap_host/imap_username/imap_password_enc");
+/** Poll a single mailbox by id (used by poll-now). Ignores status; polls even if paused. */
+async function runEmailPollForMailbox(mailboxId) {
+    const { rows } = await pg_1.pgPool.query(`select * from mailbox_connections where id = $1 limit 1`, [mailboxId]);
+    const mb = rows[0];
+    if (!mb)
+        throw new Error("mailbox not found");
+    try {
+        if (mb.provider === "imap") {
+            await handleImapMailbox(mb);
+        }
+        else {
+            throw new Error("gmail provider not implemented");
+        }
+        await pg_1.pgPool.query(`update mailbox_connections set last_sync_at=now(), last_error=null, status='active', updated_at=now() where id=$1`, [mb.id]);
     }
-    const pass = decryptMaybePlaintext(mb.imap_password_enc);
+    catch (err) {
+        const msg = String(err?.stack || err?.message || err);
+        await pg_1.pgPool.query(`update mailbox_connections set last_error=$2, updated_at=now() where id=$1`, [mb.id, msg]);
+        console.error(`[email] mailbox ${mb.id} poll-now error:`, msg);
+        (0, notifications_1.createNotification)(mb.firm_id, "mailbox_poll_failed", "Mailbox poll failed", `Poll failed for mailbox ${mb.imap_username ?? mb.id}: ${msg.slice(0, 200)}`, { mailboxId: mb.id }).catch((e) => console.warn("[notifications] mailbox_poll_failed failed", e));
+        throw err;
+    }
+}
+async function handleImapMailbox(mb) {
+    const passRaw = mb.imap_password_enc ?? mb.imap_password;
+    if (!mb.imap_host || !mb.imap_username || !passRaw) {
+        throw new Error("Mailbox missing imap_host/imap_username/imap_password");
+    }
+    const pass = decryptMaybePlaintext(passRaw);
     const lastUid = mb.last_uid ? Number(mb.last_uid) : null;
     const { messages, highestUid } = await (0, imapPoller_1.pollImapSinceUid)({
         host: mb.imap_host,

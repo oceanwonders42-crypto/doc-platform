@@ -14,7 +14,7 @@ Object.defineProperty(exports, "MAX_UPLOAD_BYTES", { enumerable: true, get: func
 var scannerStub_2 = require("./scannerStub");
 Object.defineProperty(exports, "scanBufferStub", { enumerable: true, get: function () { return scannerStub_2.scanBuffer; } });
 /**
- * Validate upload: extension, MIME, size. Optionally run stub scanner.
+ * Validate upload: extension, MIME, size, non-empty buffer. Optionally run stub scanner.
  * Returns structured result (accepted, reason, severity, scannerUsed).
  * Legacy: also compatible with { ok, reason?, quarantine? } for existing server code.
  */
@@ -22,6 +22,15 @@ async function validateUploadFile(opts) {
     const sizeResult = (0, basicFileValidation_1.validateSize)(opts.size);
     if (!sizeResult.accepted)
         return sizeResult;
+    if (!opts.buffer || !Buffer.isBuffer(opts.buffer)) {
+        return { accepted: false, ok: false, reason: "File data missing or invalid", severity: "high", scannerUsed: "basic" };
+    }
+    if (opts.buffer.length === 0) {
+        return { accepted: false, ok: false, reason: "File is empty", severity: "medium", scannerUsed: "basic" };
+    }
+    if (opts.size > 0 && opts.buffer.length !== opts.size) {
+        return { accepted: false, ok: false, reason: "File size mismatch (corrupt or truncated)", severity: "high", scannerUsed: "basic" };
+    }
     const typeResult = (0, basicFileValidation_1.validateFileType)(opts.originalname, opts.mimetype);
     if (!typeResult.accepted)
         return typeResult;
@@ -36,6 +45,12 @@ function validateUploadFileSync(opts) {
     const sizeResult = (0, basicFileValidation_1.validateSize)(opts.size);
     if (!sizeResult.accepted)
         return sizeResult;
+    if (!opts.buffer || !Buffer.isBuffer(opts.buffer) || opts.buffer.length === 0) {
+        return { accepted: false, ok: false, reason: "File is empty or invalid", severity: "medium", scannerUsed: "basic" };
+    }
+    if (opts.size > 0 && opts.buffer.length !== opts.size) {
+        return { accepted: false, ok: false, reason: "File size mismatch (corrupt or truncated)", severity: "high", scannerUsed: "basic" };
+    }
     return (0, basicFileValidation_1.validateFileType)(opts.originalname, opts.mimetype);
 }
 /** For callers that expect legacy { ok, reason?, quarantine? } from validateUploadFile. */

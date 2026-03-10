@@ -34,7 +34,6 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.verifyBackupFile = verifyBackupFile;
-exports.verifyBackupFile = verifyBackupFile;
 exports.triggerDatabaseBackup = triggerDatabaseBackup;
 exports.listBackups = listBackups;
 exports.getBackupById = getBackupById;
@@ -60,10 +59,6 @@ function getBackupDir() {
         fs.mkdirSync(dir, { recursive: true });
     }
     return dir;
-}
-/** Re-export for callers that need to verify a backup file. */
-function verifyBackupFile(filePath, expectedChecksum) {
-    return (0, backupManagerVerify_1.verifyBackupFile)(filePath, expectedChecksum);
 }
 /**
  * Run pg_dump and write to a file. Returns path and size.
@@ -112,19 +107,9 @@ async function runPgDump() {
         });
     });
 }
-/**
- * Verify backup file exists and checksum matches. Returns true if valid.
- */
+/** Re-export for callers that need to verify a backup file. */
 function verifyBackupFile(filePath, expectedChecksum) {
-    try {
-        if (!fs.existsSync(filePath))
-            return false;
-        const actual = (0, backupManagerVerify_1.sha256Hex)(filePath);
-        return actual === expectedChecksum;
-    }
-    catch {
-        return false;
-    }
+    return (0, backupManagerVerify_1.verifyBackupFile)(filePath, expectedChecksum);
 }
 /**
  * Trigger a database backup: run pg_dump, store file, record metadata, verify.

@@ -21,6 +21,7 @@ async function runImageOcrFallback(_buffer, _mimeType, opts = {}) {
         pageTexts: [],
         ocrEngine: "fallback_unavailable",
         ocrConfidence: 0,
+        lowQualityExtraction: true,
         pageDiagnostics: [],
         preprocessingApplied: ["attempted_image_ocr"],
     };

@@ -177,9 +177,11 @@ handlers.set("export.packet", async (payload, ctx) => {
         : undefined;
     const includeTimeline = payload.includeTimeline === true;
     const includeSummary = payload.includeSummary === true;
+    const packetType = payload.packetType || "combined";
+    const kinds = ["download_bundle", "cloud_folder", "cloud_drive", "email_packet", "crm"];
     const destinationsRaw = payload.destinations;
     const destinations = Array.isArray(destinationsRaw) && destinationsRaw.length > 0
-        ? destinationsRaw
+        ? destinationsRaw.filter((d) => kinds.includes(d))
         : ["download_bundle"];
     if (!caseId || !firmId)
         throw new Error("caseId and firmId required");
@@ -191,10 +193,12 @@ handlers.set("export.packet", async (payload, ctx) => {
         documentIds,
         includeTimeline,
         includeSummary,
+        packetType,
         options: {
             emailTo: payload.emailTo,
             emailSubject: payload.emailSubject,
             cloudPathPrefix: payload.cloudPathPrefix,
+            cloudDrivePathPrefix: payload.cloudDrivePathPrefix,
         },
     });
     if (!result.bundle) {
@@ -207,6 +211,7 @@ handlers.set("export.packet", async (payload, ctx) => {
                 storageKey: r.storageKey,
                 fileName: r.fileName,
                 externalId: r.externalId,
+                filesWritten: r.filesWritten,
             });
         }
         else {

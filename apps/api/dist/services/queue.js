@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.redis = void 0;
+exports.enqueueMigrationOcrJob = exports.redis = void 0;
 exports.enqueueOcrJob = enqueueOcrJob;
 exports.enqueueClassificationJob = enqueueClassificationJob;
 exports.enqueueExtractionJob = enqueueExtractionJob;
@@ -35,6 +35,8 @@ async function enqueueDocumentJob(payload) {
 async function enqueueTimelineRebuildJob(payload) {
     await exports.redis.lpush(QUEUE_KEY, JSON.stringify({ type: "timeline_rebuild", ...payload }));
 }
+/** Alias for migration/bulk ingest; uses same OCR queue. */
+exports.enqueueMigrationOcrJob = enqueueOcrJob;
 async function popJob() {
     const raw = await exports.redis.rpop(QUEUE_KEY);
     return raw ? JSON.parse(raw) : null;

@@ -6,7 +6,7 @@
  * Returns docType, confidence, reason, and signals used for storage and review.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ONYX_DOC_TYPES = void 0;
+exports.CLASSIFICATION_CONFIDENCE_CONFIRMED_MIN = exports.CLASSIFICATION_CONFIDENCE_UNCERTAIN_THRESHOLD = exports.ONYX_DOC_TYPES = void 0;
 exports.classifyOnyx = classifyOnyx;
 exports.onyxToLegacyDocType = onyxToLegacyDocType;
 exports.ONYX_DOC_TYPES = [
@@ -21,6 +21,10 @@ exports.ONYX_DOC_TYPES = [
     "insurance_correspondence",
     "miscellaneous",
 ];
+/** Confidence below this: do not use classifier type as final; use fallback "other" and mark uncertain. */
+exports.CLASSIFICATION_CONFIDENCE_UNCERTAIN_THRESHOLD = 0.5;
+/** Minimum confidence to treat as confirmed (above uncertain threshold). */
+exports.CLASSIFICATION_CONFIDENCE_CONFIRMED_MIN = 0.5;
 const ER_KEYWORDS = [
     "emergency room",
     "er visit",
@@ -178,11 +182,14 @@ function classifyOnyx(extractedText, filename = "") {
             confidence: 0.3,
             reason: "No category signals found",
             signals: [],
+            uncertain: true,
+            classificationStatus: "fallback",
         };
     }
     candidates.sort((a, b) => b.hits - a.hits);
     const best = candidates[0];
     const confidence = Math.min(0.95, 0.4 + best.hits * 0.1);
+    const uncertain = confidence < exports.CLASSIFICATION_CONFIDENCE_UNCERTAIN_THRESHOLD;
     const reason = best.signals.length > 0
         ? `Matched: ${best.signals.slice(0, 5).join(", ")}`
         : `${best.docType} (${best.hits} hits)`;
@@ -191,6 +198,8 @@ function classifyOnyx(extractedText, filename = "") {
         confidence,
         reason,
         signals: best.signals,
+        uncertain,
+        classificationStatus: uncertain ? "uncertain" : "confirmed",
     };
 }
 /** Map Onyx doc type to legacy doc_type for backward compatibility (timeline, extractors). */

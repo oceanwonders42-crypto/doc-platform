@@ -53,6 +53,18 @@ function isPdfAttachment(filename, mimeType) {
     const mt = (mimeType || "").toLowerCase();
     return mt === "application/pdf" || mt.startsWith("application/pdf;");
 }
+/** Ingestible for scanner-to-email: PDF and common scanned image types (TIFF, JPEG). */
+function isIngestibleAttachment(filename, mimeType) {
+    if (isPdfAttachment(filename, mimeType))
+        return true;
+    const lower = (filename || "").toLowerCase();
+    const mt = (mimeType || "").toLowerCase();
+    if (lower.endsWith(".tif") || lower.endsWith(".tiff") || mt === "image/tiff" || mt.startsWith("image/tiff;"))
+        return true;
+    if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || mt === "image/jpeg" || mt.startsWith("image/jpeg;"))
+        return true;
+    return false;
+}
 /**
  * Poll a single mailbox: fetch new messages, ingest PDF attachments, update cursor and lastSyncAt.
  */
@@ -111,7 +123,7 @@ async function pollMailbox(mailbox, integration) {
         for (const a of m.attachments ?? []) {
             if (!a?.content || !a.filename)
                 continue;
-            if (!isPdfAttachment(a.filename, a.mimeType))
+            if (!isIngestibleAttachment(a.filename, a.mimeType))
                 continue;
             const externalId = `integration:${mailboxId}:${m.uid}:${a.filename}`;
             const content = Buffer.isBuffer(a.content) ? a.content : Buffer.from(a.content);

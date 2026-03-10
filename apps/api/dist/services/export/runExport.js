@@ -12,12 +12,13 @@ const destinations_1 = require("./destinations");
  * Use after document processing is complete (documents routed to case).
  */
 async function runExport(params) {
-    const { caseId, firmId, destinations, documentIds, includeTimeline = true, includeSummary = false, options = {}, } = params;
+    const { caseId, firmId, destinations, documentIds, includeTimeline = true, includeSummary = false, packetType = "combined", options = {}, } = params;
     const kinds = destinations.length > 0 ? destinations : ["download_bundle"];
     const bundle = await (0, contract_1.buildExportBundle)(caseId, firmId, {
         documentIds,
         includeTimeline,
         includeSummary,
+        packetType,
     });
     if (!bundle) {
         return {
@@ -31,7 +32,7 @@ async function runExport(params) {
     for (const kind of kinds) {
         try {
             const dest = (0, destinations_1.getExportDestination)(kind);
-            const result = await dest.export(bundle, options);
+            const result = await dest.export(bundle, { ...options, packetType });
             results.push(result);
         }
         catch (e) {
