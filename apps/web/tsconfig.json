@@ -1,0 +1,54 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ],
+      "@landing/*": [
+        "./Imported-site/src/*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "Imported-site/src/app",
+    "Imported-site/src/components/dashboard",
+    "Imported-site/src/components/FAQ.tsx",
+    "Imported-site/src/components/PricingSection.tsx",
+    "Imported-site/src/components/ServicesOverview.tsx",
+    "Imported-site/src/components/PricingComparisonTable.tsx",
+    "Imported-site/src/components/PricingFaq.tsx",
+    "Imported-site/src/components/Integrations.tsx",
+    "Imported-site/src/lib/demo-dashboard-data.ts",
+    "Imported-site/src/lib/demo-extraction.ts",
+    "Imported-site/src/lib/db.ts"
+  ]
+}
