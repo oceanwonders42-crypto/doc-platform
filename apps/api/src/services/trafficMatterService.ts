@@ -3,6 +3,7 @@
  * Matches by citation number, defendant, jurisdiction, issue date proximity.
  */
 import { prisma } from "../db/prisma";
+import { Prisma } from "@prisma/client";
 import type { TrafficCitationExtracted } from "../ai/extractors/trafficCitationExtractor";
 import {
   type StatuteExtractionResult,
@@ -109,9 +110,10 @@ export async function createOrUpdateTrafficMatter(
   );
 
   const status = reviewRequired ? "REVIEW_REQUIRED" : "NEW_CITATION";
-  const chargeListJson = citationFields.chargeDescriptionRaw
-    ? [{ description: citationFields.chargeDescriptionRaw }]
-    : null;
+  const chargeListJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput =
+    citationFields.chargeDescriptionRaw
+      ? ([{ description: citationFields.chargeDescriptionRaw }] as Prisma.InputJsonValue)
+      : Prisma.JsonNull;
 
   const data = {
     firmId,
@@ -127,7 +129,7 @@ export async function createOrUpdateTrafficMatter(
         citationFields.jurisdictionState
       ),
     chargeDescriptionRaw: citationFields.chargeDescriptionRaw ?? null,
-    chargeListJson: chargeListJson as object | null,
+    chargeListJson,
     jurisdictionState: citationFields.jurisdictionState ?? null,
     jurisdictionCounty: citationFields.jurisdictionCounty ?? null,
     courtName: citationFields.courtName ?? null,

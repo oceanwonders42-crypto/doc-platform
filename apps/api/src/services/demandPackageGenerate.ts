@@ -42,7 +42,7 @@ export async function generateDemandPackage(packageId: string, firmId: string): 
         select: { id: true, eventDate: true, eventType: true, provider: true, diagnosis: true, procedure: true, amount: true },
       }),
       prisma.caseFinancial.findFirst({ where: { caseId, firmId } }),
-      prisma.caseSummary.findUnique({ where: { firmId_caseId: { firmId, caseId } }, select: { body: true } }),
+      prisma.caseSummary.findFirst({ where: { firmId, caseId }, select: { body: true } }),
       prisma.document.findMany({
         where: { firmId, routedCaseId: caseId },
         select: { id: true, originalName: true },

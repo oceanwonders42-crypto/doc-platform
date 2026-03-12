@@ -111,7 +111,8 @@ export async function persistBillingForDocument(
     where: { caseId, firmId },
     _sum: { lineTotal: true },
   });
-  const total = agg._sum.lineTotal ?? 0;
+  const totalRaw = agg._sum.lineTotal;
+  const total = typeof totalRaw === "number" ? totalRaw : totalRaw?.toNumber() ?? 0;
 
   await prisma.caseFinancial.upsert({
     where: { caseId },
