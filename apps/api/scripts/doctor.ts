@@ -3,6 +3,7 @@
  * Run from repo root or apps/api: pnpm -C apps/api run doctor
  * Exit code: 0 if all critical checks pass, 1 otherwise.
  */
+import "dotenv/config";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -11,6 +12,12 @@ const API_PORT = 4000;
 const WEB_PORTS = [3000, 3001];
 
 type Check = { name: string; pass: boolean; detail?: string };
+
+type ResolvedWebApp = {
+  webDir: string | null;
+  source: "override" | "apps/web" | null;
+  searched: string[];
+};
 
 function readEnvFile(filePath: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -35,12 +42,41 @@ function readEnvFile(filePath: string): Record<string, string> {
   return out;
 }
 
-function envChecks(apiDir: string, webDir: string): Check[] {
-  const checks: Check[] = [];
-  const webEnvPath = path.join(webDir, ".env.local");
-  const apiEnvPath = path.join(apiDir, ".env");
+function directoryExists(dirPath: string): boolean {
+  try {
+    return fs.statSync(dirPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
-  const webEnv = readEnvFile(webEnvPath);
+function resolveWebAppDir(apiDir: string): ResolvedWebApp {
+  const override = process.env.WEB_APP_PATH?.trim();
+  if (override) {
+    return {
+      webDir: path.resolve(override),
+      source: "override",
+      searched: [path.resolve(override)],
+    };
+  }
+
+  const repoRoot = path.resolve(apiDir, "..", "..");
+  const standardWebDir = path.join(repoRoot, "apps", "web");
+  const searched = [standardWebDir];
+
+  if (directoryExists(standardWebDir)) {
+    return { webDir: standardWebDir, source: "apps/web", searched };
+  }
+
+  return { webDir: null, source: null, searched };
+}
+
+function envChecks(apiDir: string, resolvedWebApp: ResolvedWebApp): Check[] {
+  const checks: Check[] = [];
+  const apiEnvPath = path.join(apiDir, ".env");
+  const webEnvPath = resolvedWebApp.webDir ? path.join(resolvedWebApp.webDir, ".env.local") : null;
+
+  const webEnv = webEnvPath ? readEnvFile(webEnvPath) : {};
   const apiEnv = readEnvFile(apiEnvPath);
 
   const webHasApiUrl = !!(webEnv.DOC_API_URL && webEnv.DOC_API_URL.trim());
@@ -49,13 +85,20 @@ function envChecks(apiDir: string, webDir: string): Check[] {
   const apiHasKey = !!(apiEnv.DOC_API_KEY && apiEnv.DOC_API_KEY.trim());
 
   if (!webHasApiUrl || !webHasApiKey) {
+    const detail = webEnvPath
+      ? `${path.relative(apiDir, webEnvPath) || webEnvPath} should have DOC_API_URL and DOC_API_KEY`
+      : `Could not resolve active web app path. Checked: ${resolvedWebApp.searched.join(", ")}`;
     checks.push({
       name: "ENV (web)",
       pass: false,
-      detail: `apps/web/.env.local should have DOC_API_URL and DOC_API_KEY`,
+      detail,
     });
   } else {
-    checks.push({ name: "ENV (web)", pass: true });
+    checks.push({
+      name: "ENV (web)",
+      pass: true,
+      detail: resolvedWebApp.source === "override" ? `WEB_APP_PATH -> ${webEnvPath}` : webEnvPath ?? undefined,
+    });
   }
 
   if (!apiHasDb) {
@@ -100,10 +143,10 @@ async function detectWebPort(): Promise<{ port: number | null; ok: boolean }> {
 async function run(): Promise<{ checks: Check[]; exitCode: number }> {
   const checks: Check[] = [];
   const apiDir = path.resolve(path.join(__dirname, ".."));
-  const webDir = path.resolve(path.join(apiDir, "..", "web"));
+  const resolvedWebApp = resolveWebAppDir(apiDir);
 
   // 1) Env vars (read files, no crash)
-  const envResults = envChecks(apiDir, webDir);
+  const envResults = envChecks(apiDir, resolvedWebApp);
   checks.push(...envResults);
 
   // 2) API health
@@ -147,7 +190,6 @@ async function run(): Promise<{ checks: Check[]; exitCode: number }> {
   });
 
   const critical = ["API", "WEB", "PROXY /api/cases", "PROXY /api/documents"];
-  const envWarn = envResults.some((r) => !r.pass);
   const criticalFail = checks.some((c) => critical.includes(c.name) && !c.pass);
   const exitCode = criticalFail ? 1 : 0;
 
