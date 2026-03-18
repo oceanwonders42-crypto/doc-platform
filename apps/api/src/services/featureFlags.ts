@@ -9,9 +9,13 @@ export async function hasFeature(firmId: string, feature: string): Promise<boole
     where: { id: firmId },
     select: { features: true },
   });
-  if (!firm?.features) return false;
+  if (!firm?.features) {
+    return process.env.NODE_ENV !== "production" && feature === "duplicates_detection";
+  }
   const arr = firm.features as unknown;
-  if (!Array.isArray(arr)) return false;
+  if (!Array.isArray(arr)) {
+    return process.env.NODE_ENV !== "production" && feature === "duplicates_detection";
+  }
   return arr.includes(feature);
 }
 

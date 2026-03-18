@@ -6,6 +6,7 @@
  */
 import { prisma } from "../db/prisma";
 import { buildFirmWhere } from "../lib/tenant";
+import { normalizeRecordsRequestStatus } from "./recordsRequestStatus";
 
 export type MatchDocumentToRecordsRequestInput = {
   firmId: string;
@@ -31,20 +32,15 @@ export type MatchDocumentToRecordsRequestResult =
 export async function tryMatchDocumentToRecordsRequest(
   input: MatchDocumentToRecordsRequestInput
 ): Promise<MatchDocumentToRecordsRequestResult> {
-  const { firmId, documentId, caseId, providerId, patientName } = input;
+  const { firmId, documentId, caseId, providerId, patientName, referenceTokens = [] } = input;
 
   const doc = await prisma.document.findFirst({
     where: buildFirmWhere(firmId, { id: documentId }),
   });
   if (!doc) return { matched: false, reason: "Document not found" };
 
-  if (!caseId && !providerId) return { matched: false, reason: "caseId or providerId required to match" };
-
-  const openStatuses = ["SENT", "FOLLOW_UP_DUE", "RECEIVED"];
-  const where: Record<string, unknown> = {
-    ...buildFirmWhere(firmId),
-    status: { in: openStatuses },
-  };
+  const openStatuses = new Set(["SENT", "FOLLOW_UP_DUE", "RECEIVED"]);
+  const where: Record<string, unknown> = buildFirmWhere(firmId);
   if (caseId) where.caseId = caseId;
   if (providerId) where.providerId = providerId;
 
@@ -54,17 +50,46 @@ export async function tryMatchDocumentToRecordsRequest(
     take: 20,
   });
 
+  const normalizedTokens = referenceTokens
+    .flatMap((token) => tokenize(token))
+    .filter((token, index, list) => token.length >= 3 && list.indexOf(token) === index);
+
   let best: (typeof candidates)[0] | null = null;
+  let bestScore = -1;
   for (const req of candidates) {
+    const status = normalizeRecordsRequestStatus(req.status);
+    if (!openStatuses.has(status)) continue;
     if (caseId && req.caseId !== caseId) continue;
     if (providerId && req.providerId !== providerId) continue;
+
+    let score = 0;
+    if (caseId && req.caseId === caseId) score += 100;
+    if (providerId && req.providerId === providerId) score += 100;
     if (patientName && req.patientName) {
       const a = normalizeName(patientName);
       const b = normalizeName(req.patientName);
       if (a && b && !a.includes(b) && !b.includes(a)) continue;
+      if (a && b) score += 25;
     }
-    best = req;
-    break;
+    if (normalizedTokens.length > 0) {
+      const haystack = [
+        req.providerName,
+        req.providerContact,
+        req.subject,
+        req.messageBody,
+        req.patientName,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      const tokenMatches = normalizedTokens.filter((token) => haystack.includes(token)).length;
+      score += tokenMatches * 10;
+    }
+    if (!caseId && !providerId && score <= 0) continue;
+    if (score > bestScore) {
+      bestScore = score;
+      best = req;
+    }
   }
   if (!best) return { matched: false, reason: "No matching open request" };
 
@@ -86,6 +111,7 @@ export async function tryMatchDocumentToRecordsRequest(
       kind: "RESPONSE_DOC",
     },
   });
+  const receivedAt = new Date();
   await prisma.recordsRequestEvent.create({
     data: {
       firmId,
@@ -98,7 +124,11 @@ export async function tryMatchDocumentToRecordsRequest(
   });
   await prisma.recordsRequest.update({
     where: { id: best.id },
-    data: { status: "RECEIVED" },
+    data: {
+      status: "RECEIVED",
+      responseDate: best.responseDate ?? receivedAt,
+      completedAt: best.completedAt ?? receivedAt,
+    },
   });
 
   return { matched: true, recordsRequestId: best.id, attached: true };
@@ -109,4 +139,12 @@ function normalizeName(s: string): string {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ");
+}
+
+function tokenize(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
 }

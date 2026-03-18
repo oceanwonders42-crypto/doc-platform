@@ -9,6 +9,10 @@ import { putObject } from "./storage";
 import { buildRecordsRequestLetterPdf } from "./recordsLetterPdf";
 import { sendAdapter } from "../send/compositeAdapter";
 import { createNotification } from "./notifications";
+import {
+  isSendableRecordsRequestStatus,
+  normalizeRecordsRequestStatus,
+} from "./recordsRequestStatus";
 
 export type SendRecordsRequestInput = {
   recordsRequestId: string;
@@ -30,6 +34,12 @@ export async function sendRecordsRequest(
     where: { id: recordsRequestId, firmId },
   });
   if (!reqRow) return { ok: false, error: "RecordsRequest not found" };
+  if (!isSendableRecordsRequestStatus(reqRow.status)) {
+    return {
+      ok: false,
+      error: `Request must be in DRAFT, FAILED, or FOLLOW_UP_DUE status to send (current: ${normalizeRecordsRequestStatus(reqRow.status)})`,
+    };
+  }
 
   const letterBody = reqRow.letterBody ?? "";
   if (!letterBody.trim()) return { ok: false, error: "Letter body is empty; save the letter first" };
@@ -127,6 +137,20 @@ export async function sendRecordsRequest(
   });
 
   if (!result.ok) {
+    await prisma.recordsRequest.update({
+      where: { id: recordsRequestId },
+      data: { status: "FAILED" },
+    });
+    await prisma.recordsRequestEvent.create({
+      data: {
+        firmId,
+        recordsRequestId,
+        eventType: "FAILED",
+        status: "FAILED",
+        message: result.error || "Send failed",
+        metaJson: { channel, destination },
+      },
+    });
     createNotification(
       firmId,
       "records_request_send_failed",
@@ -137,9 +161,26 @@ export async function sendRecordsRequest(
     return { ok: false, error: result.error || "Send failed" };
   }
 
+  const sentAt = new Date();
   await prisma.recordsRequest.update({
     where: { id: recordsRequestId },
-    data: { status: "Sent" },
+    data: {
+      status: "SENT",
+      sentAt,
+      requestDate: currentReqRow.requestDate ?? sentAt,
+      destinationType: channel === "fax" ? "FAX" : "EMAIL",
+      destinationValue: destination,
+    },
+  });
+  await prisma.recordsRequestEvent.create({
+    data: {
+      firmId,
+      recordsRequestId,
+      eventType: "SENT",
+      status: "SENT",
+      message: `Sent via ${channel} to ${destination}`,
+      metaJson: { channel, destination, sentAt: sentAt.toISOString() },
+    },
   });
 
   createNotification(

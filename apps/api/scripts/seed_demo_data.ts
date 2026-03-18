@@ -15,6 +15,14 @@ const DEMO_USERS: { email: string; role: "PLATFORM_ADMIN" | "FIRM_ADMIN" | "PARA
   { email: "demo@example.com", role: "STAFF" },
 ];
 const CASE_IDS = ["demo-case-1", "demo-case-2", "demo-case-3", "demo-case-4", "demo-case-5"];
+const DEMO_CLIENT_NAMES = ["Alice Smith", "Bob Jones", "Carol Wilson", "Dan Brown", "Eve Wilson"];
+
+function splitName(fullName: string): { firstName: string | null; lastName: string | null } {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { firstName: null, lastName: null };
+  if (parts.length === 1) return { firstName: null, lastName: parts[0] };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
 
 async function main() {
   const databaseUrl = process.env.DATABASE_URL?.trim();
@@ -51,6 +59,25 @@ async function main() {
   // Ensure LegalCase rows exist so /dashboard/cases and document routing work
   const caseTitles = ["Smith v. State Farm", "Jones Medical Records", "Wilson PI Claim", "Brown Insurance", "Demo Case 5"];
   for (let i = 0; i < CASE_IDS.length; i++) {
+    const clientName = DEMO_CLIENT_NAMES[i];
+    const { firstName, lastName } = splitName(clientName);
+    const contactId = `demo-contact-${i + 1}`;
+    await prisma.contact.upsert({
+      where: { id: contactId },
+      create: {
+        id: contactId,
+        firmId,
+        firstName,
+        lastName,
+        fullName: clientName,
+      },
+      update: {
+        firmId,
+        firstName,
+        lastName,
+        fullName: clientName,
+      },
+    });
     await prisma.legalCase.upsert({
       where: { id: CASE_IDS[i] },
       create: {
@@ -58,9 +85,16 @@ async function main() {
         firmId,
         title: caseTitles[i],
         caseNumber: `DEMO-00${i + 1}`,
-        clientName: ["Alice Smith", "Bob Jones", "Carol Wilson", "Dan Brown", "Eve Wilson"][i],
+        clientName,
+        clientContactId: contactId,
       },
-      update: { firmId, title: caseTitles[i], caseNumber: `DEMO-00${i + 1}`, clientName: ["Alice Smith", "Bob Jones", "Carol Wilson", "Dan Brown", "Eve Wilson"][i] },
+      update: {
+        firmId,
+        title: caseTitles[i],
+        caseNumber: `DEMO-00${i + 1}`,
+        clientName,
+        clientContactId: contactId,
+      },
     });
   }
 
@@ -154,8 +188,22 @@ async function main() {
   const prov2 = providers[1];
   await prisma.recordsRequest.createMany({
     data: [
-      { firmId, caseId: CASE_IDS[0], providerName: prov1.name, providerContact: `${prov1.address}\n${prov1.city}, ${prov1.state}`, status: "Draft" },
-      { firmId, caseId: CASE_IDS[1], providerName: prov2.name, providerContact: `${prov2.address}\n${prov2.city}, ${prov2.state}`, status: "Sent" },
+      {
+        firmId,
+        caseId: CASE_IDS[0],
+        providerName: prov1.name,
+        providerContact: `${prov1.address}\n${prov1.city}, ${prov1.state}`,
+        status: "DRAFT",
+      },
+      {
+        firmId,
+        caseId: CASE_IDS[1],
+        providerName: prov2.name,
+        providerContact: `${prov2.address}\n${prov2.city}, ${prov2.state}`,
+        status: "SENT",
+        sentAt: now,
+        requestDate: now,
+      },
     ],
   });
 
