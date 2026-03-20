@@ -7,9 +7,27 @@ import { csvRow, toValidUtf8 } from "./csvEscape";
 
 type ClioExportOptions = {
   caseIds?: string[];
+  preserveCaseOrder?: boolean;
 };
 
-type ClioContactRow = {
+export const CLIO_CONTACT_HEADERS = [
+  "first_name",
+  "last_name",
+  "company",
+  "primary_phone",
+  "email_address",
+] as const;
+
+export const CLIO_MATTER_HEADERS = [
+  "description",
+  "custom_number",
+  "status",
+  "client_first_name",
+  "client_last_name",
+  "client_company_name",
+] as const;
+
+export type ClioContactRow = {
   first_name: string;
   last_name: string;
   company: string;
@@ -17,7 +35,7 @@ type ClioContactRow = {
   email_address: string;
 };
 
-type ClioMatterRow = {
+export type ClioMatterRow = {
   description: string;
   custom_number: string;
   status: string;
@@ -51,6 +69,46 @@ function formatMatterStatus(status: string | null | undefined): string {
   return "Open";
 }
 
+function sortCasesForExport<T extends { id: string; createdAt: Date }>(
+  cases: T[],
+  options: ClioExportOptions
+): T[] {
+  if (!options.preserveCaseOrder || options.caseIds == null || options.caseIds.length === 0) {
+    return cases;
+  }
+
+  const requestedOrder = new Map(options.caseIds.map((caseId, index) => [caseId, index]));
+  return [...cases].sort((a, b) => {
+    const aIndex = requestedOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const bIndex = requestedOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+    if (aIndex !== bIndex) return aIndex - bIndex;
+    return a.createdAt.getTime() - b.createdAt.getTime();
+  });
+}
+
+export function renderClioContactsCsv(rows: ClioContactRow[]): string {
+  const header = csvRow([...CLIO_CONTACT_HEADERS]);
+  const body = rows.map((row) =>
+    csvRow([row.first_name, row.last_name, row.company, row.primary_phone, row.email_address])
+  );
+  return header + body.join("");
+}
+
+export function renderClioMattersCsv(rows: ClioMatterRow[]): string {
+  const header = csvRow([...CLIO_MATTER_HEADERS]);
+  const body = rows.map((row) =>
+    csvRow([
+      row.description,
+      row.custom_number,
+      row.status,
+      row.client_first_name,
+      row.client_last_name,
+      row.client_company_name,
+    ])
+  );
+  return header + body.join("");
+}
+
 export async function listClioContactRows(
   firmId: string,
   options: ClioExportOptions = {}
@@ -64,6 +122,8 @@ export async function listClioContactRows(
   const cases = await prisma.legalCase.findMany({
     where,
     select: {
+      id: true,
+      createdAt: true,
       clientName: true,
       clientContactId: true,
       clientContact: {
@@ -79,15 +139,18 @@ export async function listClioContactRows(
     },
     orderBy: { createdAt: "asc" },
   });
+  const orderedCases = sortCasesForExport(cases, options);
 
   const seen = new Set<string>();
   const contacts: ClioContactRow[] = [];
 
-  for (const c of cases) {
+  for (const c of orderedCases) {
     const contact = c.clientContact;
     const name = sanitize(contact?.fullName ?? c.clientName);
     if (!name) continue;
     const key = contact?.id ?? name.toLowerCase();
+    // Batch exports intentionally dedupe repeat clients by persisted contact id when possible,
+    // then fall back to normalized client name so Clio contact imports stay safer across matters.
     if (seen.has(key)) continue;
     seen.add(key);
 
@@ -116,11 +179,7 @@ export async function generateClioContactsCsv(
   options: ClioExportOptions = {}
 ): Promise<string> {
   const contacts = await listClioContactRows(firmId, options);
-  const header = csvRow(["first_name", "last_name", "company", "primary_phone", "email_address"]);
-  const rows = contacts.map((r) =>
-    csvRow([r.first_name, r.last_name, r.company, r.primary_phone, r.email_address])
-  );
-  return header + rows.join("");
+  return renderClioContactsCsv(contacts);
 }
 
 export async function listClioMatterRows(
@@ -137,6 +196,7 @@ export async function listClioMatterRows(
     where,
     select: {
       id: true,
+      createdAt: true,
       title: true,
       caseNumber: true,
       clientName: true,
@@ -151,8 +211,9 @@ export async function listClioMatterRows(
     },
     orderBy: { createdAt: "asc" },
   });
+  const orderedCases = sortCasesForExport(cases, options);
 
-  return cases.map((c) => {
+  return orderedCases.map((c) => {
     const desc = sanitize(c.title) || `Case ${c.id}`;
     const displayNum = sanitize(c.caseNumber) || c.id;
     const status = formatMatterStatus(c.status);
@@ -177,24 +238,5 @@ export async function generateClioMattersCsv(
   options: ClioExportOptions = {}
 ): Promise<string> {
   const matters = await listClioMatterRows(firmId, options);
-  const header = csvRow([
-    "description",
-    "custom_number",
-    "status",
-    "client_first_name",
-    "client_last_name",
-    "client_company_name",
-  ]);
-
-  const rows = matters.map((r) =>
-    csvRow([
-      r.description,
-      r.custom_number,
-      r.status,
-      r.client_first_name,
-      r.client_last_name,
-      r.client_company_name,
-    ])
-  );
-  return header + rows.join("");
+  return renderClioMattersCsv(matters);
 }

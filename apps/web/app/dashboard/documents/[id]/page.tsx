@@ -1,19 +1,24 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DashboardCard } from "@/components/dashboard/DashboardCard";
 import { DocumentPreview } from "@/components/dashboard/DocumentPreview";
+import { DocumentExplainPanel } from "@/components/dashboard/DocumentExplainPanel";
+import { useDashboardAuth } from "@/contexts/DashboardAuthContext";
 
 type Doc = {
   id: string;
   originalName: string;
   status: string;
+  reviewState?: string | null;
   pageCount: number | null;
   source?: string;
+  mimeType?: string | null;
+  confidence?: number | null;
   routedCaseId: string | null;
   routingStatus: string | null;
   createdAt?: string;
@@ -26,7 +31,7 @@ type Doc = {
   errors?: string | null;
   pipelineStage?: string | null;
   metaJson?: Record<string, unknown> | null;
-}
+};
 
 type CaseItem = { id: string; title: string | null; caseNumber: string | null; clientName: string | null };
 
@@ -64,7 +69,7 @@ type Recognition = {
   pageCountDetected?: number | null;
   qualityScore?: number | null;
   issuesJson?: unknown;
-}
+};
 
 type BillLine = {
   id: string;
@@ -77,7 +82,7 @@ type BillLine = {
   amountPaid: number | null;
   balance: number | null;
   lineTotal: number | null;
-}
+};
 
 type TimelineEvent = {
   id: string;
@@ -90,9 +95,30 @@ type TimelineEvent = {
   amount: string | null;
   documentId: string | null;
   metadataJson: unknown;
-}
+};
 
-type DocumentRecognitionResponse = { ok?: boolean; document?: Doc; recognition?: Recognition };
+type AuditEvent = {
+  id: string;
+  actor: string;
+  action: string;
+  fromCaseId: string | null;
+  toCaseId: string | null;
+  metaJson?: unknown;
+  createdAt: string;
+};
+
+type DuplicatesInfo = {
+  original: { id: string; originalName: string } | null;
+  duplicates: Array<{ id: string; originalName: string }>;
+};
+
+type DocumentRecognitionResponse = { ok?: boolean; document?: Doc; recognition?: Recognition; error?: string };
+
+type CasesListResponse = { ok?: boolean; items?: CaseItem[] };
+type AuditResponse = { ok?: boolean; items?: AuditEvent[]; error?: string };
+type DuplicatesResponse = { ok?: boolean; original?: DuplicatesInfo["original"]; duplicates?: DuplicatesInfo["duplicates"]; error?: string };
+
+type ActionFeedback = { type: "success" | "error"; message: string } | null;
 
 function isDocumentRecognitionResponse(res: unknown): res is DocumentRecognitionResponse {
   return typeof res === "object" && res !== null;
@@ -102,20 +128,55 @@ function isExportPreviewResponse(res: unknown): res is ExportPreview {
   return typeof res === "object" && res !== null;
 }
 
-type CasesListResponse = { ok?: boolean; items?: CaseItem[] };
-
 function isCasesListResponse(res: unknown): res is CasesListResponse {
   return typeof res === "object" && res !== null;
 }
 
+function isAuditResponse(res: unknown): res is AuditResponse {
+  return typeof res === "object" && res !== null;
+}
+
+function isDuplicatesResponse(res: unknown): res is DuplicatesResponse {
+  return typeof res === "object" && res !== null;
+}
+
+function formatStatusLabel(value: string | null | undefined): string {
+  if (!value) return "-";
+  return value.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function statusBadgeClass(status: string | null | undefined): string {
+  if (status === "UPLOADED") return "onyx-badge onyx-badge-success";
+  if (status === "FAILED") return "onyx-badge onyx-badge-error";
+  if (status === "NEEDS_REVIEW" || status === "UNMATCHED") return "onyx-badge onyx-badge-warning";
+  return "onyx-badge onyx-badge-neutral";
+}
+
+function reviewBadgeClass(reviewState: string | null | undefined): string {
+  if (reviewState === "APPROVED" || reviewState === "EXPORT_READY") return "onyx-badge onyx-badge-success";
+  if (reviewState === "REJECTED") return "onyx-badge onyx-badge-error";
+  if (reviewState === "IN_REVIEW") return "onyx-badge onyx-badge-warning";
+  return "onyx-badge onyx-badge-neutral";
+}
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
 export default function DocumentDetailPage() {
   const params = useParams();
-  const id = params.id as string;
+  const id = typeof params?.id === "string" ? params.id : "";
+  const { user } = useDashboardAuth();
   const [doc, setDoc] = useState<Doc | null>(null);
   const [recognition, setRecognition] = useState<Recognition | null>(null);
   const [billLines, setBillLines] = useState<BillLine[]>([]);
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
   const [cases, setCases] = useState<CaseItem[]>([]);
+  const [duplicateInfo, setDuplicateInfo] = useState<DuplicatesInfo>({ original: null, duplicates: [] });
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [exportPreview, setExportPreview] = useState<ExportPreview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -128,110 +189,330 @@ export default function DocumentDetailPage() {
   const [incidentDate, setIncidentDate] = useState("");
   const [exportFileNameOverride, setExportFileNameOverride] = useState("");
   const [exportFolderPathOverride, setExportFolderPathOverride] = useState("");
-  const [clearDuplicateLoading, setClearDuplicateLoading] = useState(false);
-  const [reprocessError, setReprocessError] = useState<string | null>(null);
+  const [actionState, setActionState] = useState<string | null>(null);
+  const [downloadLoading, setDownloadLoading] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<ActionFeedback>(null);
 
-  useEffect(() => {
+  const fetchExportPreview = useCallback(async () => {
+    if (!id) return;
+    try {
+      const response = await fetch(`${getApiBase()}/documents/${id}/export-preview`, {
+        headers: getAuthHeader(),
+        ...getFetchOptions(),
+      });
+      const data = await parseJsonResponse(response);
+      if (isExportPreviewResponse(data)) setExportPreview(data);
+      else setExportPreview(null);
+    } catch {
+      setExportPreview(null);
+    }
+  }, [id]);
+
+  const loadDocument = useCallback(async () => {
     if (!id) return;
     const base = getApiBase();
     const headers = getAuthHeader();
     const opts = getFetchOptions();
 
-    fetch(`${base}/documents/${id}/recognition`, { headers, ...opts })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
-        if (isDocumentRecognitionResponse(res) && res.ok && res.document) {
-          setDoc(res.document);
-          setRecognition(res.recognition ?? null);
-          const d = res.document;
-          setCaseId(d.routedCaseId ?? "");
-          setExportFileNameOverride((d.metaJson as Record<string, unknown>)?.exportFileNameOverride != null ? String((d.metaJson as Record<string, unknown>).exportFileNameOverride) : "");
-          setExportFolderPathOverride((d.metaJson as Record<string, unknown>)?.exportFolderPathOverride != null ? String((d.metaJson as Record<string, unknown>).exportFolderPathOverride) : "");
-          const rec = res.recognition;
-          if (rec) {
-            setProviderName(rec.providerName ?? "");
-            setDocType(rec.docType ?? "");
-            setIncidentDate(rec.incidentDate ? (rec.incidentDate as string).slice(0, 10) : "");
-          }
-        } else setError("Document not found");
-        return isDocumentRecognitionResponse(res) ? res.document : undefined;
-      })
-      .then((document) => {
-        if (!document) return;
-        const caseId = document.routedCaseId;
-        if (caseId) {
-          return Promise.all([
-            fetch(`${base}/cases/${caseId}/bill-line-items`, { headers, ...opts }).then(parseJsonResponse),
-            fetch(`${base}/cases/${caseId}/timeline`, { headers, ...opts }).then(parseJsonResponse),
-          ]);
-        }
-        return null;
-      })
-      .then((results) => {
-        if (!results) return;
-        const [billRes, timelineRes] = results as [
-          { ok?: boolean; items?: BillLine[] },
-          { ok?: boolean; items?: TimelineEvent[] },
-        ];
-        if (billRes?.ok && Array.isArray(billRes.items)) {
-          setBillLines(billRes.items.filter((i) => i.documentId === id));
-        }
-        if (timelineRes?.ok && Array.isArray(timelineRes.items)) {
-          setTimelineEvents(timelineRes.items.filter((e) => e.documentId === id));
-        }
-      })
-      .catch((e) => setError(e?.message ?? "Request failed"))
-      .finally(() => setLoading(false));
-  }, [id]);
+    setLoading(true);
+    setError(null);
 
-  const fetchExportPreview = useCallback(() => {
-    if (!id) return;
-    const base = getApiBase();
-    fetch(`${base}/documents/${id}/export-preview`, { headers: getAuthHeader(), ...getFetchOptions() })
-      .then(parseJsonResponse)
-      .then((data: unknown) => {
-        if (isExportPreviewResponse(data)) setExportPreview(data);
-        else setExportPreview(null);
-      })
-      .catch(() => setExportPreview(null));
-  }, [id]);
+    try {
+      const recognitionResponse = await fetch(`${base}/documents/${id}/recognition`, { headers, ...opts });
+      const recognitionData = await parseJsonResponse(recognitionResponse);
+      if (!isDocumentRecognitionResponse(recognitionData) || !recognitionData.ok || !recognitionData.document) {
+        throw new Error(recognitionData && typeof recognitionData === "object" && "error" in recognitionData ? String((recognitionData as { error?: string }).error ?? "Document not found") : "Document not found");
+      }
 
-  useEffect(() => {
-    if (!id) return;
-    const base = getApiBase();
-    const opts = getFetchOptions();
-    const headers = getAuthHeader();
-    fetch(`${base}/cases`, { headers, ...opts })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
-        if (isCasesListResponse(res) && res.ok && Array.isArray(res.items)) setCases(res.items);
-      })
-      .catch(() => {});
-  }, [id]);
+      const nextDoc = recognitionData.document;
+      const nextRecognition = recognitionData.recognition ?? null;
+
+      setDoc(nextDoc);
+      setRecognition(nextRecognition);
+      setCaseId(nextDoc.routedCaseId ?? "");
+      setProviderName(nextRecognition?.providerName ?? "");
+      setDocType(nextRecognition?.docType ?? "");
+      setIncidentDate(nextRecognition?.incidentDate ? String(nextRecognition.incidentDate).slice(0, 10) : "");
+      setExportFileNameOverride(nextDoc.metaJson?.exportFileNameOverride != null ? String(nextDoc.metaJson.exportFileNameOverride) : "");
+      setExportFolderPathOverride(nextDoc.metaJson?.exportFolderPathOverride != null ? String(nextDoc.metaJson.exportFolderPathOverride) : "");
+
+      const [casesRes, duplicatesRes, auditRes, routedData] = await Promise.all([
+        fetch(`${base}/cases`, { headers, ...opts }).then(parseJsonResponse).catch(() => null),
+        fetch(`${base}/documents/${id}/duplicates`, { headers, ...opts }).then(parseJsonResponse).catch(() => null),
+        fetch(`${base}/documents/${id}/audit`, { headers, ...opts }).then(parseJsonResponse).catch(() => null),
+        nextDoc.routedCaseId
+          ? Promise.all([
+              fetch(`${base}/cases/${nextDoc.routedCaseId}/bill-line-items`, { headers, ...opts }).then(parseJsonResponse).catch(() => null),
+              fetch(`${base}/cases/${nextDoc.routedCaseId}/timeline`, { headers, ...opts }).then(parseJsonResponse).catch(() => null),
+            ])
+          : Promise.resolve([null, null] as const),
+      ]);
+
+      if (isCasesListResponse(casesRes) && casesRes.ok && Array.isArray(casesRes.items)) setCases(casesRes.items);
+      else setCases([]);
+
+      if (isDuplicatesResponse(duplicatesRes) && duplicatesRes.ok) {
+        setDuplicateInfo({
+          original: duplicatesRes.original ?? null,
+          duplicates: Array.isArray(duplicatesRes.duplicates) ? duplicatesRes.duplicates : [],
+        });
+      } else {
+        setDuplicateInfo({ original: null, duplicates: [] });
+      }
+
+      if (isAuditResponse(auditRes) && auditRes.ok && Array.isArray(auditRes.items)) setAuditEvents(auditRes.items);
+      else setAuditEvents([]);
+
+      const [billRes, timelineRes] = routedData;
+      if (billRes && typeof billRes === "object" && (billRes as { ok?: boolean }).ok && Array.isArray((billRes as { items?: BillLine[] }).items)) {
+        setBillLines(((billRes as { items?: BillLine[] }).items ?? []).filter((item) => item.documentId === id));
+      } else {
+        setBillLines([]);
+      }
+      if (timelineRes && typeof timelineRes === "object" && (timelineRes as { ok?: boolean }).ok && Array.isArray((timelineRes as { items?: TimelineEvent[] }).items)) {
+        setTimelineEvents(((timelineRes as { items?: TimelineEvent[] }).items ?? []).filter((item) => item.documentId === id));
+      } else {
+        setTimelineEvents([]);
+      }
+
+      void fetchExportPreview();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [id, fetchExportPreview]);
 
   useEffect(() => {
-    if (doc?.id) fetchExportPreview();
-  }, [doc?.id, fetchExportPreview]);
+    void loadDocument();
+  }, [loadDocument]);
+
+  async function runDocumentAction(
+    actionKey: string,
+    request: () => Promise<{ response: Response; data: unknown }>,
+    successMessage: string
+  ) {
+    setActionState(actionKey);
+    setActionFeedback(null);
+    try {
+      const { response, data } = await request();
+      const payload = (data ?? {}) as { ok?: boolean; error?: string; message?: string };
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error ?? payload.message ?? "Action failed.");
+      }
+      await loadDocument();
+      void fetchExportPreview();
+      setActionFeedback({ type: "success", message: successMessage });
+    } catch (e) {
+      setActionFeedback({ type: "error", message: e instanceof Error ? e.message : "Request failed." });
+    } finally {
+      setActionState(null);
+    }
+  }
+
+  async function fetchDownloadInfo(): Promise<{ url: string; originalName?: string }> {
+    const response = await fetch(`${getApiBase()}/documents/${id}/download`, {
+      headers: getAuthHeader(),
+      ...getFetchOptions(),
+    });
+    const data = (await parseJsonResponse(response)) as { ok?: boolean; url?: string; originalName?: string; error?: string };
+    if (!response.ok || !data.ok || !data.url) {
+      throw new Error(data.error ?? "Download failed.");
+    }
+    return { url: data.url, originalName: data.originalName };
+  }
+
+  async function handleOpenDocument() {
+    if (!id) return;
+    setDownloadLoading(true);
+    setActionFeedback(null);
+    try {
+      const data = await fetchDownloadInfo();
+      window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      setActionFeedback({ type: "error", message: e instanceof Error ? e.message : "Request failed." });
+    } finally {
+      setDownloadLoading(false);
+    }
+  }
+
+  async function handleDownloadDocument() {
+    if (!id) return;
+    setDownloadLoading(true);
+    setActionFeedback(null);
+    try {
+      const data = await fetchDownloadInfo();
+      const anchor = document.createElement("a");
+      anchor.href = data.url;
+      anchor.download = data.originalName ?? doc?.originalName ?? "document";
+      anchor.click();
+    } catch (e) {
+      setActionFeedback({ type: "error", message: e instanceof Error ? e.message : "Request failed." });
+    } finally {
+      setDownloadLoading(false);
+    }
+  }
+
+  async function handleApprove() {
+    if (!id) return;
+    await runDocumentAction(
+      "approve",
+      async () => {
+        const response = await fetch(`${getApiBase()}/documents/${id}/approve`, {
+          method: "POST",
+          headers: getAuthHeader(),
+          ...getFetchOptions(),
+        });
+        const data = await parseJsonResponse(response);
+        return { response, data };
+      },
+      "Document approved."
+    );
+  }
+
+  async function handleReject() {
+    if (!id) return;
+    await runDocumentAction(
+      "reject",
+      async () => {
+        const response = await fetch(`${getApiBase()}/documents/${id}/reject`, {
+          method: "POST",
+          headers: getAuthHeader(),
+          ...getFetchOptions(),
+        });
+        const data = await parseJsonResponse(response);
+        return { response, data };
+      },
+      "Document rejected."
+    );
+  }
+
+  async function handleClaim() {
+    if (!id) return;
+    const actor = user?.displayName || user?.email || "operator";
+    await runDocumentAction(
+      "claim",
+      async () => {
+        const response = await fetch(`${getApiBase()}/documents/${id}/claim`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          ...getFetchOptions(),
+          body: JSON.stringify({ user: actor }),
+        });
+        const data = await parseJsonResponse(response);
+        return { response, data };
+      },
+      `Document claimed by ${actor}.`
+    );
+  }
+
+  async function handleUnclaim() {
+    if (!id) return;
+    const actor = user?.displayName || user?.email || "operator";
+    await runDocumentAction(
+      "unclaim",
+      async () => {
+        const response = await fetch(`${getApiBase()}/documents/${id}/unclaim`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          ...getFetchOptions(),
+          body: JSON.stringify({ user: actor }),
+        });
+        const data = await parseJsonResponse(response);
+        return { response, data };
+      },
+      "Document unclaimed."
+    );
+  }
+
+  async function handleMarkNeedsReview() {
+    if (!id) return;
+    await runDocumentAction(
+      "needs-review",
+      async () => {
+        const response = await fetch(`${getApiBase()}/documents/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          ...getFetchOptions(),
+          body: JSON.stringify({ status: "NEEDS_REVIEW", routingStatus: "needs_review" }),
+        });
+        const data = await parseJsonResponse(response);
+        return { response, data };
+      },
+      "Document marked needs review."
+    );
+  }
+
+  async function handleMarkUnmatched() {
+    if (!id) return;
+    await runDocumentAction(
+      "unmatched",
+      async () => {
+        const response = await fetch(`${getApiBase()}/documents/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          ...getFetchOptions(),
+          body: JSON.stringify({ status: "UNMATCHED", routedCaseId: null, routingStatus: null }),
+        });
+        const data = await parseJsonResponse(response);
+        return { response, data };
+      },
+      "Document marked unmatched."
+    );
+  }
+
+  async function handleAssignCase() {
+    if (!id || !caseId.trim()) return;
+    await runDocumentAction(
+      "route",
+      async () => {
+        const response = await fetch(`${getApiBase()}/documents/${id}/route`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          ...getFetchOptions(),
+          body: JSON.stringify({ caseId: caseId.trim() }),
+        });
+        const data = await parseJsonResponse(response);
+        return { response, data };
+      },
+      "Document routed to case."
+    );
+  }
 
   async function handleClearDuplicate() {
     if (!id || !doc?.duplicateOfId) return;
-    setClearDuplicateLoading(true);
-    setSaveError(null);
-    try {
-      const res = await fetch(`${getApiBase()}/documents/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...getAuthHeader() },
-        ...getFetchOptions(),
-        body: JSON.stringify({ duplicateOfId: null }),
-      });
-      await parseJsonResponse(res);
-      if (res.ok) setDoc((prev) => (prev ? { ...prev, duplicateOfId: null } : null));
-      else setSaveError("Could not clear duplicate flag");
-    } catch (e) {
-      setSaveError((e as Error)?.message ?? "Request failed");
-    } finally {
-      setClearDuplicateLoading(false);
-    }
+    await runDocumentAction(
+      "clear-duplicate",
+      async () => {
+        const response = await fetch(`${getApiBase()}/documents/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          ...getFetchOptions(),
+          body: JSON.stringify({ duplicateOfId: null }),
+        });
+        const data = await parseJsonResponse(response);
+        return { response, data };
+      },
+      "Duplicate override cleared."
+    );
+  }
+
+  async function handleReprocess() {
+    if (!id) return;
+    await runDocumentAction(
+      "reprocess",
+      async () => {
+        const response = await fetch(`${getApiBase()}/documents/${id}/reprocess`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          ...getFetchOptions(),
+          body: JSON.stringify({ mode: "full" }),
+        });
+        const data = await parseJsonResponse(response);
+        return { response, data };
+      },
+      "Document reprocessing started."
+    );
   }
 
   const saveRecognition = useCallback(async () => {
@@ -239,35 +520,32 @@ export default function DocumentDetailPage() {
     const base = getApiBase();
     setSaving(true);
     setSaveError(null);
-    const body: Record<string, string | null> = {};
-    if (docType !== (recognition?.docType ?? "")) body.docType = docType || null;
-    if (providerName !== (recognition?.providerName ?? "")) body.providerName = providerName || null;
-    if (incidentDate !== (recognition?.incidentDate ? (recognition.incidentDate as string).slice(0, 10) : "")) body.incidentDate = incidentDate || null;
-    if (Object.keys(body).length > 0) {
-      try {
-        const res = await fetch(`${base}/documents/${id}/recognition`, {
+    try {
+      const body: Record<string, string | null> = {};
+      if (docType !== (recognition?.docType ?? "")) body.docType = docType || null;
+      if (providerName !== (recognition?.providerName ?? "")) body.providerName = providerName || null;
+      if (incidentDate !== (recognition?.incidentDate ? String(recognition.incidentDate).slice(0, 10) : "")) body.incidentDate = incidentDate || null;
+
+      if (Object.keys(body).length > 0) {
+        const response = await fetch(`${base}/documents/${id}/recognition`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json", ...getAuthHeader() },
           ...getFetchOptions(),
           body: JSON.stringify(body),
         });
-        const data = await parseJsonResponse(res);
-        if (!res.ok) {
-          setSaveError((data as { error?: string })?.error ?? "Failed to save");
+        const data = await parseJsonResponse(response);
+        if (!response.ok) {
+          setSaveError((data as { error?: string })?.error ?? "Failed to save.");
+          setSaving(false);
           return;
         }
-        setRecognition((r) => (r ? { ...r, docType: docType || r.docType, providerName: providerName || r.providerName, incidentDate: incidentDate || r.incidentDate } : r));
-      } catch (e) {
-        setSaveError((e as Error)?.message ?? "Request failed");
-        return;
       }
-    }
-    const meta = (doc?.metaJson ?? {}) as Record<string, unknown>;
-    const currentName = meta.exportFileNameOverride != null ? String(meta.exportFileNameOverride) : "";
-    const currentFolder = meta.exportFolderPathOverride != null ? String(meta.exportFolderPathOverride) : "";
-    if (exportFileNameOverride !== currentName || exportFolderPathOverride !== currentFolder) {
-      try {
-        const res = await fetch(`${base}/documents/${id}`, {
+
+      const meta = (doc?.metaJson ?? {}) as Record<string, unknown>;
+      const currentName = meta.exportFileNameOverride != null ? String(meta.exportFileNameOverride) : "";
+      const currentFolder = meta.exportFolderPathOverride != null ? String(meta.exportFolderPathOverride) : "";
+      if (exportFileNameOverride !== currentName || exportFolderPathOverride !== currentFolder) {
+        const response = await fetch(`${base}/documents/${id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json", ...getAuthHeader() },
           ...getFetchOptions(),
@@ -276,57 +554,44 @@ export default function DocumentDetailPage() {
             exportFolderPathOverride: exportFolderPathOverride || null,
           }),
         });
-        const data = await parseJsonResponse(res);
-        if (!res.ok) {
-          setSaveError((data as { error?: string })?.error ?? "Failed to save export overrides");
+        const data = await parseJsonResponse(response);
+        if (!response.ok) {
+          setSaveError((data as { error?: string })?.error ?? "Failed to save export overrides.");
+          setSaving(false);
           return;
         }
-        setDoc((d) => (d ? { ...d, metaJson: { ...(d.metaJson as Record<string, unknown>), exportFileNameOverride: exportFileNameOverride || null, exportFolderPathOverride: exportFolderPathOverride || null } } : d));
-      } catch (e) {
-        setSaveError((e as Error)?.message ?? "Request failed");
-        return;
       }
-    }
-    fetchExportPreview();
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 2000);
-    setSaving(false);
-  }, [id, doc, recognition, docType, providerName, incidentDate, exportFileNameOverride, exportFolderPathOverride, fetchExportPreview]);
 
-  const assignCase = useCallback(async () => {
-    if (!id || !caseId.trim()) return;
-    const base = getApiBase();
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const res = await fetch(`${base}/documents/${id}/route`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeader() },
-        ...getFetchOptions(),
-        body: JSON.stringify({ caseId: caseId.trim() }),
-      });
-      const data = await parseJsonResponse(res);
-      if (!res.ok) {
-        setSaveError((data as { error?: string })?.error ?? "Failed to assign case");
-        setSaving(false);
-        return;
-      }
-      setDoc((d) => (d ? { ...d, routedCaseId: caseId.trim() } : d));
-      fetchExportPreview();
+      await loadDocument();
+      void fetchExportPreview();
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2000);
     } catch (e) {
-      setSaveError((e as Error)?.message ?? "Request failed");
+      setSaveError(e instanceof Error ? e.message : "Request failed.");
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
-  }, [id, caseId, fetchExportPreview]);
+  }, [id, doc, recognition, docType, providerName, incidentDate, exportFileNameOverride, exportFolderPathOverride, loadDocument, fetchExportPreview]);
+
+  const auditTrail = useMemo(
+    () => [...auditEvents].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [auditEvents]
+  );
+
+  const currentClaimedBy = useMemo(() => {
+    for (const event of auditTrail) {
+      if (event.action === "claimed") return event.actor;
+      if (event.action === "unclaimed") return null;
+    }
+    return null;
+  }, [auditTrail]);
 
   if (loading && !doc) {
     return (
       <div style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
-        <PageHeader breadcrumbs={[{ label: "Documents", href: "/dashboard/documents" }, { label: "…" }]} title="Document" description="Loading…" />
+        <PageHeader breadcrumbs={[{ label: "Documents", href: "/dashboard/documents" }, { label: "..." }]} title="Document" description="Loading..." />
         <div className="onyx-card" style={{ padding: "2rem", textAlign: "center" }}>
-          <p style={{ margin: 0, color: "var(--onyx-text-muted)" }}>Loading document…</p>
+          <p style={{ margin: 0, color: "var(--onyx-text-muted)" }}>Loading document...</p>
         </div>
       </div>
     );
@@ -347,16 +612,39 @@ export default function DocumentDetailPage() {
   const extracted = doc.extractedFields && typeof doc.extractedFields === "object" ? doc.extractedFields : {};
   const needsReview =
     doc.routingStatus === "needs_review" ||
+    doc.status === "NEEDS_REVIEW" ||
+    doc.reviewState === "IN_REVIEW" ||
     (recognition != null && (recognition.matchConfidence ?? 1) < 0.8) ||
     (recognition != null && (recognition.confidence ?? 1) < 0.7);
   const lowConfidence = (recognition?.confidence != null && recognition.confidence < 0.7) || (recognition?.matchConfidence != null && recognition.matchConfidence < 0.8);
+  const pageDescriptionParts = [formatStatusLabel(doc.status), `${doc.pageCount ?? 0} pages`];
+  if (doc.reviewState) pageDescriptionParts.push(formatStatusLabel(doc.reviewState));
+  if (needsReview) pageDescriptionParts.push("Needs review");
+  const pageDescription = pageDescriptionParts.join(" · ");
 
-  return ( <div style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
+  return (
+    <div style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
       <PageHeader
         breadcrumbs={[{ label: "Documents", href: "/dashboard/documents" }, { label: doc.originalName }]}
         title={doc.originalName}
-        description={`${doc.status} · ${doc.pageCount ?? 0} pages${needsReview ? " · Needs review" : ""}`}
+        description={pageDescription}
       />
+
+      {actionFeedback && (
+        <div
+          className="onyx-card"
+          style={{
+            padding: "1rem 1.25rem",
+            marginBottom: "1rem",
+            borderColor: actionFeedback.type === "error" ? "var(--onyx-error)" : "var(--onyx-success)",
+            background: actionFeedback.type === "error" ? "rgba(239, 68, 68, 0.06)" : "rgba(34, 197, 94, 0.08)",
+          }}
+        >
+          <p style={{ margin: 0, color: actionFeedback.type === "error" ? "var(--onyx-error)" : "var(--onyx-success)", fontSize: "0.875rem", fontWeight: 500 }}>
+            {actionFeedback.message}
+          </p>
+        </div>
+      )}
 
       {(needsReview || lowConfidence) && (
         <div style={{ marginBottom: "0.5rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
@@ -370,14 +658,110 @@ export default function DocumentDetailPage() {
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-        <DocumentPreview id={doc.id} name={doc.originalName} status={doc.status} pageCount={doc.pageCount ?? undefined} showPreview={true} />
+        <DocumentPreview id={doc.id} name={doc.originalName} type={doc.mimeType ?? undefined} status={doc.status} pageCount={doc.pageCount ?? undefined} showPreview={true} />
 
-        {/* Processing status & error */}
+        <DashboardCard title="Operator action center">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "1rem" }}>
+            <span className={statusBadgeClass(doc.status)}>{formatStatusLabel(doc.status)}</span>
+            <span className={reviewBadgeClass(doc.reviewState)}>{formatStatusLabel(doc.reviewState ?? "unreviewed")}</span>
+            <span className={currentClaimedBy ? "onyx-badge onyx-badge-warning" : "onyx-badge onyx-badge-neutral"}>
+              {currentClaimedBy ? `Claimed by ${currentClaimedBy}` : "Unclaimed"}
+            </span>
+            <span className={doc.routedCaseId ? "onyx-badge onyx-badge-info" : "onyx-badge onyx-badge-warning"}>
+              {doc.routedCaseId ? "Routed" : "No routed case"}
+            </span>
+          </div>
+
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+            <button type="button" onClick={handleOpenDocument} disabled={downloadLoading} className="onyx-btn-primary">
+              {downloadLoading ? "Opening..." : "Open"}
+            </button>
+            <button type="button" onClick={handleDownloadDocument} disabled={downloadLoading} className="onyx-btn-secondary">
+              {downloadLoading ? "Preparing..." : "Download"}
+            </button>
+            <button type="button" onClick={handleReprocess} disabled={actionState !== null} className="onyx-btn-secondary">
+              {actionState === "reprocess" ? "Working..." : "Reprocess"}
+            </button>
+            <button type="button" onClick={handleApprove} disabled={actionState !== null} className="onyx-btn-primary">
+              {actionState === "approve" ? "Working..." : "Approve"}
+            </button>
+            <button type="button" onClick={handleReject} disabled={actionState !== null} className="onyx-btn-secondary" style={{ borderColor: "var(--onyx-error)", color: "var(--onyx-error)" }}>
+              {actionState === "reject" ? "Working..." : "Reject"}
+            </button>
+            {currentClaimedBy ? (
+              <button type="button" onClick={handleUnclaim} disabled={actionState !== null} className="onyx-btn-secondary">
+                {actionState === "unclaim" ? "Working..." : "Unclaim"}
+              </button>
+            ) : (
+              <button type="button" onClick={handleClaim} disabled={actionState !== null} className="onyx-btn-secondary">
+                {actionState === "claim" ? "Working..." : "Claim"}
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem", marginBottom: "1rem" }}>
+            <div>
+              <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem", color: "var(--onyx-text-muted)" }}>Route to case</label>
+              <select value={caseId} onChange={(event) => setCaseId(event.target.value)} className="onyx-input" style={{ width: "100%" }}>
+                <option value="">- Select case -</option>
+                {cases.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {[item.caseNumber, item.clientName, item.title].filter(Boolean).join(" · ") || item.id}
+                  </option>
+                ))}
+              </select>
+              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.5rem" }}>
+                <button type="button" onClick={handleAssignCase} disabled={actionState !== null || !caseId.trim()} className="onyx-btn-primary">
+                  {actionState === "route" ? "Routing..." : "Assign case"}
+                </button>
+                <button type="button" onClick={handleMarkNeedsReview} disabled={actionState !== null} className="onyx-btn-secondary">
+                  {actionState === "needs-review" ? "Working..." : "Mark needs review"}
+                </button>
+                <button type="button" onClick={handleMarkUnmatched} disabled={actionState !== null} className="onyx-btn-secondary">
+                  {actionState === "unmatched" ? "Working..." : "Mark unmatched"}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <p style={{ margin: "0 0 0.35rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>Duplicate handling</p>
+              {duplicateInfo.original ? (
+                <p style={{ margin: 0, fontSize: "0.875rem" }}>
+                  Duplicate of <Link href={`/dashboard/documents/${duplicateInfo.original.id}`} className="onyx-link">{duplicateInfo.original.originalName || duplicateInfo.original.id}</Link>
+                </p>
+              ) : (
+                <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>No parent duplicate link.</p>
+              )}
+              {duplicateInfo.duplicates.length > 0 && (
+                <p style={{ margin: "0.5rem 0 0", fontSize: "0.875rem" }}>
+                  Related duplicates: {duplicateInfo.duplicates.map((item, index) => (
+                    <Fragment key={item.id}>
+                      {index > 0 ? <span>, </span> : null}
+                      <Link href={`/dashboard/documents/${item.id}`} className="onyx-link">{item.originalName || item.id}</Link>
+                    </Fragment>
+                  ))}
+                </p>
+              )}
+              {doc.duplicateOfId && (
+                <button type="button" onClick={handleClearDuplicate} disabled={actionState !== null} className="onyx-btn-secondary" style={{ marginTop: "0.5rem" }}>
+                  {actionState === "clear-duplicate" ? "Working..." : "Mark not duplicate"}
+                </button>
+              )}
+            </div>
+          </div>
+
+          <p style={{ margin: 0, fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+            Ingested {formatDateTime(doc.ingestedAt)}{doc.lastRunAt ? ` · last run ${formatDateTime(doc.lastRunAt)}` : ""}
+          </p>
+        </DashboardCard>
+
         <DashboardCard title="Processing status">
-          <p style={{ margin: 0, fontSize: "0.875rem" }}><strong>Status:</strong> {doc.status}</p>
-          {doc.routingStatus && <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Routing:</strong> {doc.routingStatus}</p>}
-          {doc.lastRunAt && <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>Last run: {new Date(doc.lastRunAt).toLocaleString()}</p>}
-          {doc.ingestedAt && <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>Ingested: {new Date(doc.ingestedAt).toLocaleString()}</p>}
+          <p style={{ margin: 0, fontSize: "0.875rem" }}><strong>Status:</strong> {formatStatusLabel(doc.status)}</p>
+          {doc.reviewState && <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Review state:</strong> {formatStatusLabel(doc.reviewState)}</p>}
+          {doc.routingStatus && <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Routing:</strong> {formatStatusLabel(doc.routingStatus)}</p>}
+          {doc.mimeType && <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>MIME:</strong> {doc.mimeType}</p>}
+          {doc.lastRunAt && <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>Last run: {formatDateTime(doc.lastRunAt)}</p>}
+          {doc.ingestedAt && <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>Ingested: {formatDateTime(doc.ingestedAt)}</p>}
         </DashboardCard>
 
         {(doc.status === "FAILED" || doc.errors) && (
@@ -385,73 +769,29 @@ export default function DocumentDetailPage() {
             <h3 style={{ margin: "0 0 0.5rem", fontSize: "1rem", fontWeight: 600 }}>Processing error</h3>
             <p style={{ margin: 0, color: "var(--onyx-error)", fontSize: "0.875rem" }}>{doc.errors ?? "Document processing failed."}</p>
             {doc.pipelineStage && <p style={{ margin: "0.5rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>Stage: {doc.pipelineStage}</p>}
-            {doc.status === "FAILED" && (
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!id) return;
-                  setReprocessError(null);
-                  try {
-                    const res = await fetch(`${getApiBase()}/documents/${id}/reprocess`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json", ...getAuthHeader() },
-                      ...getFetchOptions(),
-                      body: JSON.stringify({ mode: "full" }),
-                    });
-                    const data = await parseJsonResponse(res);
-                    if (res.ok && (data as { ok?: boolean }).ok) {
-                      setLoading(true);
-                      window.location.reload();
-                    } else setReprocessError((data as { error?: string })?.error ?? "Retry failed");
-                  } catch (e) {
-                    setReprocessError((e as Error)?.message ?? "Request failed");
-                  }
-                }}
-                className="onyx-btn-primary"
-                style={{ marginTop: "0.75rem" }}
-              >
-                Retry processing
-              </button>
-            )}
-            {reprocessError && <p style={{ margin: "0.5rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-error)" }}>{reprocessError}</p>}
+            <button type="button" onClick={handleReprocess} className="onyx-btn-primary" style={{ marginTop: "0.75rem" }} disabled={actionState !== null}>
+              {actionState === "reprocess" ? "Working..." : "Retry processing"}
+            </button>
           </div>
-        )}
-
-        {(doc.duplicateOfId || (doc.duplicateMatchCount ?? 0) > 0) && (
-          <DashboardCard title="Duplicate">
-            <p style={{ margin: 0, fontSize: "0.875rem" }}>
-              {doc.duplicateOfId ? "This document is a duplicate." : `Referenced by ${doc.duplicateMatchCount} duplicate(s).`}
-            </p>
-            {doc.duplicateOfId && (
-              <p style={{ margin: "0.5rem 0 0", fontSize: "0.875rem" }}>
-                <Link href={`/dashboard/documents/${doc.duplicateOfId}`} className="onyx-link">View original document</Link>
-                <span style={{ margin: "0 0.5rem", color: "var(--onyx-text-muted)" }}>·</span>
-                <button type="button" className="onyx-link" style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.875rem" }} onClick={handleClearDuplicate} disabled={clearDuplicateLoading}>
-                  {clearDuplicateLoading ? "…" : "Mark not duplicate"}
-                </button>
-              </p>
-            )}
-          </DashboardCard>
         )}
 
         {recognition && (
           <DashboardCard title="Classification & routing">
-            <p style={{ margin: 0, fontSize: "0.875rem" }}><strong>Doc type:</strong> {recognition.docType ?? "—"}</p>
-            <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Confidence:</strong> {recognition.confidence != null ? `${Math.round(recognition.confidence * 100)}%` : "—"}</p>
+            <p style={{ margin: 0, fontSize: "0.875rem" }}><strong>Doc type:</strong> {recognition.docType ?? "-"}</p>
+            <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Confidence:</strong> {recognition.confidence != null ? `${Math.round(recognition.confidence * 100)}%` : "-"}</p>
             {recognition.classificationReason && <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>{recognition.classificationReason}</p>}
             {Array.isArray(recognition.classificationSignals) && recognition.classificationSignals.length > 0 && (
               <p style={{ margin: "0.25rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>Signals: {recognition.classificationSignals.join(", ")}</p>
             )}
-            <p style={{ margin: "0.5rem 0 0", fontSize: "0.875rem" }}><strong>Provider:</strong> {recognition.providerName ?? "—"}</p>
-            <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Facility:</strong> {recognition.facilityName ?? "—"}</p>
-            <p style={{ margin: "0.5rem 0 0", fontSize: "0.875rem" }}><strong>Match confidence:</strong> {recognition.matchConfidence != null ? `${Math.round(recognition.matchConfidence * 100)}%` : "—"}</p>
+            <p style={{ margin: "0.5rem 0 0", fontSize: "0.875rem" }}><strong>Provider:</strong> {recognition.providerName ?? "-"}</p>
+            <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Facility:</strong> {recognition.facilityName ?? "-"}</p>
+            <p style={{ margin: "0.5rem 0 0", fontSize: "0.875rem" }}><strong>Match confidence:</strong> {recognition.matchConfidence != null ? `${Math.round(recognition.matchConfidence * 100)}%` : "-"}</p>
             {(recognition.matchReason || recognition.unmatchedReason) && (
               <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>{recognition.matchReason ?? recognition.unmatchedReason}</p>
             )}
           </DashboardCard>
         )}
 
-        {/* Case: routed and/or suggested */}
         {(doc.routedCaseId || recognition?.suggestedCaseId) && (
           <DashboardCard title="Case">
             {doc.routedCaseId && (
@@ -469,31 +809,11 @@ export default function DocumentDetailPage() {
           </DashboardCard>
         )}
 
-        {/* Correct filing decisions: case, provider, doc type, service date, export overrides */}
         <DashboardCard title="Correct filing decisions">
           <p style={{ margin: "0 0 0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
             Edit values below and save. These are used for export file naming and folder structure.
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", maxWidth: 420 }}>
-            <div>
-              <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem" }}>Case</label>
-              <select
-                value={caseId}
-                onChange={(e) => setCaseId(e.target.value)}
-                className="onyx-input"
-                style={{ width: "100%" }}
-              >
-                <option value="">— Select case —</option>
-                {cases.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {[c.caseNumber, c.clientName, c.title].filter(Boolean).join(" · ") || c.id}
-                  </option>
-                ))}
-              </select>
-              <button type="button" onClick={assignCase} disabled={saving || !caseId.trim()} className="onyx-btn-primary" style={{ marginTop: "0.5rem" }}>
-                {saving ? "Saving…" : "Assign case"}
-              </button>
-            </div>
             <div>
               <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem" }}>Provider</label>
               <input
@@ -551,27 +871,61 @@ export default function DocumentDetailPage() {
             {saveError && <p style={{ margin: 0, fontSize: "0.8125rem", color: "var(--onyx-error)" }}>{saveError}</p>}
             {saveSuccess && <p style={{ margin: 0, fontSize: "0.8125rem", color: "var(--onyx-success)" }}>Saved.</p>}
             <button type="button" onClick={saveRecognition} disabled={saving} className="onyx-btn-primary" style={{ alignSelf: "flex-start" }}>
-              {saving ? "Saving…" : "Save corrections"}
+              {saving ? "Saving..." : "Save corrections"}
             </button>
           </div>
         </DashboardCard>
 
-        {/* Export preview: final file name and folder */}
         <DashboardCard title="Export preview">
           {exportPreview == null ? (
-            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>Loading…</p>
+            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>Loading...</p>
           ) : exportPreview.needsRouting ? (
             <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>{exportPreview.message ?? "Assign a case to see export path."}</p>
           ) : (
             <>
-              <p style={{ margin: 0, fontSize: "0.875rem" }}><strong>File name:</strong> {exportPreview.fileName ?? "—"}</p>
-              <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Folder path:</strong> {exportPreview.folderPath ?? "—"}</p>
+              <p style={{ margin: 0, fontSize: "0.875rem" }}><strong>File name:</strong> {exportPreview.fileName ?? "-"}</p>
+              <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Folder path:</strong> {exportPreview.folderPath ?? "-"}</p>
               {exportPreview.context && (
                 <p style={{ margin: "0.5rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
                   Based on: {exportPreview.context.documentType}, {exportPreview.context.providerName}, service date {exportPreview.context.serviceDate}
                 </p>
               )}
             </>
+          )}
+        </DashboardCard>
+
+        <DocumentExplainPanel documentId={doc.id} />
+
+        <DashboardCard title="Audit trail">
+          {auditTrail.length === 0 ? (
+            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>No audit events yet.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              {auditTrail.slice(0, 12).map((event) => (
+                <div key={event.id} style={{ borderBottom: "1px solid var(--onyx-border-subtle)", paddingBottom: "0.75rem" }}>
+                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+                    <span className="onyx-badge onyx-badge-neutral">{formatStatusLabel(event.action)}</span>
+                    <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>{event.actor}</span>
+                    <span style={{ fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>{formatDateTime(event.createdAt)}</span>
+                  </div>
+                  {(event.fromCaseId || event.toCaseId) && (
+                    <p style={{ margin: "0.35rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+                      {event.fromCaseId && (
+                        <>
+                          From <Link href={`/dashboard/cases/${event.fromCaseId}`} className="onyx-link">case</Link>
+                        </>
+                      )}
+                      {event.fromCaseId && event.toCaseId ? <span> · </span> : null}
+                      {event.toCaseId && (
+                        <>
+                          To <Link href={`/dashboard/cases/${event.toCaseId}`} className="onyx-link">case</Link>
+                        </>
+                      )}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
           )}
         </DashboardCard>
 
@@ -585,7 +939,7 @@ export default function DocumentDetailPage() {
               </p>
             )}
             <pre style={{ margin: 0, fontSize: "0.8125rem", overflow: "auto", maxHeight: 300, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-              {recognition.textExcerpt.length > 10000 ? recognition.textExcerpt.slice(0, 10000) + "\n\n… (truncated)" : recognition.textExcerpt}
+              {recognition.textExcerpt.length > 10000 ? recognition.textExcerpt.slice(0, 10000) + "\n\n... (truncated)" : recognition.textExcerpt}
             </pre>
           </DashboardCard>
         )}
@@ -640,12 +994,12 @@ export default function DocumentDetailPage() {
               <tbody>
                 {billLines.map((line) => (
                   <tr key={line.id} style={{ borderBottom: "1px solid var(--onyx-border)" }}>
-                    <td style={{ padding: "0.25rem 0.5rem" }}>{line.providerName ?? "—"}</td>
-                    <td style={{ padding: "0.25rem 0.5rem" }}>{line.serviceDate ? new Date(line.serviceDate).toLocaleDateString() : "—"}</td>
-                    <td style={{ padding: "0.25rem 0.5rem" }}>{(line.cptCode || line.procedureDescription) ? [line.cptCode, line.procedureDescription].filter(Boolean).join(" · ") : "—"}</td>
-                    <td style={{ textAlign: "right", padding: "0.25rem 0.5rem" }}>{line.amountCharged != null ? `$${Number(line.amountCharged).toLocaleString()}` : "—"}</td>
-                    <td style={{ textAlign: "right", padding: "0.25rem 0.5rem" }}>{line.amountPaid != null ? `$${Number(line.amountPaid).toLocaleString()}` : "—"}</td>
-                    <td style={{ textAlign: "right", padding: "0.25rem 0.5rem" }}>{line.balance != null ? `$${Number(line.balance).toLocaleString()}` : "—"}</td>
+                    <td style={{ padding: "0.25rem 0.5rem" }}>{line.providerName ?? "-"}</td>
+                    <td style={{ padding: "0.25rem 0.5rem" }}>{line.serviceDate ? new Date(line.serviceDate).toLocaleDateString() : "-"}</td>
+                    <td style={{ padding: "0.25rem 0.5rem" }}>{(line.cptCode || line.procedureDescription) ? [line.cptCode, line.procedureDescription].filter(Boolean).join(" · ") : "-"}</td>
+                    <td style={{ textAlign: "right", padding: "0.25rem 0.5rem" }}>{line.amountCharged != null ? `$${Number(line.amountCharged).toLocaleString()}` : "-"}</td>
+                    <td style={{ textAlign: "right", padding: "0.25rem 0.5rem" }}>{line.amountPaid != null ? `$${Number(line.amountPaid).toLocaleString()}` : "-"}</td>
+                    <td style={{ textAlign: "right", padding: "0.25rem 0.5rem" }}>{line.balance != null ? `$${Number(line.balance).toLocaleString()}` : "-"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -653,20 +1007,22 @@ export default function DocumentDetailPage() {
           </DashboardCard>
         )}
 
-        {timelineEvents.length > 0 && ( <div><DashboardCard title="Timeline events (from this document)">
+        {timelineEvents.length > 0 && (
+          <DashboardCard title="Timeline events (from this document)">
             <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.875rem" }}>
-              {timelineEvents.map((ev) => ( <li key={ev.id} style={{ marginBottom: "0.25rem" }}>
-                  <strong>{ev.eventDate ? new Date(ev.eventDate).toLocaleDateString() : "—"}</strong>
-                  {" "}{ev.eventType ?? "—"}
+              {timelineEvents.map((ev) => (
+                <li key={ev.id} style={{ marginBottom: "0.25rem" }}>
+                  <strong>{ev.eventDate ? new Date(ev.eventDate).toLocaleDateString() : "-"}</strong>
+                  {" "}{ev.eventType ?? "-"}
                   {ev.track && <span style={{ color: "var(--onyx-text-muted)", marginLeft: "0.25rem" }}>({ev.track})</span>}
-                  {ev.provider && <span style={{ marginLeft: "0.25rem" }}>{" — "}{ev.provider}</span>}
-                  {ev.diagnosis && <span style={{ marginLeft: "0.25rem" }}>{" — "}{ev.diagnosis}</span>}
-                  {ev.procedure && <span style={{ marginLeft: "0.25rem" }}>{" — "}{ev.procedure}</span>}
-                  {ev.amount && <span style={{ marginLeft: "0.25rem" }}>{" — "}{ev.amount}</span>}
+                  {ev.provider && <span style={{ marginLeft: "0.25rem" }}>{" - "}{ev.provider}</span>}
+                  {ev.diagnosis && <span style={{ marginLeft: "0.25rem" }}>{" - "}{ev.diagnosis}</span>}
+                  {ev.procedure && <span style={{ marginLeft: "0.25rem" }}>{" - "}{ev.procedure}</span>}
+                  {ev.amount && <span style={{ marginLeft: "0.25rem" }}>{" - "}{ev.amount}</span>}
                 </li>
               ))}
             </ul>
-          </DashboardCard></div>
+          </DashboardCard>
         )}
 
         {recognition?.qualityScore != null && (

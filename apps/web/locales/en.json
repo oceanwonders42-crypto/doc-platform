@@ -28,6 +28,7 @@
     "audit": "Audit",
     "usage": "Usage",
     "integrations": "Integrations",
+    "controlTower": "Control Tower",
     "support": "Support",
     "settings": "Settings",
     "team": "Team",
@@ -35,7 +36,8 @@
     "firmSettings": "Firm settings",
     "platformAdmin": "Platform Admin",
     "logOut": "Log out",
-    "toggleMenu": "Toggle menu"
+    "toggleMenu": "Toggle menu",
+    "exports": "Exports"
   },
   "theme": {
     "dark": "Dark",

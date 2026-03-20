@@ -28,6 +28,7 @@
     "audit": "Auditoría",
     "usage": "Uso",
     "integrations": "Integraciones",
+    "controlTower": "Control Tower",
     "support": "Soporte",
     "settings": "Configuración",
     "team": "Equipo",
@@ -35,7 +36,8 @@
     "firmSettings": "Config. firma",
     "platformAdmin": "Admin de plataforma",
     "logOut": "Cerrar sesión",
-    "toggleMenu": "Abrir menú"
+    "toggleMenu": "Abrir menú",
+    "exports": "Exportaciones"
   },
   "theme": {
     "dark": "Oscuro",

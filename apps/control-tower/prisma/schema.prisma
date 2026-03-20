@@ -1,0 +1,368 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum DeployType {
+  droplet
+  app_platform
+  other
+}
+
+enum Environment {
+  prod
+  staging
+  dev
+}
+
+enum TaskStatus {
+  inbox
+  ready
+  in_progress
+  review
+  blocked
+  done
+}
+
+enum TaskExecutionMode {
+  manual
+  github_issue
+  github_pr
+  runtime_check
+  deploy
+  agent_prompt
+}
+
+enum TaskExecutionStatus {
+  queued
+  in_progress
+  blocked
+  review
+  done
+  failed
+  waiting_external
+}
+
+enum TaskPriority {
+  low
+  medium
+  high
+  urgent
+}
+
+enum AssignedAgent {
+  codex
+  cursor
+  claude
+  human
+}
+
+enum TaskPromptTarget {
+  codex
+  cursor
+  claude
+}
+
+enum AutomationAction {
+  github_sync
+  runtime_refresh
+  task_status_reconcile
+  project_health_reconcile
+  generate_agent_prompt
+}
+
+enum AutomationJobStatus {
+  queued
+  in_progress
+  succeeded
+  failed
+}
+
+enum DecisionStatus {
+  open
+  resolved
+}
+
+model Project {
+  id                   String         @id @default(cuid())
+  name                 String
+  slug                 String         @unique
+  description          String?
+  repoUrl              String
+  repoName             String
+  defaultBranch        String
+  deployType           DeployType
+  deployTargetName     String
+  deployTargetIdOrHost String
+  environment          Environment
+  containerImage       String?
+  containerRegistryUrl String?
+  publicUrl            String?
+  sshHost              String?
+  sshPort              Int?
+  sshUser              String?
+  appPath              String?
+  deployMode           String?
+  processManager       String?
+  runtimeServices      String?
+  apiServiceName       String?
+  apiServiceId         Int?
+  webServiceName       String?
+  webServiceId         Int?
+  deployCommand        String?
+  restartCommand       String?
+  logCommand           String?
+  healthCheckUrl       String?
+  internalApiUrl       String?
+  internalApiHealthUrl String?
+  internalApiHealthzUrl String?
+  dockerfileStatus     String?
+  composeUsage         String?
+  apiHealthy           Boolean?
+  webHealthy           Boolean?
+  publicHealthy        Boolean?
+  runtimeStatus        String?
+  lastRuntimeCheckAt   DateTime?
+  runtimeReason        String?
+  runtimeDetails       Json?
+  isActive             Boolean        @default(true)
+  githubRepoId         String?
+  lastGithubSyncAt     DateTime?
+  githubSyncStatus     String?
+  githubSyncError      String?
+  githubOpenIssueCount Int            @default(0)
+  githubOpenPrCount    Int            @default(0)
+  githubLastActivityAt DateTime?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  tasks                Task[]
+  linkedTasks          Task[]         @relation("LinkedProjectTasks")
+  decisions            DecisionItem[]
+  activities           ActivityLog[]
+  taskEvents           TaskEvent[]
+  automationJobs       AutomationJob[]
+  githubIssues         GitHubIssueSnapshot[]
+  githubPullRequests   GitHubPullRequestSnapshot[]
+
+  @@index([isActive])
+  @@index([environment])
+  @@index([githubRepoId])
+  @@index([githubSyncStatus])
+}
+
+model GitHubRepoSnapshot {
+  id                 String   @id @default(cuid())
+  githubRepoId       String   @unique
+  githubNodeId       String?
+  ownerLogin         String
+  name               String
+  fullName           String   @unique
+  description        String?
+  htmlUrl            String
+  defaultBranch      String
+  isPrivate          Boolean  @default(true)
+  visibility         String?
+  pushedAt           DateTime?
+  repoUpdatedAt      DateTime
+  openIssueCount     Int      @default(0)
+  openPullRequestCount Int    @default(0)
+  lastSyncAt         DateTime @default(now())
+
+  @@index([ownerLogin])
+  @@index([repoUpdatedAt])
+  @@index([lastSyncAt])
+}
+
+model GitHubIssueSnapshot {
+  id            String   @id @default(cuid())
+  projectId     String
+  githubIssueId String
+  number        Int
+  title         String
+  state         String
+  url           String
+  authorLogin   String?
+  issueUpdatedAt DateTime
+  lastSyncAt    DateTime @default(now()) @updatedAt
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, githubIssueId])
+  @@index([projectId])
+  @@index([issueUpdatedAt])
+}
+
+model GitHubPullRequestSnapshot {
+  id                  String   @id @default(cuid())
+  projectId           String
+  githubPullRequestId String
+  number              Int
+  title               String
+  state               String
+  url                 String
+  authorLogin         String?
+  headRefName         String?
+  pullRequestUpdatedAt DateTime
+  lastSyncAt          DateTime @default(now()) @updatedAt
+  project             Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, githubPullRequestId])
+  @@index([projectId])
+  @@index([pullRequestUpdatedAt])
+}
+
+model IntegrationState {
+  id             String   @id @default(cuid())
+  provider       String   @unique
+  owner          String?
+  mode           String
+  status         String?
+  lastSyncAt     DateTime?
+  lastSyncMessage String?
+  lastSyncError  String?
+  updatedAt      DateTime @updatedAt
+}
+
+model Task {
+  id                   String              @id @default(cuid())
+  projectId            String
+  linkedProjectId      String?
+  title                String
+  description          String?
+  status               TaskStatus
+  executionMode        TaskExecutionMode   @default(manual)
+  executionStatus      TaskExecutionStatus @default(queued)
+  priority             TaskPriority
+  assignedAgent        AssignedAgent
+  githubIssueUrl       String?
+  githubPrUrl          String?
+  deployUrl            String?
+  branchName           String?
+  linkedGithubRepo     String?
+  linkedGithubIssueNumber Int?
+  linkedGithubPrNumber Int?
+  linkedGithubBranch   String?
+  linkedCommitSha      String?
+  startedAt            DateTime?
+  completedAt          DateTime?
+  failedAt             DateTime?
+  blockedReason        String?
+  lastExternalUpdateAt DateTime?
+  needsDecision        Boolean             @default(false)
+  nextStep             String?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  project              Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  linkedProject        Project?            @relation("LinkedProjectTasks", fields: [linkedProjectId], references: [id], onDelete: SetNull)
+  decisions            DecisionItem[]
+  activities           ActivityLog[]
+  events               TaskEvent[]
+  prompts              TaskPrompt[]
+  automationJobs       AutomationJob[]
+
+  @@index([projectId])
+  @@index([linkedProjectId])
+  @@index([status])
+  @@index([executionMode])
+  @@index([executionStatus])
+  @@index([assignedAgent])
+  @@index([needsDecision])
+  @@index([linkedGithubRepo])
+  @@index([linkedGithubIssueNumber])
+  @@index([linkedGithubPrNumber])
+}
+
+model DecisionItem {
+  id          String         @id @default(cuid())
+  taskId      String?
+  projectId   String?
+  title       String
+  description String
+  status      DecisionStatus @default(open)
+  resolution  String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  task        Task?          @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  project     Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([taskId])
+  @@index([projectId])
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  projectId String?
+  taskId    String?
+  type      String
+  message   String
+  metadata  Json?
+  createdAt DateTime @default(now())
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task      Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([projectId])
+  @@index([taskId])
+}
+
+model TaskEvent {
+  id                  String               @id @default(cuid())
+  taskId               String
+  projectId            String?
+  type                 String
+  title                String
+  message              String
+  source               String
+  fromExecutionStatus  TaskExecutionStatus?
+  toExecutionStatus    TaskExecutionStatus?
+  metadata             Json?
+  createdAt            DateTime             @default(now())
+  task                 Task                 @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  project              Project?             @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([taskId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([type])
+}
+
+model TaskPrompt {
+  id             String           @id @default(cuid())
+  taskId          String
+  targetAgent     TaskPromptTarget
+  prompt          String
+  contextSummary  String?
+  createdAt       DateTime         @default(now())
+  task            Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@index([targetAgent])
+}
+
+model AutomationJob {
+  id            String              @id @default(cuid())
+  action        AutomationAction
+  status        AutomationJobStatus @default(queued)
+  projectId     String?
+  taskId        String?
+  promptTarget  TaskPromptTarget?
+  requestedBy   String?
+  scopeLabel    String?
+  message       String?
+  errorMessage  String?
+  details       Json?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  project       Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task          Task?               @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([action, createdAt])
+  @@index([status, createdAt])
+  @@index([projectId])
+  @@index([taskId])
+}

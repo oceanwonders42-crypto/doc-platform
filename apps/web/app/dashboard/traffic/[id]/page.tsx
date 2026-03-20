@@ -44,7 +44,7 @@ function isTrafficDetailResponse(res: unknown): res is TrafficDetailResponse {
 export default function TrafficDetailPage() {
   const { t } = useI18n();
   const params = useParams();
-  const id = params.id as string;
+  const id = typeof params?.id === "string" ? params.id : "";
   const [item, setItem] = useState<TrafficMatterItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

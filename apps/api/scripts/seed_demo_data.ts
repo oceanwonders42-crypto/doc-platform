@@ -6,6 +6,7 @@
 import "dotenv/config";
 import { prisma } from "../src/db/prisma";
 import { pgPool } from "../src/db/pg";
+import { ensureDemoSeedObjects } from "../src/dev/demoSeedObjects";
 
 const DEMO_FIRM_NAME = "Demo Firm";
 const DEMO_USERS: { email: string; role: "PLATFORM_ADMIN" | "FIRM_ADMIN" | "PARALEGAL" | "STAFF" }[] = [
@@ -102,17 +103,35 @@ async function main() {
   const docIds: string[] = [];
   const now = new Date();
 
-  const documentData = [
-    { status: "UPLOADED" as const, routedCaseId: CASE_IDS[0], routedSystem: "manual", confidence: 0.95, caseNumber: CASE_IDS[0], clientName: "Alice Smith" },
-    { status: "UPLOADED" as const, routedCaseId: CASE_IDS[1], routedSystem: "manual", confidence: 0.88, caseNumber: CASE_IDS[1], clientName: "Bob Jones" },
-    { status: "NEEDS_REVIEW" as const, routedCaseId: null, routedSystem: null, confidence: 0.92, caseNumber: CASE_IDS[2], clientName: "Carol Lee" },
-    { status: "NEEDS_REVIEW" as const, routedCaseId: null, routedSystem: null, confidence: 0.75, caseNumber: CASE_IDS[3], clientName: "Dan Brown" },
-    { status: "NEEDS_REVIEW" as const, routedCaseId: null, routedSystem: null, confidence: 0.65, caseNumber: null, clientName: null },
-    { status: "NEEDS_REVIEW" as const, routedCaseId: null, routedSystem: null, confidence: null, caseNumber: null, clientName: null },
-    { status: "NEEDS_REVIEW" as const, routedCaseId: null, routedSystem: null, confidence: 0.80, caseNumber: CASE_IDS[4], clientName: "Eve Wilson" },
-    { status: "UPLOADED" as const, routedCaseId: CASE_IDS[2], routedSystem: "manual", confidence: 0.90, caseNumber: CASE_IDS[2], clientName: "Frank Doe" },
-    { status: "NEEDS_REVIEW" as const, routedCaseId: null, routedSystem: null, confidence: null, caseNumber: null, clientName: null },
-    { status: "NEEDS_REVIEW" as const, routedCaseId: null, routedSystem: null, confidence: 0.70, caseNumber: null, clientName: "Grace Hill" },
+  const toSuggestedCaseId = (caseNumber: string | null): string | null =>
+    caseNumber === "DEMO-001"
+      ? CASE_IDS[0]
+      : caseNumber === "DEMO-002"
+        ? CASE_IDS[1]
+        : caseNumber === "DEMO-003"
+          ? CASE_IDS[2]
+          : null;
+
+  const documentData: Array<{
+    status: "UPLOADED" | "NEEDS_REVIEW";
+    routedCaseId: string | null;
+    routedSystem: string | null;
+    confidence: number | null;
+    caseNumber: string | null;
+    clientName: string | null;
+    hasOffer: boolean;
+    hasMatch: boolean;
+  }> = [
+    { status: "UPLOADED", routedCaseId: CASE_IDS[0], routedSystem: "manual", confidence: 0.95, caseNumber: "DEMO-001", clientName: "Alice Smith", hasOffer: true, hasMatch: false },
+    { status: "UPLOADED", routedCaseId: CASE_IDS[1], routedSystem: "manual", confidence: 0.88, caseNumber: "DEMO-002", clientName: "Bob Jones", hasOffer: true, hasMatch: false },
+    { status: "NEEDS_REVIEW", routedCaseId: null, routedSystem: null, confidence: 0.92, caseNumber: "DEMO-003", clientName: "Carol Wilson", hasOffer: false, hasMatch: true },
+    { status: "NEEDS_REVIEW", routedCaseId: null, routedSystem: null, confidence: 0.75, caseNumber: "DEMO-001", clientName: "Alice Smith", hasOffer: false, hasMatch: true },
+    { status: "NEEDS_REVIEW", routedCaseId: null, routedSystem: null, confidence: 0.65, caseNumber: null, clientName: null, hasOffer: false, hasMatch: false },
+    { status: "UPLOADED", routedCaseId: CASE_IDS[2], routedSystem: "manual", confidence: 0.90, caseNumber: "DEMO-003", clientName: "Carol Wilson", hasOffer: true, hasMatch: false },
+    { status: "NEEDS_REVIEW", routedCaseId: null, routedSystem: null, confidence: 0.80, caseNumber: "DEMO-002", clientName: "Bob Jones", hasOffer: false, hasMatch: true },
+    { status: "UPLOADED", routedCaseId: CASE_IDS[0], routedSystem: "manual", confidence: 0.85, caseNumber: "DEMO-001", clientName: "Alice Smith", hasOffer: false, hasMatch: false },
+    { status: "NEEDS_REVIEW", routedCaseId: null, routedSystem: null, confidence: 0.70, caseNumber: null, clientName: "Grace Hill", hasOffer: false, hasMatch: false },
+    { status: "UPLOADED", routedCaseId: CASE_IDS[1], routedSystem: "manual", confidence: 0.92, caseNumber: "DEMO-002", clientName: "Bob Jones", hasOffer: false, hasMatch: false },
   ];
 
   for (let i = 0; i < documentData.length; i++) {
@@ -134,19 +153,42 @@ async function main() {
       },
     });
     docIds.push(doc.id);
-    if (d.caseNumber || d.clientName) {
-      try {
-        await pgPool.query(
-          `insert into document_recognition (document_id, case_number, client_name, confidence, updated_at)
-           values ($1, $2, $3, $4, now())
-           on conflict (document_id) do update set case_number = $2, client_name = $3, confidence = $4, updated_at = now()`,
-          [doc.id, d.caseNumber, d.clientName, d.confidence ?? 0.5]
-        );
-      } catch {
-        // table may not exist; Document.extractedFields is enough for review queue
-      }
+
+    try {
+      const matchConfidence = d.hasMatch && d.caseNumber ? 0.85 : null;
+      const matchReason = d.hasMatch && d.caseNumber ? "Case number match" : null;
+      const insuranceFields = d.hasOffer ? JSON.stringify({ settlementOffer: 50000 }) : null;
+      const suggestedCaseId = toSuggestedCaseId(d.caseNumber);
+      await pgPool.query(
+        `insert into document_recognition (document_id, case_number, client_name, suggested_case_id, confidence, match_confidence, match_reason, insurance_fields, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, now())
+         on conflict (document_id) do update set
+           case_number = excluded.case_number,
+           client_name = excluded.client_name,
+           suggested_case_id = excluded.suggested_case_id,
+           confidence = excluded.confidence,
+           match_confidence = excluded.match_confidence,
+           match_reason = excluded.match_reason,
+           insurance_fields = coalesce(excluded.insurance_fields, document_recognition.insurance_fields),
+           updated_at = now()`,
+        [doc.id, d.caseNumber ?? null, d.clientName ?? null, suggestedCaseId, d.confidence ?? 0.5, matchConfidence, matchReason, insuranceFields]
+      );
+    } catch {
+      // table may not exist; Document.extractedFields is enough for review queue
     }
   }
+
+  await ensureDemoSeedObjects(
+    documentData.map((d, index) => ({
+      spacesKey: `demo/seed-${index + 1}.pdf`,
+      originalName: `demo-doc-${index + 1}.pdf`,
+      caseNumber: d.caseNumber,
+      clientName: d.clientName,
+      routedCaseId: d.routedCaseId,
+      status: d.status,
+      hasOffer: d.hasOffer,
+    }))
+  );
 
   const auditActions: Array<{ documentIndex: number; action: string; fromCaseId: string | null; toCaseId: string | null }> = [
     { documentIndex: 0, action: "suggested", fromCaseId: null, toCaseId: null },

@@ -1,7 +1,19 @@
-import { Prisma, Role } from "@prisma/client";
-import { Router } from "express";
+import { ClioHandoffExportSubtype, ClioHandoffExportType, Prisma, Role } from "@prisma/client";
+import { Router, type Request } from "express";
 import { prisma } from "../../db/prisma";
 import { generateClioContactsCsv, generateClioMattersCsv, listClioContactRows, listClioMatterRows } from "../../exports/clioExport";
+import { buildBatchClioHandoffExport } from "../../services/batchClioHandoffExport";
+import {
+  findRecentClioHandoffDuplicate,
+  getCaseClioHandoffHistory,
+  getClioHandoffSummaryByCaseIds,
+  listClioHandoffHistory,
+  recordBatchClioHandoff,
+  recordSingleCaseClioHandoff,
+  resolveClioHandoffActorSnapshot,
+  type CaseClioHandoffHistoryItem,
+  type ClioHandoffCaseSummary,
+} from "../../services/clioHandoffTracking";
 import { buildExportBundle, runExport } from "../../services/export";
 import { getPresignedGetUrl } from "../../services/storage";
 import { auth } from "../middleware/auth";
@@ -25,6 +37,11 @@ const CONTACT_SELECT = {
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ContactSelect;
+
+type ClioBatchExportSummary = {
+  status: "eligible" | "already_exported" | "potentially_skipped";
+  reason: string;
+};
 
 function trimToNull(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -80,8 +97,87 @@ function buildFullName(input: {
   return trimToNull(input.clientName);
 }
 
+function buildClioBatchExportSummary(input: {
+  clientName: string | null;
+  totalDocs: number;
+  persistedReviewDocs: number;
+  exportReadyDocs: number;
+  handoffSummary?: ClioHandoffCaseSummary;
+}): ClioBatchExportSummary {
+  if (input.handoffSummary?.alreadyExported) {
+    const lastExportedAt = input.handoffSummary.lastExportedAt
+      ? new Date(input.handoffSummary.lastExportedAt).toISOString().slice(0, 10)
+      : null;
+    return {
+      status: "already_exported",
+      reason: lastExportedAt
+        ? `Already handed off to Clio on ${lastExportedAt}. Turn on include re-exports to export it again.`
+        : "Already handed off to Clio. Turn on include re-exports to export it again.",
+    };
+  }
+  if (!trimToNull(input.clientName)) {
+    return {
+      status: "potentially_skipped",
+      reason: "This case does not have exportable client contact data yet.",
+    };
+  }
+  if (input.totalDocs === 0) {
+    return {
+      status: "potentially_skipped",
+      reason: "This case has no routed documents to export yet.",
+    };
+  }
+  if (input.persistedReviewDocs > 0 && input.exportReadyDocs === 0) {
+    return {
+      status: "potentially_skipped",
+      reason: "No export-ready documents are available for this case yet.",
+    };
+  }
+  return {
+    status: "eligible",
+    reason: "Ready for batch Clio handoff export.",
+  };
+}
+
+function parseBooleanFlag(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
+function getClioIdempotencyKey(req: Request): string | null {
+  return trimToNull(req.get("Idempotency-Key"));
+}
+
+function getSingleCaseReexportOverride(req: Request): boolean {
+  return parseBooleanFlag(req.get("X-Clio-Reexport")) || parseBooleanFlag(req.query.reexport);
+}
+
+function getSingleCaseReexportReason(req: Request): string | null {
+  return trimToNull(req.get("X-Clio-Reexport-Reason")) ?? trimToNull(req.query.reexportReason);
+}
+
+function buildSingleCaseRequestFingerprint(
+  caseId: string,
+  exportSubtype: ClioHandoffExportSubtype,
+  reExportOverride: boolean
+): string {
+  return ["single_case", exportSubtype, caseId, reExportOverride ? "reexport" : "first_export"].join(":");
+}
+
+function buildBatchRequestFingerprint(caseIds: string[], allowReexport: boolean): string {
+  const normalized = [...new Set(caseIds.map((item) => item.trim()).filter(Boolean))].sort();
+  return ["batch", allowReexport ? "reexport" : "first_export", normalized.join(",")].join(":");
+}
+
 function serializeCase(
-  item: Prisma.LegalCaseGetPayload<{ include: { clientContact: { select: typeof CONTACT_SELECT } } }>
+  item: Prisma.LegalCaseGetPayload<{ include: { clientContact: { select: typeof CONTACT_SELECT } } }>,
+  options?: {
+    clioBatchExport?: ClioBatchExportSummary;
+    clioHandoff?: ClioHandoffCaseSummary;
+    clioHandoffHistory?: CaseClioHandoffHistoryItem[];
+  }
 ) {
   return {
     id: item.id,
@@ -102,6 +198,9 @@ function serializeCase(
           updatedAt: item.clientContact.updatedAt.toISOString(),
         }
       : null,
+    ...(options?.clioBatchExport ? { clioBatchExport: options.clioBatchExport } : {}),
+    ...(options?.clioHandoff ? { clioHandoff: options.clioHandoff } : {}),
+    ...(options?.clioHandoffHistory ? { clioHandoffHistory: options.clioHandoffHistory } : {}),
   };
 }
 
@@ -126,7 +225,62 @@ router.get("/", auth, requireRole(Role.STAFF), async (req, res) => {
       include: { clientContact: { select: CONTACT_SELECT } },
       orderBy: { createdAt: "desc" },
     });
-    res.json({ ok: true, items: items.map(serializeCase) });
+    const caseIds = items.map((item) => item.id);
+    const exportCounts =
+      caseIds.length > 0
+        ? await prisma.document.groupBy({
+            by: ["routedCaseId", "reviewState"],
+            where: {
+              firmId,
+              routedCaseId: { in: caseIds },
+            },
+            _count: { _all: true },
+          })
+        : [];
+
+    const exportCountsByCaseId = new Map<string, { totalDocs: number; persistedReviewDocs: number; exportReadyDocs: number }>();
+    for (const row of exportCounts) {
+      const caseId = row.routedCaseId;
+      if (!caseId) continue;
+      const next = exportCountsByCaseId.get(caseId) ?? {
+        totalDocs: 0,
+        persistedReviewDocs: 0,
+        exportReadyDocs: 0,
+      };
+      next.totalDocs += row._count._all;
+      if (row.reviewState != null) {
+        next.persistedReviewDocs += row._count._all;
+      }
+      if (row.reviewState === "EXPORT_READY") {
+        next.exportReadyDocs += row._count._all;
+      }
+      exportCountsByCaseId.set(caseId, next);
+    }
+    const handoffSummaries = await getClioHandoffSummaryByCaseIds(firmId, caseIds);
+
+    res.json({
+      ok: true,
+      items: items.map((item) => {
+        const counts = exportCountsByCaseId.get(item.id) ?? {
+          totalDocs: 0,
+          persistedReviewDocs: 0,
+          exportReadyDocs: 0,
+        };
+        return serializeCase(
+          item,
+          {
+            clioBatchExport: buildClioBatchExportSummary({
+              clientName: item.clientContact?.fullName ?? item.clientName ?? null,
+              totalDocs: counts.totalDocs,
+              persistedReviewDocs: counts.persistedReviewDocs,
+              exportReadyDocs: counts.exportReadyDocs,
+              handoffSummary: handoffSummaries.get(item.id),
+            }),
+            clioHandoff: handoffSummaries.get(item.id),
+          }
+        );
+      }),
+    });
   } catch (e: unknown) {
     res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });
   }
@@ -229,6 +383,75 @@ router.post("/", auth, requireRole(Role.STAFF), async (req, res) => {
   }
 });
 
+router.post("/exports/clio/batch", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const actor = await resolveClioHandoffActorSnapshot({
+      firmId,
+      userId: ((req as any).userId as string | null | undefined) ?? null,
+      apiKeyId: ((req as any).apiKeyId as string | null | undefined) ?? null,
+      authRole: ((req as any).authRole as string | null | undefined) ?? null,
+    });
+    const body = (req.body ?? {}) as {
+      caseIds?: unknown;
+      allowReexport?: unknown;
+      reexportReason?: unknown;
+    };
+    if (!Array.isArray(body.caseIds)) {
+      return res.status(400).json({ ok: false, error: "caseIds must be a non-empty array of case ids." });
+    }
+
+    const caseIds = body.caseIds.filter((value): value is string => typeof value === "string");
+    const allowReexport = parseBooleanFlag(body.allowReexport);
+    const reExportReason = allowReexport ? trimToNull(body.reexportReason) ?? "operator_override" : null;
+    const result = await buildBatchClioHandoffExport({ firmId, caseIds, allowReexport });
+    const idempotencyKey = getClioIdempotencyKey(req);
+    const requestFingerprint = buildBatchRequestFingerprint(caseIds, allowReexport);
+    const duplicate = await findRecentClioHandoffDuplicate({
+      firmId,
+      exportType: ClioHandoffExportType.BATCH,
+      exportSubtype: ClioHandoffExportSubtype.COMBINED_BATCH,
+      idempotencyKey,
+      requestFingerprint,
+    });
+    if (!duplicate) {
+      await recordBatchClioHandoff({
+        firmId,
+        actor,
+        idempotencyKey,
+        requestFingerprint,
+        reExportOverride: allowReexport,
+        reExportReason,
+        batchResult: result,
+      });
+    } else {
+      res.setHeader("X-Clio-Idempotent-Replay", "true");
+    }
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${result.fileName}"`);
+    res.send(result.zipBuffer);
+  } catch (e: unknown) {
+    const message = String((e as Error)?.message ?? e);
+    const status = message === "caseIds must contain at least one case id." ? 400 : 500;
+    res.status(status).json({ ok: false, error: message });
+  }
+});
+
+router.get("/exports/clio/history", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const requestedLimit = Number.parseInt(String(req.query.limit ?? ""), 10);
+    const history = await listClioHandoffHistory(
+      firmId,
+      Number.isFinite(requestedLimit) ? requestedLimit : 20
+    );
+    res.json({ ok: true, items: history });
+  } catch (e: unknown) {
+    res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });
+  }
+});
+
 router.get("/:id", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -238,7 +461,17 @@ router.get("/:id", auth, requireRole(Role.STAFF), async (req, res) => {
       include: { clientContact: { select: CONTACT_SELECT } },
     });
     if (!item) return res.status(404).json({ ok: false, error: "Case not found" });
-    res.json({ ok: true, item: serializeCase(item) });
+    const [handoffSummaryMap, clioHandoffHistory] = await Promise.all([
+      getClioHandoffSummaryByCaseIds(firmId, [caseId]),
+      getCaseClioHandoffHistory(firmId, caseId),
+    ]);
+    res.json({
+      ok: true,
+      item: serializeCase(item, {
+        clioHandoff: handoffSummaryMap.get(caseId),
+        clioHandoffHistory,
+      }),
+    });
   } catch (e: unknown) {
     res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });
   }
@@ -247,12 +480,29 @@ router.get("/:id", auth, requireRole(Role.STAFF), async (req, res) => {
 router.get("/:id/exports/clio/contacts.csv", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
+    const actor = await resolveClioHandoffActorSnapshot({
+      firmId,
+      userId: ((req as any).userId as string | null | undefined) ?? null,
+      apiKeyId: ((req as any).apiKeyId as string | null | undefined) ?? null,
+      authRole: ((req as any).authRole as string | null | undefined) ?? null,
+    });
     const caseId = String(req.params.id ?? "");
     const item = await prisma.legalCase.findFirst({
       where: { id: caseId, firmId },
       include: { clientContact: { select: CONTACT_SELECT } },
     });
     if (!item) return res.status(404).json({ ok: false, error: "Case not found" });
+    const handoffSummary = (await getClioHandoffSummaryByCaseIds(firmId, [caseId])).get(caseId);
+    const reExportOverride = getSingleCaseReexportOverride(req);
+    const reExportReason = reExportOverride
+      ? getSingleCaseReexportReason(req) ?? "operator_override"
+      : null;
+    if (handoffSummary?.alreadyExported && !reExportOverride) {
+      return res.status(409).json({
+        ok: false,
+        error: "This case has already been handed off to Clio. Turn on re-export anyway to export it again.",
+      });
+    }
 
     const rows = await listClioContactRows(firmId, { caseIds: [caseId] });
     if (rows.length === 0) {
@@ -261,8 +511,44 @@ router.get("/:id/exports/clio/contacts.csv", auth, requireRole(Role.STAFF), asyn
 
     const csv = await generateClioContactsCsv(firmId, { caseIds: [caseId] });
     const fileBase = sanitizeFilePart(item.caseNumber ?? item.title ?? item.id, item.id);
+    const fileName = `${fileBase}-contact.csv`;
+    const idempotencyKey = getClioIdempotencyKey(req);
+    const requestFingerprint = buildSingleCaseRequestFingerprint(
+      caseId,
+      ClioHandoffExportSubtype.CONTACTS,
+      reExportOverride
+    );
+    const duplicate = await findRecentClioHandoffDuplicate({
+      firmId,
+      exportType: ClioHandoffExportType.SINGLE_CASE,
+      exportSubtype: ClioHandoffExportSubtype.CONTACTS,
+      idempotencyKey,
+      requestFingerprint,
+    });
+    if (!duplicate) {
+      await recordSingleCaseClioHandoff({
+        firmId,
+        actor,
+        exportSubtype: ClioHandoffExportSubtype.CONTACTS,
+        idempotencyKey,
+        requestFingerprint,
+        reExportOverride,
+        reExportReason,
+        isReExport: handoffSummary?.alreadyExported === true,
+        caseSnapshot: {
+          id: item.id,
+          caseNumber: item.caseNumber ?? null,
+          title: item.title ?? null,
+          clientName: item.clientContact?.fullName ?? item.clientName ?? null,
+        },
+        fileName,
+        rowCount: rows.length,
+      });
+    } else {
+      res.setHeader("X-Clio-Idempotent-Replay", "true");
+    }
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="${fileBase}-contact.csv"`);
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
     res.send(Buffer.from(csv, "utf-8"));
   } catch (e: unknown) {
     res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });
@@ -272,12 +558,29 @@ router.get("/:id/exports/clio/contacts.csv", auth, requireRole(Role.STAFF), asyn
 router.get("/:id/exports/clio/matters.csv", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
+    const actor = await resolveClioHandoffActorSnapshot({
+      firmId,
+      userId: ((req as any).userId as string | null | undefined) ?? null,
+      apiKeyId: ((req as any).apiKeyId as string | null | undefined) ?? null,
+      authRole: ((req as any).authRole as string | null | undefined) ?? null,
+    });
     const caseId = String(req.params.id ?? "");
     const item = await prisma.legalCase.findFirst({
       where: { id: caseId, firmId },
       include: { clientContact: { select: CONTACT_SELECT } },
     });
     if (!item) return res.status(404).json({ ok: false, error: "Case not found" });
+    const handoffSummary = (await getClioHandoffSummaryByCaseIds(firmId, [caseId])).get(caseId);
+    const reExportOverride = getSingleCaseReexportOverride(req);
+    const reExportReason = reExportOverride
+      ? getSingleCaseReexportReason(req) ?? "operator_override"
+      : null;
+    if (handoffSummary?.alreadyExported && !reExportOverride) {
+      return res.status(409).json({
+        ok: false,
+        error: "This case has already been handed off to Clio. Turn on re-export anyway to export it again.",
+      });
+    }
 
     const rows = await listClioMatterRows(firmId, { caseIds: [caseId] });
     if (rows.length === 0) {
@@ -286,8 +589,44 @@ router.get("/:id/exports/clio/matters.csv", auth, requireRole(Role.STAFF), async
 
     const csv = await generateClioMattersCsv(firmId, { caseIds: [caseId] });
     const fileBase = sanitizeFilePart(item.caseNumber ?? item.title ?? item.id, item.id);
+    const fileName = `${fileBase}-matter.csv`;
+    const idempotencyKey = getClioIdempotencyKey(req);
+    const requestFingerprint = buildSingleCaseRequestFingerprint(
+      caseId,
+      ClioHandoffExportSubtype.MATTERS,
+      reExportOverride
+    );
+    const duplicate = await findRecentClioHandoffDuplicate({
+      firmId,
+      exportType: ClioHandoffExportType.SINGLE_CASE,
+      exportSubtype: ClioHandoffExportSubtype.MATTERS,
+      idempotencyKey,
+      requestFingerprint,
+    });
+    if (!duplicate) {
+      await recordSingleCaseClioHandoff({
+        firmId,
+        actor,
+        exportSubtype: ClioHandoffExportSubtype.MATTERS,
+        idempotencyKey,
+        requestFingerprint,
+        reExportOverride,
+        reExportReason,
+        isReExport: handoffSummary?.alreadyExported === true,
+        caseSnapshot: {
+          id: item.id,
+          caseNumber: item.caseNumber ?? null,
+          title: item.title ?? null,
+          clientName: item.clientContact?.fullName ?? item.clientName ?? null,
+        },
+        fileName,
+        rowCount: rows.length,
+      });
+    } else {
+      res.setHeader("X-Clio-Idempotent-Replay", "true");
+    }
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="${fileBase}-matter.csv"`);
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
     res.send(Buffer.from(csv, "utf-8"));
   } catch (e: unknown) {
     res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });

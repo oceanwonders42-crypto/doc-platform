@@ -14,11 +14,13 @@ const NAV_ITEMS: { href: string; labelKey: string }[] = [
   { href: "/dashboard/documents", labelKey: "nav.documents" },
   { href: "/dashboard/providers", labelKey: "nav.providers" },
   { href: "/dashboard/records-requests", labelKey: "nav.recordsRequests" },
+  { href: "/dashboard/exports", labelKey: "nav.exports" },
   { href: "/dashboard/review", labelKey: "nav.reviewQueue" },
   { href: "/dashboard/analytics", labelKey: "nav.analytics" },
   { href: "/dashboard/audit", labelKey: "nav.audit" },
   { href: "/dashboard/usage", labelKey: "nav.usage" },
   { href: "/dashboard/integrations", labelKey: "nav.integrations" },
+  { href: "/dashboard/control-tower", labelKey: "nav.controlTower" },
   { href: "/dashboard/support/report", labelKey: "nav.support" },
   { href: "/dashboard/settings", labelKey: "nav.settings" },
 ];

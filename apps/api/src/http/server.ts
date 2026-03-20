@@ -87,8 +87,9 @@ import {
 } from "../services/recordsRequestStatus";
 import { startDocumentWorkerLoop } from "../workers/documentWorkerLoop";
 import { validateProductionRuntime } from "../lib/productionRuntime";
+import { ensureDemoSeedObjects } from "../dev/demoSeedObjects";
 
-const app = express();
+export const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
@@ -1221,7 +1222,7 @@ app.post("/admin/demo/seed", async (req, res) => {
       hasOffer: boolean;
       hasMatch: boolean;
     }> = [
-      { status: "UPLOADED", routedCaseId: caseId1, routedSystem: "manual", confidence: 0.95, caseNumber: "DEMO-001", clientName: "Alice Smith", hasOffer: false, hasMatch: false },
+      { status: "UPLOADED", routedCaseId: caseId1, routedSystem: "manual", confidence: 0.95, caseNumber: "DEMO-001", clientName: "Alice Smith", hasOffer: true, hasMatch: false },
       { status: "UPLOADED", routedCaseId: caseId2, routedSystem: "manual", confidence: 0.88, caseNumber: "DEMO-002", clientName: "Bob Jones", hasOffer: true, hasMatch: false },
       { status: "NEEDS_REVIEW", routedCaseId: null, routedSystem: null, confidence: 0.92, caseNumber: "DEMO-003", clientName: "Carol Wilson", hasOffer: false, hasMatch: true },
       { status: "NEEDS_REVIEW", routedCaseId: null, routedSystem: null, confidence: 0.75, caseNumber: "DEMO-001", clientName: "Alice Smith", hasOffer: false, hasMatch: true },
@@ -1232,6 +1233,18 @@ app.post("/admin/demo/seed", async (req, res) => {
       { status: "NEEDS_REVIEW", routedCaseId: null, routedSystem: null, confidence: 0.70, caseNumber: null, clientName: "Grace Hill", hasOffer: false, hasMatch: false },
       { status: "UPLOADED", routedCaseId: caseId2, routedSystem: "manual", confidence: 0.92, caseNumber: "DEMO-002", clientName: "Bob Jones", hasOffer: false, hasMatch: false },
     ];
+
+    await ensureDemoSeedObjects(
+      docData.map((d, index) => ({
+        spacesKey: `demo/seed-${index + 1}.pdf`,
+        originalName: `demo-doc-${index + 1}.pdf`,
+        caseNumber: d.caseNumber,
+        clientName: d.clientName,
+        routedCaseId: d.routedCaseId,
+        status: d.status,
+        hasOffer: d.hasOffer,
+      }))
+    );
 
     const createdDocIds: string[] = [];
     for (let i = 0; i < docData.length; i++) {
@@ -4853,15 +4866,15 @@ app.get("/cases/:id/offers", auth, requireRole(Role.STAFF), async (req, res) => 
       processed_at: Date | null;
       amount: number;
     }>(
-      `select d.id as document_id, d.original_name, d.created_at, d.processed_at,
+      `select d.id as document_id, d."originalName" as original_name, d."createdAt" as created_at, d."processedAt" as processed_at,
               (dr.insurance_fields->>'settlementOffer')::float as amount
        from "Document" d
        join document_recognition dr on dr.document_id = d.id
-       where d.firm_id = $1 and d.routed_case_id = $2
+       where d."firmId" = $1 and d."routedCaseId" = $2
          and dr.insurance_fields is not null
          and (dr.insurance_fields->>'settlementOffer') is not null
          and (dr.insurance_fields->>'settlementOffer')::float > 0
-       order by coalesce(d.processed_at, d.created_at) desc`,
+       order by coalesce(d."processedAt", d."createdAt") desc`,
       [firmId, caseId]
     );
 
@@ -4899,15 +4912,15 @@ app.get("/cases/:id/offers/export-pdf", auth, requireRole(Role.STAFF), async (re
       processed_at: Date | null;
       amount: number;
     }>(
-      `select d.id as document_id, d.original_name, d.created_at, d.processed_at,
+      `select d.id as document_id, d."originalName" as original_name, d."createdAt" as created_at, d."processedAt" as processed_at,
               (dr.insurance_fields->>'settlementOffer')::float as amount
        from "Document" d
        join document_recognition dr on dr.document_id = d.id
-       where d.firm_id = $1 and d.routed_case_id = $2
+       where d."firmId" = $1 and d."routedCaseId" = $2
          and dr.insurance_fields is not null
          and (dr.insurance_fields->>'settlementOffer') is not null
          and (dr.insurance_fields->>'settlementOffer')::float > 0
-       order by coalesce(d.processed_at, d.created_at) desc`,
+       order by coalesce(d."processedAt", d."createdAt") desc`,
       [firmId, caseId]
     );
 
@@ -5878,13 +5891,20 @@ app.get("/mailboxes", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
   }
 });
 app.use(errorLogMiddleware);
-validateProductionRuntime();
-app.listen(port, () => {
-  console.log(`API listening on :${port}`);
-  // Keep the normal local stack self-contained: API dev also drains doc_jobs unless explicitly disabled.
-  if (process.env.NODE_ENV !== "production" && process.env.ENABLE_INLINE_DOCUMENT_WORKER !== "false") {
-    startDocumentWorkerLoop({ label: "inline-worker" }).catch((e) => {
-      console.error("[inline-worker] fatal error", e);
-    });
-  }
-});
+
+export function startServer(listenPort: number = port) {
+  validateProductionRuntime();
+  return app.listen(listenPort, () => {
+    console.log(`API listening on :${listenPort}`);
+    // Keep the normal local stack self-contained: API dev also drains doc_jobs unless explicitly disabled.
+    if (process.env.NODE_ENV !== "production" && process.env.ENABLE_INLINE_DOCUMENT_WORKER !== "false") {
+      startDocumentWorkerLoop({ label: "inline-worker" }).catch((e) => {
+        console.error("[inline-worker] fatal error", e);
+      });
+    }
+  });
+}
+
+if (require.main === module) {
+  startServer();
+}

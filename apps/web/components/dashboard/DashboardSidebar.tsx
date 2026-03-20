@@ -69,6 +69,13 @@ const IconClipboard = () => (
     <path d="M9 14h6" />
   </svg>
 );
+const IconDownload = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M12 15V3" />
+  </svg>
+);
 const IconTraffic = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
     <circle cx="12" cy="12" r="3" />
@@ -125,6 +132,13 @@ const IconSettings = () => (
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
   </svg>
 );
+const IconLayers = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="m12 2 9 5-9 5-9-5 9-5Z" />
+    <path d="m3 12 9 5 9-5" />
+    <path d="m3 17 9 5 9-5" />
+  </svg>
+);
 const IconSupport = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
     <circle cx="12" cy="12" r="10" />
@@ -145,7 +159,6 @@ const IconCreditCard = () => (
     <line x1="1" y1="10" x2="23" y2="10" />
   </svg>
 );
-
 type NavItem = { href: string; labelKey: string; icon: React.ReactNode; teamOnly?: boolean; billingOnly?: boolean; firmSettingsOnly?: boolean; integrationsOnly?: boolean; auditOnly?: boolean; analyticsUsageOnly?: boolean; staffOnly?: boolean; platformAdminOnly?: boolean };
 const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", labelKey: "nav.dashboard", icon: <IconDashboard /> },
@@ -154,10 +167,12 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard/chronologies", labelKey: "nav.chronologies", icon: <IconScroll /> },
   { href: "/dashboard/demands", labelKey: "nav.demands", icon: <IconDollar /> },
   { href: "/dashboard/records-requests", labelKey: "nav.recordsRequests", icon: <IconClipboard /> },
+  { href: "/dashboard/exports", labelKey: "nav.exports", icon: <IconDownload />, staffOnly: true },
   { href: "/dashboard/review", labelKey: "nav.reviewQueue", icon: <IconEye />, staffOnly: true },
   { href: "/dashboard/analytics", labelKey: "nav.reports", icon: <IconChart />, analyticsUsageOnly: true },
   { href: "/dashboard/traffic", labelKey: "nav.traffic", icon: <IconTraffic />, staffOnly: true },
   { href: "/dashboard/providers", labelKey: "nav.providers", icon: <IconBuilding />, staffOnly: true },
+  { href: "/dashboard/control-tower", labelKey: "nav.controlTower", icon: <IconLayers />, staffOnly: true },
   { href: "/dashboard/audit", labelKey: "nav.audit", icon: <IconScroll />, auditOnly: true },
   { href: "/dashboard/usage", labelKey: "nav.usage", icon: <IconPie />, analyticsUsageOnly: true },
   { href: "/dashboard/team", labelKey: "nav.team", icon: <IconUsers />, teamOnly: true },
@@ -171,7 +186,7 @@ const NAV_ITEMS: NavItem[] = [
 const ADMIN_NAV_ITEM: NavItem = { href: "/admin/quality", labelKey: "nav.platformAdmin", icon: <IconChart />, platformAdminOnly: true };
 
 export function DashboardSidebar() {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "";
   const { t } = useI18n();
   const { role, isPlatformAdmin } = useDashboardAuth();
 

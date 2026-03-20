@@ -38,6 +38,22 @@ enum ProcessingStage {
   complete
 }
 
+enum ClioHandoffExportType {
+  SINGLE_CASE
+  BATCH
+}
+
+enum ClioHandoffExportSubtype {
+  CONTACTS
+  MATTERS
+  COMBINED_BATCH
+}
+
+enum ClioHandoffCaseStatus {
+  INCLUDED
+  SKIPPED
+}
+
 model Firm {
   id                String    @id @default(cuid())
   name              String
@@ -73,6 +89,8 @@ model Firm {
   caseFinancials              CaseFinancial[]
   caseSummaries               CaseSummary[]
   casePacketExports           CasePacketExport[]
+  clioHandoffExports          ClioHandoffExport[]
+  clioHandoffExportCases      ClioHandoffExportCase[]
   appBugReports               AppBugReport[]
   demandPackages              DemandPackage[]
   reviewQueueEvents           ReviewQueueEvent[]
@@ -154,6 +172,60 @@ model ApiKey {
   firm Firm @relation(fields: [firmId], references: [id])
 
   @@index([firmId])
+}
+
+model ClioHandoffExport {
+  id               String                  @id @default(cuid())
+  firmId           String
+  exportType       ClioHandoffExportType
+  exportSubtype    ClioHandoffExportSubtype
+  idempotencyKey   String?
+  requestFingerprint String?
+  reExportOverride Boolean                 @default(false)
+  reExportReason   String?                 @db.Text
+  actorType        String?
+  actorUserId      String?
+  actorApiKeyId    String?
+  actorLabel       String?
+  actorRole        String?
+  archiveFileName  String?
+  contactsFileName String?
+  mattersFileName  String?
+  manifestFileName String?
+  contactsRowCount Int?
+  mattersRowCount  Int?
+  manifestJson     Json?
+  exportedAt       DateTime                @default(now())
+  createdAt        DateTime                @default(now())
+
+  firm        Firm                     @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  memberships ClioHandoffExportCase[]
+
+  @@index([firmId, exportedAt])
+  @@index([firmId, exportType, exportedAt])
+  @@index([firmId, requestFingerprint, exportedAt])
+  @@unique([firmId, idempotencyKey])
+}
+
+model ClioHandoffExportCase {
+  id         String                @id @default(cuid())
+  exportId   String
+  firmId     String
+  caseId     String
+  caseNumber String?
+  caseTitle  String?
+  clientName String?
+  status     ClioHandoffCaseStatus
+  isReExport Boolean               @default(false)
+  skipReason String?               @db.Text
+  createdAt  DateTime              @default(now())
+
+  export ClioHandoffExport @relation(fields: [exportId], references: [id], onDelete: Cascade)
+  firm   Firm              @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@index([exportId])
+  @@index([firmId, caseId, createdAt])
+  @@index([firmId, status, createdAt])
 }
 
 model Document {

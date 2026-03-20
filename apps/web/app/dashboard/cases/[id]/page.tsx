@@ -9,7 +9,35 @@ import { DashboardCard } from "@/components/dashboard/DashboardCard";
 import { Timeline, TimelineItem } from "@/components/dashboard/Timeline";
 import { DocumentPreview } from "@/components/dashboard/DocumentPreview";
 
-type CaseItem = { id: string; title: string | null; caseNumber: string | null; clientName: string | null; createdAt: string };
+type CaseHandoffHistoryItem = {
+  exportId: string;
+  exportedAt: string;
+  exportType: "single_case" | "batch";
+  exportSubtype: "contacts" | "matters" | "combined_batch";
+  actorLabel: string | null;
+  archiveFileName: string | null;
+  contactsFileName: string | null;
+  mattersFileName: string | null;
+  isReExport?: boolean;
+};
+
+type CaseItem = {
+  id: string;
+  title: string | null;
+  caseNumber: string | null;
+  clientName: string | null;
+  createdAt: string;
+  clioHandoff?: {
+    alreadyExported: boolean;
+    exportCount: number;
+    lastExportedAt: string | null;
+    lastExportType: "single_case" | "batch" | null;
+    lastExportSubtype: "contacts" | "matters" | "combined_batch" | null;
+    lastExportWasReExport?: boolean;
+    lastActorLabel: string | null;
+  };
+  clioHandoffHistory?: CaseHandoffHistoryItem[];
+};
 type TimelineEvent = {
   id: string;
   eventDate: string | null;
@@ -22,22 +50,50 @@ type TimelineEvent = {
   metadataJson?: { dateUncertain?: boolean; dateSource?: string; providerSource?: string } | null;
 };
 type Provider = { id: string; providerId: string; provider?: { name?: string }; relationship?: string };
-type Doc = { id: string; originalName: string; status: string; pageCount: number | null; createdAt?: string; routedCaseId?: string | null; providerName?: string | null };
+type Doc = {
+  id: string;
+  originalName: string;
+  status: string;
+  reviewState?: string | null;
+  pageCount: number | null;
+  createdAt?: string;
+  routedCaseId?: string | null;
+  providerName?: string | null;
+};
 type Financial = { medicalBillsTotal: number; liensTotal: number; settlementOffer: number | null };
 type Insight = { type: string; severity: string; title: string; detail: string | null };
 type BillLine = { id: string; documentId: string; providerName: string | null; serviceDate: string | null; amountCharged: number | null; balance: number | null; lineTotal: number | null };
 
-type ExportHistoryItem = { id: string; fileName: string; packetType: string; createdAt: string };
-type ExportHistoryResponse = { ok?: boolean; items?: ExportHistoryItem[] };
+function parseFileName(contentDisposition: string | null, fallback: string): string {
+  if (!contentDisposition) return fallback;
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1]);
+  const plainMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return plainMatch?.[1] ?? fallback;
+}
 
-function isExportHistoryResponse(res: unknown): res is ExportHistoryResponse {
-  return typeof res === "object" && res !== null;
+async function readErrorMessage(response: Response, fallback: string): Promise<string> {
+  const text = await response.text().catch(() => "");
+  if (!text.trim()) return fallback;
+  try {
+    const data = JSON.parse(text) as { error?: string };
+    return data.error ?? fallback;
+  } catch {
+    return text.slice(0, 200);
+  }
+}
+
+function createClioIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `clio-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 export default function CaseDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
-  const id = params.id as string;
+  const id = typeof params?.id === "string" ? params.id : "";
 
   const [caseData, setCaseData] = useState<CaseItem | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
@@ -50,7 +106,7 @@ export default function CaseDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
-  const [exportHistory, setExportHistory] = useState<ExportHistoryItem[]>([]);
+  const [allowClioReexport, setAllowClioReexport] = useState(false);
   const [chronologyRebuilding, setChronologyRebuilding] = useState(false);
   const [summarizeLoading, setSummarizeLoading] = useState(false);
   const [summarizeResult, setSummarizeResult] = useState<{
@@ -115,7 +171,7 @@ export default function CaseDetailPage() {
   ];
 
   useEffect(() => {
-    const tabFromUrl = searchParams.get("tab");
+    const tabFromUrl = searchParams?.get("tab");
     if (tabFromUrl && TABS.some((t) => t.id === tabFromUrl)) {
       setActiveTab(tabFromUrl as typeof activeTab);
     }
@@ -166,15 +222,19 @@ export default function CaseDetailPage() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  const fetchExportHistory = useCallback(() => {
-    if (!id) return;
+  const refreshCaseSummary = useCallback(() => {
+    if (!id) return Promise.resolve();
     const base = getApiBase();
-    fetch(`${base}/cases/${id}/export-packet/history`, { headers: getAuthHeader(), ...getFetchOptions() })
+    return fetch(`${base}/cases/${id}`, {
+      headers: { ...getAuthHeader(), Accept: "application/json" },
+      ...getFetchOptions(),
+    })
       .then(parseJsonResponse)
-      .then((res: unknown) => {
-        if (isExportHistoryResponse(res) && res.ok && Array.isArray(res.items)) setExportHistory(res.items);
+      .then((response: unknown) => {
+        const data = response as { ok?: boolean; item?: CaseItem };
+        if (data.ok && data.item) setCaseData(data.item);
       })
-      .catch(() => {});
+      .catch(() => undefined);
   }, [id]);
 
   const rebuildChronology = useCallback(() => {
@@ -426,48 +486,114 @@ export default function CaseDetailPage() {
       .finally(() => setAnswerLoading(false));
   }, [id, questionInput]);
 
-  useEffect(() => {
-    if (caseData?.id) fetchExportHistory();
-  }, [caseData?.id, fetchExportHistory]);
-
-  const startExport = useCallback(
-    async (destinations: ("download_bundle" | "cloud_drive")[]) => {
+  const startCaseFileExport = useCallback(
+    async (kind: "contacts" | "matters" | "offers") => {
       if (!id) return;
-      const base = getApiBase();
+      const isClioExport = kind === "contacts" || kind === "matters";
+      const config =
+        kind === "contacts"
+          ? {
+              actionLabel: "contacts CSV",
+              fallbackFileName: "case-contact.csv",
+              endpoint: `/cases/${id}/exports/clio/contacts.csv`,
+              successMessage: "Contacts CSV download started.",
+            }
+          : kind === "matters"
+            ? {
+                actionLabel: "matters CSV",
+                fallbackFileName: "case-matter.csv",
+                endpoint: `/cases/${id}/exports/clio/matters.csv`,
+                successMessage: "Matters CSV download started.",
+              }
+            : {
+                actionLabel: "offers PDF",
+                fallbackFileName: `offers-${id}.pdf`,
+                endpoint: `/cases/${id}/offers/export-pdf`,
+                successMessage: "Offers PDF download started.",
+              };
+
       setExportMessage(null);
-      setExporting(destinations.join(","));
+      setExporting(kind);
       try {
-        const res = await fetch(`${base}/cases/${id}/export-packet`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+        const response = await fetch(`${getApiBase()}${config.endpoint}`, {
+          headers: {
+            ...getAuthHeader(),
+            ...(isClioExport ? { "Idempotency-Key": createClioIdempotencyKey() } : {}),
+            ...(isClioExport && allowClioReexport ? { "X-Clio-Reexport": "true" } : {}),
+            ...(isClioExport && allowClioReexport ? { "X-Clio-Reexport-Reason": "operator_override" } : {}),
+          },
           ...getFetchOptions(),
-          body: JSON.stringify({
-            destinations,
-            packetType,
-            includeTimeline: true,
-            includeSummary: false,
-          }),
         });
-        const data = await parseJsonResponse(res);
-        if (!res.ok) {
-          setExportMessage((data as { error?: string })?.error ?? "Export failed");
+
+        if (!response.ok) {
+          setExportMessage(await readErrorMessage(response, `Failed to download ${config.actionLabel}.`));
           return;
         }
-        const job = data as { jobId?: string };
-        if (destinations.includes("download_bundle")) {
-          setExportMessage("Export started. When ready, the ZIP will appear in Export history below.");
-          setTimeout(fetchExportHistory, 2000);
-        } else {
-          setExportMessage("Export started. Files are being written to your cloud drive (by case and document category).");
-        }
+
+        const blob = await response.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = downloadUrl;
+        anchor.download = parseFileName(response.headers.get("content-disposition"), config.fallbackFileName);
+        anchor.click();
+        window.URL.revokeObjectURL(downloadUrl);
+        setExportMessage(config.successMessage);
+        void refreshCaseSummary();
       } catch (e) {
         setExportMessage((e as Error)?.message ?? "Request failed");
       } finally {
         setExporting(null);
       }
     },
-    [id, packetType, fetchExportHistory]
+    [allowClioReexport, id, refreshCaseSummary]
   );
+
+  const startPacketExport = useCallback(async () => {
+    if (!id) return;
+
+    setExportMessage(null);
+    setExporting("packet");
+    try {
+      const response = await fetch(`${getApiBase()}/cases/${id}/exports/packet`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeader() },
+        ...getFetchOptions(),
+        body: JSON.stringify({
+          packetType,
+          includeTimeline: true,
+          includeSummary: false,
+        }),
+      });
+      const data = await parseJsonResponse(response);
+      if (!response.ok) {
+        setExportMessage((data as { error?: string })?.error ?? "Failed to export packet.");
+        return;
+      }
+
+      const result = data as { downloadUrl?: string; fileName?: string | null; documentCount?: number };
+      if (!result.downloadUrl) {
+        setExportMessage("Packet export completed, but no download URL was returned.");
+        return;
+      }
+
+      const anchor = document.createElement("a");
+      anchor.href = result.downloadUrl;
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer";
+      if (result.fileName) anchor.download = result.fileName;
+      anchor.click();
+
+      const countLabel =
+        typeof result.documentCount === "number" && result.documentCount > 0
+          ? ` for ${result.documentCount} document${result.documentCount === 1 ? "" : "s"}`
+          : "";
+      setExportMessage(`Packet export ready${countLabel}. Download should begin now.`);
+    } catch (e) {
+      setExportMessage((e as Error)?.message ?? "Request failed");
+    } finally {
+      setExporting(null);
+    }
+  }, [id, packetType]);
 
   const timelineItems: TimelineItem[] = (() => {
     let list = timeline;
@@ -490,10 +616,22 @@ export default function CaseDetailPage() {
   })();
 
   const uniqueTimelineProviders = Array.from(new Set(timeline.map((e) => e.provider).filter(Boolean))) as string[];
+  const totalDocumentCount = documents.length;
+  const reviewedDocumentCount = documents.filter((doc) => doc.reviewState != null).length;
+  const exportReadyCount = documents.filter((doc) => doc.reviewState === "EXPORT_READY").length;
+  const packetReadinessMessage =
+    totalDocumentCount === 0
+      ? "Add routed documents to this case to enable packet export."
+      : reviewedDocumentCount > 0 && exportReadyCount === 0
+        ? "Packet export requires at least one document marked export-ready."
+        : exportReadyCount > 0
+          ? `${exportReadyCount} export-ready document${exportReadyCount === 1 ? "" : "s"} available for packet export.`
+          : "Packet export will include the routed documents that match the selected packet type.";
 
   const isLoading = loading && !caseData;
   const isError = error || !caseData;
   const title = caseData ? (caseData.clientName || caseData.title || caseData.caseNumber || "Case") : "";
+  const clioExportLocked = caseData?.clioHandoff?.alreadyExported && !allowClioReexport;
   const errorMsgStyle = { margin: 0, color: "var(--onyx-error)", fontSize: "0.875rem" } as const;
   const insufficientStyle = { margin: "0 0 0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" } as const;
   const sourcesLabelStyle = { margin: 0, fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" } as const;
@@ -1207,80 +1345,168 @@ export default function CaseDetailPage() {
 
       {activeTab === "documents" && (
       <>
-      <DashboardCard title="Export" style={{ marginBottom: "1rem" }}>
+      <DashboardCard title="Case exports" style={{ marginBottom: "1rem" }}>
         <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-          Export case documents using your firm&apos;s naming and folder rules. Include timeline when available.
+          Run case-scoped exports directly from this case workspace for Clio import and packet delivery.
         </p>
-        {documents.length === 0 && (
-          <p style={{ margin: "0 0 0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-            Add documents to this case to enable export.
+        <div
+          style={{
+            marginBottom: "1rem",
+            padding: "0.95rem 1rem",
+            borderRadius: "var(--onyx-radius-md)",
+            border: "1px solid var(--onyx-border-subtle)",
+            background: caseData?.clioHandoff?.alreadyExported
+              ? "rgba(34, 197, 94, 0.08)"
+              : "rgba(12, 74, 110, 0.04)",
+          }}
+        >
+          <p style={{ margin: "0 0 0.35rem", fontSize: "0.95rem", fontWeight: 600 }}>
+            {caseData?.clioHandoff?.alreadyExported ? "Clio handoff already recorded" : "No recorded Clio handoff yet"}
           </p>
-        )}
-        <div style={{ marginBottom: "0.75rem" }}>
-          <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem" }}>Packet type</label>
-          <select
-            value={packetType}
-            onChange={(e) => setPacketType(e.target.value as "records" | "bills" | "combined")}
-            className="onyx-input"
-            style={{ minWidth: 160 }}
-          >
-            <option value="combined">Combined (all documents)</option>
-            <option value="records">Records packet (medical/legal records only)</option>
-            <option value="bills">Bills packet (billing, EOB, ledgers only)</option>
-          </select>
+          <p style={{ margin: 0, fontSize: "0.85rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
+            {caseData?.clioHandoff?.alreadyExported && caseData.clioHandoff.lastExportedAt
+              ? `Last exported ${new Date(caseData.clioHandoff.lastExportedAt).toLocaleString()} via ${caseData.clioHandoff.lastExportSubtype?.replace(/_/g, " ") ?? "export"}${caseData.clioHandoff.lastExportType === "batch" ? " batch" : ""}${caseData.clioHandoff.lastExportWasReExport ? " as a re-export" : ""}${caseData.clioHandoff.lastActorLabel ? ` by ${caseData.clioHandoff.lastActorLabel}` : ""}.`
+              : "Use the case-scoped Clio exports below to create the first durable handoff record for this case."}
+          </p>
+          {caseData?.clioHandoff?.alreadyExported && (
+            <div style={{ marginTop: "0.75rem" }}>
+              <label
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.55rem",
+                  fontSize: "0.875rem",
+                  color: "var(--onyx-text)",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={allowClioReexport}
+                  onChange={(event) => setAllowClioReexport(event.target.checked)}
+                  disabled={exporting !== null}
+                  style={{ accentColor: "var(--onyx-accent)" }}
+                />
+                Re-export anyway
+              </label>
+              <p style={{ margin: "0.35rem 0 0", fontSize: "0.78rem", color: allowClioReexport ? "#9a3412" : "var(--onyx-text-muted)" }}>
+                {allowClioReexport
+                  ? "This case will be exported again and the new handoff will be recorded as a re-export."
+                  : "Clio CSV exports stay blocked by default after first handoff to reduce accidental duplicates."}
+              </p>
+            </div>
+          )}
+          {caseData?.clioHandoff?.alreadyExported && Array.isArray(caseData.clioHandoffHistory) && caseData.clioHandoffHistory.length > 0 && (
+            <div style={{ marginTop: "0.75rem", display: "grid", gap: "0.5rem" }}>
+              {caseData.clioHandoffHistory.slice(0, 3).map((item) => (
+                <div
+                  key={item.exportId}
+                  style={{
+                    padding: "0.7rem 0.8rem",
+                    borderRadius: "var(--onyx-radius-sm)",
+                    background: "var(--onyx-background-surface)",
+                    border: "1px solid var(--onyx-border-subtle)",
+                  }}
+                >
+                  <p style={{ margin: "0 0 0.2rem", fontSize: "0.8rem", fontWeight: 600 }}>
+                    {item.exportSubtype === "combined_batch" ? "Batch Clio handoff" : `${item.exportSubtype === "contacts" ? "Contacts" : "Matters"} CSV`}{item.isReExport ? " • Re-export" : ""}
+                  </p>
+                  <p style={{ margin: 0, fontSize: "0.78rem", color: "var(--onyx-text-muted)" }}>
+                    {new Date(item.exportedAt).toLocaleString()}
+                    {item.actorLabel ? ` • ${item.actorLabel}` : ""}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-          <button
-            type="button"
-            onClick={() => startExport(["download_bundle"])}
-            disabled={!!exporting || documents.length === 0}
-            className="onyx-btn-primary"
-          >
-            {exporting === "download_bundle" ? "Starting…" : "Download ZIP"}
-          </button>
-          <button
-            type="button"
-            onClick={() => startExport(["cloud_drive"])}
-            disabled={!!exporting || documents.length === 0}
-            className="onyx-btn-secondary"
-          >
-            {exporting === "cloud_drive" ? "Starting…" : "Export to cloud drive"}
-          </button>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "1rem", marginBottom: "1rem" }}>
+          <div style={{ border: "1px solid var(--onyx-border-subtle)", borderRadius: "var(--onyx-radius-md)", padding: "1rem" }}>
+            <h3 style={{ margin: "0 0 0.35rem", fontSize: "1rem", fontWeight: 600 }}>Contacts CSV</h3>
+            <p style={{ margin: "0 0 0.9rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.45 }}>
+              Export this case&apos;s client contact row for Clio Manage import.
+            </p>
+            <button
+              type="button"
+              onClick={() => startCaseFileExport("contacts")}
+              disabled={exporting !== null || clioExportLocked}
+              className="onyx-btn-primary"
+            >
+              {exporting === "contacts" ? "Preparing…" : allowClioReexport ? "Re-export contacts CSV" : "Download contacts CSV"}
+            </button>
+          </div>
+
+          <div style={{ border: "1px solid var(--onyx-border-subtle)", borderRadius: "var(--onyx-radius-md)", padding: "1rem" }}>
+            <h3 style={{ margin: "0 0 0.35rem", fontSize: "1rem", fontWeight: 600 }}>Matters CSV</h3>
+            <p style={{ margin: "0 0 0.9rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.45 }}>
+              Export this case&apos;s matter row using case number, title, and client details.
+            </p>
+            <button
+              type="button"
+              onClick={() => startCaseFileExport("matters")}
+              disabled={exporting !== null || clioExportLocked}
+              className="onyx-btn-primary"
+            >
+              {exporting === "matters" ? "Preparing…" : allowClioReexport ? "Re-export matters CSV" : "Download matters CSV"}
+            </button>
+          </div>
+
+          <div style={{ border: "1px solid var(--onyx-border-subtle)", borderRadius: "var(--onyx-radius-md)", padding: "1rem" }}>
+            <h3 style={{ margin: "0 0 0.35rem", fontSize: "1rem", fontWeight: 600 }}>Offers PDF</h3>
+            <p style={{ margin: "0 0 0.9rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.45 }}>
+              Export a PDF summary of settlement offers recognized on documents routed to this case.
+            </p>
+            <button
+              type="button"
+              onClick={() => startCaseFileExport("offers")}
+              disabled={exporting !== null}
+              className="onyx-btn-primary"
+            >
+              {exporting === "offers" ? "Preparing…" : "Download offers PDF"}
+            </button>
+          </div>
+
+          <div style={{ border: "1px solid var(--onyx-border-subtle)", borderRadius: "var(--onyx-radius-md)", padding: "1rem" }}>
+            <h3 style={{ margin: "0 0 0.35rem", fontSize: "1rem", fontWeight: 600 }}>Packet export</h3>
+            <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.45 }}>
+              Build a case packet bundle for download. Timeline is included automatically when available.
+            </p>
+            <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem" }}>Packet type</label>
+            <select
+              value={packetType}
+              onChange={(e) => setPacketType(e.target.value as "records" | "bills" | "combined")}
+              className="onyx-input"
+              style={{ minWidth: 160, marginBottom: "0.75rem" }}
+            >
+              <option value="combined">Combined (all documents)</option>
+              <option value="records">Records packet (medical/legal records only)</option>
+              <option value="bills">Bills packet (billing, EOB, ledgers only)</option>
+            </select>
+            <p style={{ margin: "0 0 0.9rem", fontSize: "0.8125rem", color: packetReadinessMessage.includes("requires") ? "var(--onyx-warning)" : "var(--onyx-text-muted)" }}>
+              {packetReadinessMessage}
+            </p>
+            <button
+              type="button"
+              onClick={startPacketExport}
+              disabled={exporting !== null || totalDocumentCount === 0}
+              className="onyx-btn-secondary"
+            >
+              {exporting === "packet" ? "Preparing…" : "Download packet"}
+            </button>
+          </div>
         </div>
         {exportMessage && (
           <p
             style={{
-              margin: "0.75rem 0 0",
+              margin: 0,
               fontSize: "0.8125rem",
-              color: exportMessage.startsWith("Export started") ? "var(--onyx-success)" : "var(--onyx-text-muted)",
+              color:
+                exportMessage.includes("started") || exportMessage.includes("ready")
+                  ? "var(--onyx-success)"
+                  : "var(--onyx-text-muted)",
             }}
           >
             {exportMessage}
           </p>
-        )}
-        {exportHistory.length > 0 && (
-          <div style={{ marginTop: "1rem" }}>
-            <p style={{ margin: "0 0 0.5rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>Export history</p>
-            <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.875rem" }}>
-              {exportHistory.slice(0, 5).map((e) => (
-                <li key={e.id} style={{ marginBottom: "0.25rem" }}>
-                  <a
-                    href={`${getApiBase()}/packet-exports/${e.id}/download`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="onyx-link"
-                  >
-                    {e.fileName}
-                  </a>
-                  <span style={{ marginLeft: "0.5rem", color: "var(--onyx-text-muted)", fontSize: "0.8125rem" }}>
-                    {e.packetType === "records" ? "Records" : e.packetType === "bills" ? "Bills" : "Combined"}
-                    {" · "}
-                    {new Date(e.createdAt).toLocaleString()}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
         )}
       </DashboardCard>
 

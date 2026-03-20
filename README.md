@@ -17,5 +17,24 @@ Start here for setup and testing:
 | **MVP smoke** | [MVP_SMOKE_TEST.md](MVP_SMOKE_TEST.md) — repeatable operator-focused acceptance checklist |
 | **Demo deployment** | [DEMO_DEPLOYMENT.md](DEMO_DEPLOYMENT.md) — minimum runtime requirements, process model, env, and SMTP notes for the current MVP |
 | **First pilot** | [FIRST_PILOT_CHECKLIST.md](FIRST_PILOT_CHECKLIST.md) — production-facing checklist, required env, restart checks, and deferred items |
+| **Control tower** | [docs/control-tower.md](docs/control-tower.md) — sidecar operator app integration, local runbook, and migration boundary |
 
 Manual smoke checklist: [README_DEV_SMOKE_TEST.md](README_DEV_SMOKE_TEST.md).
+
+## Control Tower
+
+The internal operator dashboard now lives inside this repo as `apps/control-tower`.
+
+Use it without affecting the main runtime:
+
+```bash
+pnpm install
+pnpm control-tower:db:setup
+pnpm control-tower:dev
+```
+
+Default local URL:
+
+- [http://localhost:3400](http://localhost:3400)
+
+The main web dashboard links to it at `/dashboard/control-tower`.

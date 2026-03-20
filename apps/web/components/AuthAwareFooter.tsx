@@ -3,7 +3,7 @@
 import { usePathname } from "next/navigation";
 
 export function AuthAwareFooter() {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "";
   if (pathname === "/" || pathname === "/login") return null;
   return (
     <footer

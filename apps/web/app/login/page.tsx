@@ -46,14 +46,14 @@ function LoginContent() {
 
   // Handle OAuth callback: ?token=JWT or ?error=...
   useEffect(() => {
-    const token = searchParams.get("token");
+    const token = searchParams?.get("token");
     if (token) {
       setAuthToken(token);
       router.replace("/dashboard");
       router.refresh();
       return;
     }
-    const oauthError = searchParams.get("error");
+    const oauthError = searchParams?.get("error");
     if (oauthError === "no_account") {
       setError("No account found for this email. Contact your administrator to get access.");
     } else if (oauthError === "oauth_failed" || oauthError === "oauth_callback_missing_params") {

@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 /**
- * Bootstrap dev: run Prisma migrations if DATABASE_URL is set, then print next steps.
+ * Bootstrap dev: run Prisma migrations, then seed local demo rows and matching MinIO objects.
  */
 import "dotenv/config";
 import { spawn } from "child_process";
-import path from "path";
 
 const root = process.cwd();
 
@@ -25,16 +24,23 @@ async function main() {
   }
 
   console.log("Running Prisma migrations (deploy)...\n");
-  const code = await run("pnpm", ["exec", "prisma", "migrate", "deploy"]);
-  if (code !== 0) {
+  const migrateCode = await run("pnpm", ["exec", "prisma", "migrate", "deploy"]);
+  if (migrateCode !== 0) {
     console.log("\nMigration failed. Try: pnpm exec prisma migrate dev");
+    process.exit(1);
+  }
+
+  console.log("\nSeeding local demo data and storage objects...\n");
+  const seedCode = await run("pnpm", ["run", "seed:demo"]);
+  if (seedCode !== 0) {
+    console.log("\nDemo seed failed. Ensure local MinIO/S3 env vars are set and storage is reachable.");
     process.exit(1);
   }
 
   console.log("\n--- Next steps ---");
   console.log("1. Start API:  cd apps/api && pnpm dev");
-  console.log("2. (Optional) Create firm + API key: POST /dev/create-firm, POST /dev/create-api-key/:firmId");
-  console.log("3. Set DOC_API_KEY in apps/api/.env");
+  console.log("2. Use demo login: demo@example.com / demo");
+  console.log("3. Open demo-case-1 in the dashboard and verify packet export contents");
   console.log("4. Rerun tests: cd apps/api && pnpm run test:system");
 }
 

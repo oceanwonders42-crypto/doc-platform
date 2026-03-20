@@ -40,3 +40,8 @@ coverage
 
 # Prisma generated (if at root)
 /src/generated/prisma
+
+# Control tower local SQLite
+apps/control-tower/prisma/*.db
+apps/control-tower/prisma/*.db-*
+apps/control-tower/prisma/*.bak

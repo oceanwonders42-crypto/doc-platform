@@ -73,9 +73,9 @@ export default function NewRecordsRequestPage() {
   }, []);
 
   useEffect(() => {
-    const qCaseId = searchParams.get("caseId");
-    const qProviderId = searchParams.get("providerId");
-    const qRequestType = searchParams.get("requestType");
+    const qCaseId = searchParams?.get("caseId");
+    const qProviderId = searchParams?.get("providerId");
+    const qRequestType = searchParams?.get("requestType");
     if (qCaseId && qCaseId.trim()) setCaseId(qCaseId.trim());
     if (qProviderId && qProviderId.trim()) setProviderId(qProviderId.trim());
     if (qRequestType === "RECORDS" || qRequestType === "BILLS" || qRequestType === "BOTH") setRequestType(qRequestType);

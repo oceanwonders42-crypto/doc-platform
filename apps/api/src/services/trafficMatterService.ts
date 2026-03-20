@@ -134,7 +134,6 @@ export async function createOrUpdateTrafficMatter(
       ),
     chargeDescriptionRaw: citationFields.chargeDescriptionRaw ?? null,
     chargeListJson: toNullableJsonValue(chargeListJson),
-    chargeListJson: toNullableJsonValue(chargeListJson),
     jurisdictionState: citationFields.jurisdictionState ?? null,
     jurisdictionCounty: citationFields.jurisdictionCounty ?? null,
     courtName: citationFields.courtName ?? null,

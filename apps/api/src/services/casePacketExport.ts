@@ -5,6 +5,7 @@
 
 import JSZip from "jszip";
 import { getObjectBuffer } from "./storage";
+import { buildPacketEntryFileName } from "./casePacketExportNaming";
 import type { ExportBundle } from "./export/contract";
 
 export type ExportPacketInput = {
@@ -14,10 +15,6 @@ export type ExportPacketInput = {
   includeTimeline: boolean;
   includeSummary: boolean;
 };
-
-function sanitizeFileName(name: string): string {
-  return name.replace(/[^\w\s\-\.]/g, "").replace(/\s+/g, " ").trim().slice(0, 120) || "document";
-}
 
 /**
  * Build ZIP buffer from a pre-built ExportBundle (used by all export destinations).
@@ -46,10 +43,8 @@ export async function buildCasePacketZipFromBundle(bundle: ExportBundle): Promis
   for (const doc of bundle.documents) {
     try {
       const buf = await getObjectBuffer(doc.storageKey);
-      const baseName = sanitizeFileName(doc.originalName || doc.id);
-      const ext = (doc.originalName || "").split(".").pop()?.toLowerCase() || "bin";
       const folderPath = (doc.exportFolderPath ?? "").trim();
-      const fileName = doc.exportFileName?.trim() || `${baseName}.${ext}`;
+      const fileName = buildPacketEntryFileName(doc);
       const zipPath = uniquePath(folderPath || "documents", fileName);
       zip.file(zipPath, buf, { binary: true });
     } catch (e) {
