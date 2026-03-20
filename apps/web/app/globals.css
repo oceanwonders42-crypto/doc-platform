@@ -515,7 +515,18 @@ body {
 
 @layer components {
   .btn-primary {
-    @apply inline-flex items-center justify-center rounded-lg border border-[var(--border-refined)] bg-white px-6 py-3.5 text-sm font-semibold tracking-wide text-[var(--text-inverse)] antialiased;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.875rem 1.5rem;
+    border: 1px solid var(--border-refined);
+    background-color: #ffffff;
+    color: var(--text-inverse);
+    font-size: 0.875rem;
+    font-weight: 600;
+    letter-spacing: 0.025em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     box-shadow: var(--shadow-btn);
     border-radius: var(--radius-lg);
     transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
@@ -527,7 +538,16 @@ body {
     transform: translateY(-1px);
   }
   .btn-secondary {
-    @apply inline-flex items-center justify-center rounded-lg px-6 py-3.5 text-sm font-semibold tracking-wide text-[var(--text-primary)] antialiased;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.875rem 1.5rem;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-weight: 600;
+    letter-spacing: 0.025em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     border-radius: var(--radius-lg);
     box-shadow: inset 0 0 0 1px var(--border-default);
     background: transparent;
@@ -539,7 +559,16 @@ body {
     color: var(--text-primary);
   }
   .btn-secondary-muted {
-    @apply inline-flex items-center justify-center rounded-lg px-6 py-3.5 text-sm font-medium tracking-wide text-[var(--text-secondary)] antialiased;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.875rem 1.5rem;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    letter-spacing: 0.025em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     border-radius: var(--radius-lg);
     box-shadow: inset 0 0 0 1px var(--border-default);
     background: transparent;
@@ -562,18 +591,39 @@ body {
     box-shadow: var(--shadow-card-hover);
   }
   .landing-eyebrow {
-    @apply text-xs font-medium uppercase tracking-widest text-[var(--text-muted)];
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
   }
   .landing-heading {
-    @apply font-semibold tracking-tight text-[var(--text-primary)] antialiased;
+    color: var(--text-primary);
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   .landing-body {
-    @apply text-[var(--text-secondary)] leading-relaxed antialiased;
+    color: var(--text-secondary);
+    line-height: 1.625;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   .input-base {
-    @apply mt-2 block w-full rounded-md border bg-[var(--bg-section)] px-4 py-3 text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors;
-    border-color: var(--border-default);
+    display: block;
+    width: 100%;
+    margin-top: 0.5rem;
+    padding: 0.75rem 1rem;
+    color: var(--text-primary);
+    background-color: var(--bg-section);
+    border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
+    transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+    border-color: var(--border-default);
+  }
+  .input-base::placeholder {
+    color: var(--text-muted);
   }
   .input-base:focus {
     outline: none;
