@@ -177,8 +177,8 @@ async function buildExportBundle(caseId, firmId, options = {}) {
     }
     let summaryText = null;
     if (includeSummary) {
-        const summary = await prisma_1.prisma.caseSummary.findUnique({
-            where: { firmId_caseId: { firmId, caseId } },
+        const summary = await prisma_1.prisma.caseSummary.findFirst({
+            where: { firmId, caseId },
             select: { body: true },
         });
         summaryText = summary?.body ?? "No summary generated yet.";

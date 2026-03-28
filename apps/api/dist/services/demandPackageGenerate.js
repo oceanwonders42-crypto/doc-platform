@@ -46,7 +46,7 @@ async function generateDemandPackage(packageId, firmId) {
                 select: { id: true, eventDate: true, eventType: true, provider: true, diagnosis: true, procedure: true, amount: true },
             }),
             prisma_1.prisma.caseFinancial.findFirst({ where: { caseId, firmId } }),
-            prisma_1.prisma.caseSummary.findUnique({ where: { firmId_caseId: { firmId, caseId } }, select: { body: true } }),
+            prisma_1.prisma.caseSummary.findFirst({ where: { firmId, caseId }, select: { body: true } }),
             prisma_1.prisma.document.findMany({
                 where: { firmId, routedCaseId: caseId },
                 select: { id: true, originalName: true },
