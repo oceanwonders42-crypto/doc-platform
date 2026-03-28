@@ -7,12 +7,15 @@ import { pgPool } from "../db/pg";
 import { rebuildCaseTimeline } from "./caseTimeline";
 import { createNotification } from "./notifications";
 import { emitWebhookEvent } from "./webhooks";
+import type { DocumentReviewStateValue } from "./documentReviewState";
 
 export type RouteDocumentOptions = {
   actor: string;
   action: string;
   routedSystem?: string | null;
   routingStatus?: string | null;
+  reviewState?: DocumentReviewStateValue | null;
+  status?: "RECEIVED" | "PROCESSING" | "NEEDS_REVIEW" | "UPLOADED" | "FAILED" | "UNMATCHED";
   metaJson?: unknown;
 };
 
@@ -22,7 +25,7 @@ export async function routeDocument(
   toCaseId: string | null,
   options: RouteDocumentOptions
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { actor, action, routedSystem, routingStatus, metaJson } = options;
+  const { actor, action, routedSystem, routingStatus, reviewState, status, metaJson } = options;
 
   const doc = await prisma.document.findFirst({
     where: { id: documentId, firmId },
@@ -30,13 +33,21 @@ export async function routeDocument(
   });
   if (!doc) return { ok: false, error: "document not found" };
 
-  const updateData: { routedCaseId?: string | null; routedSystem?: string | null; routingStatus?: string | null } = {
+  const updateData: {
+    routedCaseId?: string | null;
+    routedSystem?: string | null;
+    routingStatus?: string | null;
+    reviewState?: DocumentReviewStateValue | null;
+    status?: "RECEIVED" | "PROCESSING" | "NEEDS_REVIEW" | "UPLOADED" | "FAILED" | "UNMATCHED";
+  } = {
     routedCaseId: toCaseId ?? null,
   };
   if (routedSystem !== undefined) updateData.routedSystem = routedSystem;
   if (routingStatus !== undefined) updateData.routingStatus = routingStatus;
+  if (reviewState !== undefined) updateData.reviewState = reviewState;
+  if (status !== undefined) updateData.status = status;
 
-  await prisma.document.update({
+  await prisma.document.updateMany({
     where: { id: documentId },
     data: updateData,
   });

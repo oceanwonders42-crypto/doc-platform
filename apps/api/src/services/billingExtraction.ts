@@ -4,6 +4,7 @@
  */
 import { prisma } from "../db/prisma";
 import { pgPool } from "../db/pg";
+import { Prisma } from "@prisma/client";
 
 const BILL_DOC_TYPES = ["medical_bill", "ledger_statement", "billing_statement", "medical_record"];
 
@@ -29,6 +30,11 @@ function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
   const d = new Date(s.trim());
   return isNaN(d.getTime()) ? null : d;
+}
+
+function decimalToNumber(value: Prisma.Decimal | number | null | undefined): number | undefined {
+  if (value == null) return undefined;
+  return typeof value === "number" ? value : value.toNumber();
 }
 
 const DATE_PATTERNS = [
@@ -111,8 +117,7 @@ export async function persistBillingForDocument(
     where: { caseId, firmId },
     _sum: { lineTotal: true },
   });
-  const totalRaw = agg._sum.lineTotal;
-  const total = typeof totalRaw === "number" ? totalRaw : totalRaw?.toNumber() ?? 0;
+  const total = decimalToNumber(agg._sum.lineTotal) ?? 0;
 
   await prisma.caseFinancial.upsert({
     where: { caseId },

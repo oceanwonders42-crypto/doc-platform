@@ -43,10 +43,10 @@ export default function CaseTimelineTab({
 }) {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const track = searchParams.get("track") || "all";
-  const dateFrom = searchParams.get("dateFrom") || "";
-  const dateTo = searchParams.get("dateTo") || "";
-  const provider = searchParams.get("provider") || "";
+  const track = searchParams?.get("track") || "all";
+  const dateFrom = searchParams?.get("dateFrom") || "";
+  const dateTo = searchParams?.get("dateTo") || "";
+  const provider = searchParams?.get("provider") || "";
 
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [loading, setLoading] = useState(true);

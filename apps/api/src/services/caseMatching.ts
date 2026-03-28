@@ -1,6 +1,7 @@
 /**
  * Case matching: match a document (recognition result) to a firm Case.
- * Uses raw SQL so it works even when Case/Client are not in Prisma schema.
+ * Uses raw SQL so it works against the current Case/Contact tables without
+ * depending on Prisma model drift.
  */
 import { pgPool } from "../db/pg";
 
@@ -77,9 +78,9 @@ export async function matchDocumentToCase(
     const clientName = normalize(signals.clientName);
     if (clientName.length >= 2 && signals.clientName) {
       const { rows: clients } = await pgPool.query(
-        `SELECT c.id, c.title, c."caseNumber", cl.name as client_name
+        `SELECT c.id, c.title, c."caseNumber", COALESCE(ct."fullName", c."clientName") AS client_name
          FROM "Case" c
-         LEFT JOIN "Client" cl ON cl.id = c."clientId"
+         LEFT JOIN "Contact" ct ON ct.id = c."clientContactId"
          WHERE c."firmId" = $1 LIMIT 100`,
         [firmId]
       );

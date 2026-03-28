@@ -1,265 +1,147 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import Link from "next/link";
+import { useEffect, useState } from "react";
+import { getApiBase, getAuthHeader, parseJsonResponse } from "@/lib/api";
 
-type ErrorLogEntry = {
+type ErrorLog = {
   id: string;
   service: string;
   message: string;
-  stack: string | null;
+  firmId: string | null;
+  userId: string | null;
+  area: string | null;
+  route: string | null;
+  method: string | null;
+  severity: string | null;
+  status: string | null;
   createdAt: string;
 };
 
-type AdminErrorsResponse = {
-  ok: boolean;
-  errors: ErrorLogEntry[];
-  error?: string;
-};
-
-async function fetchErrors(service?: string): Promise<AdminErrorsResponse> {
-  const qs = new URLSearchParams({ limit: "200" });
-  if (service?.trim()) qs.set("service", service.trim());
-  const res = await fetch(`/api/admin/errors?${qs}`, { cache: "no-store" });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) return { ok: false, errors: [], error: data?.error || `HTTP ${res.status}` };
-  return data as AdminErrorsResponse;
-}
-
-function formatDate(iso: string) {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}
-
 export default function AdminErrorsPage() {
-  const [data, setData] = useState<AdminErrorsResponse | null>(null);
+  const [errors, setErrors] = useState<ErrorLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [serviceFilter, setServiceFilter] = useState("");
-  const [selectedEntry, setSelectedEntry] = useState<ErrorLogEntry | null>(null);
+  const [severityFilter, setSeverityFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [areaFilter, setAreaFilter] = useState("");
 
-  const load = useCallback(async () => {
+  function load() {
     setLoading(true);
-    const result = await fetchErrors(serviceFilter || undefined);
-    setData(result);
-    setLoading(false);
-  }, [serviceFilter]);
+    const params = new URLSearchParams();
+    params.set("limit", "100");
+    if (serviceFilter.trim()) params.set("service", serviceFilter.trim());
+    if (severityFilter) params.set("severity", severityFilter);
+    if (statusFilter) params.set("status", statusFilter);
+    if (areaFilter) params.set("area", areaFilter);
+    fetch(`${getApiBase()}/admin/errors?${params}`, { headers: getAuthHeader() })
+      .then(parseJsonResponse)
+      .then((data) => {
+        const d = data as { ok?: boolean; errors?: ErrorLog[]; error?: string };
+        if (d.ok && Array.isArray(d.errors)) setErrors(d.errors);
+        else setError(d.error || "Failed to load");
+      })
+      .catch((e) => setError(e?.message || "Request failed"))
+      .finally(() => setLoading(false));
+  }
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [serviceFilter, severityFilter, statusFilter, areaFilter]);
 
-  const errors = data?.errors ?? [];
-  const distinctServices = [...new Set(errors.map((e) => e.service))].sort();
+  async function markResolved(id: string) {
+    const result = await fetch(`${getApiBase()}/admin/errors/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ status: "RESOLVED" }),
+    });
+    try {
+      const data = await parseJsonResponse(result) as { ok?: boolean };
+      if (result.ok && data.ok) load();
+    } catch {
+      // ignore parse error
+    }
+  }
+
+  if (error) return <p style={{ color: "#b91c1c" }}>Error: {error}</p>;
 
   return (
-    <main
-      style={{
-        padding: 24,
-        maxWidth: 1000,
-        margin: "0 auto",
-        fontFamily: "system-ui, -apple-system",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        <Link href="/admin/debug" style={{ fontSize: 14, color: "#111", textDecoration: "underline" }}>
-          ← Admin
-        </Link>
-        <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>System errors</h1>
-      </div>
-      <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
-        Recent API and service errors logged centrally. Most recent first.
-      </p>
-
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 20, flexWrap: "wrap" }}>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
-          Filter by service:
-          <select
-            value={serviceFilter}
-            onChange={(e) => setServiceFilter(e.target.value)}
-            style={{
-              padding: "6px 10px",
-              fontSize: 14,
-              border: "1px solid #ccc",
-              borderRadius: 6,
-              minWidth: 140,
-            }}
-          >
-            <option value="">All</option>
-            {distinctServices.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="button"
-          onClick={() => load()}
-          disabled={loading}
-          style={{
-            padding: "6px 12px",
-            fontSize: 14,
-            border: "1px solid #333",
-            borderRadius: 6,
-            background: "#fff",
-            cursor: loading ? "not-allowed" : "pointer",
-          }}
+    <div>
+      <h1 style={{ fontSize: "1.5rem", marginBottom: "1rem" }}>System errors</h1>
+      <div style={{ marginBottom: "1rem", display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+        <input
+          type="text"
+          placeholder="Service"
+          value={serviceFilter}
+          onChange={(e) => setServiceFilter(e.target.value)}
+          style={{ padding: "0.25rem 0.5rem", border: "1px solid #d1d5db", borderRadius: 4 }}
+        />
+        <select
+          value={areaFilter}
+          onChange={(e) => setAreaFilter(e.target.value)}
+          style={{ padding: "0.25rem 0.5rem", border: "1px solid #d1d5db", borderRadius: 4 }}
         >
+          <option value="">All areas</option>
+          <option value="ocr">OCR / pipeline</option>
+          <option value="classification">Classification</option>
+          <option value="routing">Routing</option>
+        </select>
+        <select
+          value={severityFilter}
+          onChange={(e) => setSeverityFilter(e.target.value)}
+          style={{ padding: "0.25rem 0.5rem", border: "1px solid #d1d5db", borderRadius: 4 }}
+        >
+          <option value="">All severities</option>
+          <option value="INFO">INFO</option>
+          <option value="WARN">WARN</option>
+          <option value="ERROR">ERROR</option>
+          <option value="CRITICAL">CRITICAL</option>
+        </select>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          style={{ padding: "0.25rem 0.5rem", border: "1px solid #d1d5db", borderRadius: 4 }}
+        >
+          <option value="">All statuses</option>
+          <option value="OPEN">OPEN</option>
+          <option value="ACKNOWLEDGED">ACKNOWLEDGED</option>
+          <option value="RESOLVED">RESOLVED</option>
+        </select>
+        <button type="button" onClick={load} disabled={loading} style={{ padding: "0.25rem 0.75rem", background: "#2563eb", color: "white", border: "none", borderRadius: 4 }}>
           {loading ? "Loading…" : "Refresh"}
         </button>
       </div>
-
-      {data?.error && <p style={{ color: "#c00", marginBottom: 12 }}>{data.error}</p>}
-
-      {!data?.ok && !loading && <p style={{ color: "#c00" }}>Failed to load errors.</p>}
-
-      {data?.ok && errors.length === 0 && <p style={{ color: "#666" }}>No errors logged yet.</p>}
-
-      {data?.ok && errors.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {errors.map((entry) => (
-            <div
-              key={entry.id}
-              onClick={() => setSelectedEntry(entry)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => e.key === "Enter" && setSelectedEntry(entry)}
-              style={{
-                border: "1px solid #e5e5e5",
-                borderRadius: 12,
-                padding: 16,
-                background: "#fafafa",
-                cursor: "pointer",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    padding: "2px 8px",
-                    borderRadius: 6,
-                    background: "#eee",
-                    color: "#333",
-                  }}
-                >
-                  {entry.service}
-                </span>
-                <span style={{ fontSize: 12, color: "#888" }}>{formatDate(entry.createdAt)}</span>
-              </div>
-              <div
-                style={{
-                  fontSize: 14,
-                  fontWeight: 500,
-                  wordBreak: "break-word",
-                  color: "#333",
-                }}
-              >
-                {entry.message.length > 150 ? `${entry.message.slice(0, 150)}…` : entry.message}
-              </div>
-              {entry.stack && (
-                <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>View stack trace →</div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {selectedEntry && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.4)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-            padding: 24,
-          }}
-          onClick={() => setSelectedEntry(null)}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="error-detail-title"
-        >
-          <div
-            style={{
-              background: "#fff",
-              borderRadius: 12,
-              padding: 24,
-              maxWidth: 640,
-              width: "100%",
-              maxHeight: "80vh",
-              overflow: "auto",
-              boxShadow: "0 4px 24px rgba(0,0,0,0.15)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 id="error-detail-title" style={{ fontSize: 18, fontWeight: 600, margin: "0 0 16px 0" }}>
-              Error details
-            </h2>
-            <div style={{ marginBottom: 12 }}>
-              <span
-                style={{
-                  fontSize: 11,
-                  fontWeight: 600,
-                  padding: "2px 8px",
-                  borderRadius: 6,
-                  background: "#eee",
-                  color: "#333",
-                }}
-              >
-                {selectedEntry.service}
-              </span>
-              <span style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>
-                {formatDate(selectedEntry.createdAt)}
-              </span>
-            </div>
-            <div style={{ fontSize: 14, marginBottom: 16, wordBreak: "break-word" }}>
-              {selectedEntry.message}
-            </div>
-            {selectedEntry.stack && (
-              <pre
-                style={{
-                  margin: 0,
-                  fontSize: 11,
-                  fontFamily: "ui-monospace, monospace",
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-word",
-                  color: "#555",
-                  maxHeight: 300,
-                  overflow: "auto",
-                  border: "1px solid #eee",
-                  borderRadius: 6,
-                  padding: 12,
-                  background: "#f9f9f9",
-                }}
-              >
-                {selectedEntry.stack}
-              </pre>
-            )}
-            <button
-              type="button"
-              onClick={() => setSelectedEntry(null)}
-              style={{
-                marginTop: 16,
-                padding: "8px 16px",
-                fontSize: 14,
-                border: "1px solid #333",
-                borderRadius: 6,
-                background: "#111",
-                color: "#fff",
-                cursor: "pointer",
-              }}
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
-    </main>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid #e5e7eb", textAlign: "left" }}>
+              <th style={{ padding: "0.5rem" }}>Time</th>
+              <th style={{ padding: "0.5rem" }}>Service</th>
+              <th style={{ padding: "0.5rem" }}>Severity</th>
+              <th style={{ padding: "0.5rem" }}>Status</th>
+              <th style={{ padding: "0.5rem" }}>Message</th>
+              <th style={{ padding: "0.5rem" }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {errors.map((e) => (
+              <tr key={e.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                <td style={{ padding: "0.5rem", whiteSpace: "nowrap" }}>{new Date(e.createdAt).toLocaleString()}</td>
+                <td style={{ padding: "0.5rem" }}>{e.service}</td>
+                <td style={{ padding: "0.5rem" }}>{e.severity ?? "—"}</td>
+                <td style={{ padding: "0.5rem" }}>{e.status ?? "—"}</td>
+                <td style={{ padding: "0.5rem", maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis" }} title={e.message}>{e.message}</td>
+                <td style={{ padding: "0.5rem" }}>
+                  {e.status !== "RESOLVED" && (
+                    <button type="button" onClick={() => markResolved(e.id)} style={{ padding: "0.2rem 0.5rem", fontSize: "0.75rem", background: "#059669", color: "white", border: "none", borderRadius: 4, cursor: "pointer" }}>Mark resolved</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {errors.length === 0 && !loading && <p style={{ marginTop: "1rem", color: "#6b7280" }}>No errors found.</p>}
+    </div>
   );
 }

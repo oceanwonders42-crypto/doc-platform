@@ -55,7 +55,7 @@ function Section<T extends { id: string }>({
 
 function SearchPageContent() {
   const searchParams = useSearchParams();
-  const q = searchParams.get("q") ?? "";
+  const q = searchParams?.get("q") ?? "";
   const [data, setData] = useState<SearchResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

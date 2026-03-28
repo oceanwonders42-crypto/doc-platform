@@ -107,17 +107,17 @@ Expected: Table of recent ingests (filename, subject, from, document id, date). 
 
 ```bash
 # Terminal 1: API
-cd /Users/adrienpetit/doc-platform/apps/api && pnpm dev
+cd ./apps/api && pnpm dev
 
 # Terminal 2: Worker
-cd /Users/adrienpetit/doc-platform/apps/api && pnpm dev:worker
+cd ./apps/api && pnpm dev:worker
 
 # Terminal 3: Email poller (or once)
-cd /Users/adrienpetit/doc-platform/apps/api && pnpm email:poller
+cd ./apps/api && pnpm email:poller
 # or: pnpm email:once
 
 # Terminal 4: Web
-cd /Users/adrienpetit/doc-platform/apps/web && pnpm dev
+cd ./apps/web && pnpm dev
 ```
 
 Then: create mailbox (curl), test (curl), enable (curl), run `pnpm email:once`, send test email with attachment to that mailbox, run poller again, open Mailboxes → View recent ingests.

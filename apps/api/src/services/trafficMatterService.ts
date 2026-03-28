@@ -2,8 +2,8 @@
  * Create or update TrafficMatter from extraction results.
  * Matches by citation number, defendant, jurisdiction, issue date proximity.
  */
-import { prisma } from "../db/prisma";
 import { Prisma } from "@prisma/client";
+import { prisma } from "../db/prisma";
 import type { TrafficCitationExtracted } from "../ai/extractors/trafficCitationExtractor";
 import {
   type StatuteExtractionResult,
@@ -25,6 +25,11 @@ function parseDateSafe(s: string | null): Date | null {
   if (!s || !s.trim()) return null;
   const d = new Date(s.trim());
   return isNaN(d.getTime()) ? null : d;
+}
+
+function toNullableJsonValue(value: Prisma.InputJsonValue | null): Prisma.NullableJsonNullValueInput | Prisma.InputJsonValue {
+  if (value === null) return Prisma.JsonNull;
+  return value;
 }
 
 function daysDiff(a: Date, b: Date): number {
@@ -110,10 +115,9 @@ export async function createOrUpdateTrafficMatter(
   );
 
   const status = reviewRequired ? "REVIEW_REQUIRED" : "NEW_CITATION";
-  const chargeListJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput =
-    citationFields.chargeDescriptionRaw
-      ? ([{ description: citationFields.chargeDescriptionRaw }] as Prisma.InputJsonValue)
-      : Prisma.JsonNull;
+  const chargeListJson: Prisma.InputJsonValue | null = citationFields.chargeDescriptionRaw
+    ? [{ description: citationFields.chargeDescriptionRaw }]
+    : null;
 
   const data = {
     firmId,
@@ -129,7 +133,7 @@ export async function createOrUpdateTrafficMatter(
         citationFields.jurisdictionState
       ),
     chargeDescriptionRaw: citationFields.chargeDescriptionRaw ?? null,
-    chargeListJson,
+    chargeListJson: toNullableJsonValue(chargeListJson),
     jurisdictionState: citationFields.jurisdictionState ?? null,
     jurisdictionCounty: citationFields.jurisdictionCounty ?? null,
     courtName: citationFields.courtName ?? null,
@@ -137,8 +141,8 @@ export async function createOrUpdateTrafficMatter(
     issueDate,
     dueDate,
     hearingDate,
-    extractedFactsJson: citationFields as unknown as object,
-    extractionConfidenceJson: citationConfidence as object,
+    extractedFactsJson: citationFields as unknown as Prisma.InputJsonValue,
+    extractionConfidenceJson: citationConfidence as Prisma.InputJsonValue,
     routingConfidence,
     reviewRequired,
     status,

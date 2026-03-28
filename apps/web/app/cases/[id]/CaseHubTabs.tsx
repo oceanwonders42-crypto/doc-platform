@@ -36,7 +36,7 @@ export default function CaseHubTabs({
   counts?: TabCounts;
 }) {
   const searchParams = useSearchParams();
-  const tab = (searchParams.get("tab") as TabId) || "documents";
+  const tab = (searchParams?.get("tab") as TabId | null) || "documents";
   const validTab = TABS.some((t) => t.id === tab) ? tab : "documents";
 
   return (

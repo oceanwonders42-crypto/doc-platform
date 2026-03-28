@@ -1,5 +1,6 @@
 # Dependencies
 node_modules
+node_modules/.pnpm-workspace-state-v1.json
 .pnpm-store/
 .pnp
 .pnp.*
@@ -34,9 +35,15 @@ yarn-error.log*
 
 # Testing
 coverage
+apps/web/test-results/
 
 # Vercel
 .vercel
 
 # Prisma generated (if at root)
 /src/generated/prisma
+
+# Control tower local SQLite
+apps/control-tower/prisma/*.db
+apps/control-tower/prisma/*.db-*
+apps/control-tower/prisma/*.bak

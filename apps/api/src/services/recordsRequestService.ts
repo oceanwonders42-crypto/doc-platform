@@ -6,19 +6,23 @@
  * - Create event log entries
  * - Validate required fields before send
  */
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { buildFirmWhere } from "../lib/tenant";
+import {
+  normalizeRecordsRequestStatus,
+  type RecordsRequestStatus,
+} from "./recordsRequestStatus";
 
 export type RequestType = "RECORDS" | "BILLS" | "BOTH";
-export type RequestStatus =
-  | "DRAFT"
-  | "SENT"
-  | "FOLLOW_UP_DUE"
-  | "RECEIVED"
-  | "COMPLETED"
-  | "FAILED"
-  | "CANCELLED";
+export type RequestStatus = RecordsRequestStatus;
 export type DestinationType = "EMAIL" | "FAX" | "PORTAL" | "MANUAL";
+export type RecordsRequestWithRelations = Prisma.RecordsRequestGetPayload<{
+  include: {
+    attachments: true;
+    events: { orderBy: { createdAt: "desc" } };
+  };
+}>;
 
 export type CreateRecordsRequestInput = {
   firmId: string;
@@ -27,6 +31,7 @@ export type CreateRecordsRequestInput = {
   /** When providerId is not set, use this as display name for the request */
   providerName?: string | null;
   providerContact?: string | null;
+  notes?: string | null;
   patientName?: string | null;
   patientDob?: Date | null;
   dateOfLoss?: Date | null;
@@ -146,7 +151,7 @@ export async function createRecordsRequestDraft(
       providerContact,
       dateFrom: input.requestedDateFrom ?? null,
       dateTo: input.requestedDateTo ?? null,
-      notes: null,
+      notes: input.notes?.trim() || null,
       letterBody: messageBody,
       status: "DRAFT",
       patientName: input.patientName ?? caseRow.clientName ?? null,
@@ -186,7 +191,8 @@ export async function validateForSend(
     where: buildFirmWhere(firmId, { id: recordsRequestId }),
   });
   if (!req) return { ok: false, error: "Records request not found" };
-  if (req.status !== "DRAFT" && req.status !== "FAILED" && req.status !== "FOLLOW_UP_DUE") {
+  const status = normalizeRecordsRequestStatus(req.status);
+  if (status !== "DRAFT" && status !== "FAILED" && status !== "FOLLOW_UP_DUE") {
     return { ok: false, error: "Request must be in DRAFT, FAILED, or FOLLOW_UP_DUE status to send" };
   }
   const body = (req.messageBody ?? req.letterBody ?? "").trim();
@@ -209,9 +215,7 @@ export async function validateForSend(
 export async function getRequestWithRelations(
   id: string,
   firmId: string
-): Promise<{
-  request: typeof prisma.recordsRequest extends { findFirst: (arg: infer A) => infer R } ? (A extends { include: infer I } ? (R extends Promise<infer X> ? X : never) : never) : never;
-} | null> {
+): Promise<RecordsRequestWithRelations | null> {
   const request = await prisma.recordsRequest.findFirst({
     where: buildFirmWhere(firmId, { id }),
     include: {
@@ -219,5 +223,5 @@ export async function getRequestWithRelations(
       events: { orderBy: { createdAt: "desc" } },
     },
   });
-  return request as any;
+  return request;
 }

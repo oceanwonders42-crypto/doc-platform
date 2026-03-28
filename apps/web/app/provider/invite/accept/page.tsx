@@ -6,7 +6,7 @@ import Link from "next/link";
 
 function ProviderInviteAcceptContent() {
   const searchParams = useSearchParams();
-  const tokenFromUrl = searchParams.get("token") || "";
+  const tokenFromUrl = searchParams?.get("token") || "";
   const [token, setToken] = useState(tokenFromUrl);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");

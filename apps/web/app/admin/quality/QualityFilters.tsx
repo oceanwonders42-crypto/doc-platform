@@ -7,13 +7,13 @@ type Firm = { id: string; name: string };
 export default function QualityFilters({ firms }: { firms: Firm[] }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const dateFrom = searchParams.get("dateFrom") ?? "";
-  const dateTo = searchParams.get("dateTo") ?? "";
-  const firmId = searchParams.get("firmId") ?? "";
-  const groupBy = searchParams.get("groupBy") ?? "";
+  const dateFrom = searchParams?.get("dateFrom") ?? "";
+  const dateTo = searchParams?.get("dateTo") ?? "";
+  const firmId = searchParams?.get("firmId") ?? "";
+  const groupBy = searchParams?.get("groupBy") ?? "";
 
   const updateParams = (updates: Record<string, string>) => {
-    const next = new URLSearchParams(searchParams);
+    const next = new URLSearchParams(searchParams?.toString() ?? "");
     for (const [k, v] of Object.entries(updates)) {
       if (v) next.set(k, v);
       else next.delete(k);

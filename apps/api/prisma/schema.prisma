@@ -9,6 +9,7 @@ datasource db {
 enum Role {
   PLATFORM_ADMIN
   FIRM_ADMIN
+  PARALEGAL
   STAFF
 }
 
@@ -21,6 +22,13 @@ enum DocumentStatus {
   UNMATCHED
 }
 
+enum DocumentReviewState {
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  EXPORT_READY
+}
+
 enum ProcessingStage {
   uploaded
   ocr
@@ -28,6 +36,22 @@ enum ProcessingStage {
   extraction
   case_match
   complete
+}
+
+enum ClioHandoffExportType {
+  SINGLE_CASE
+  BATCH
+}
+
+enum ClioHandoffExportSubtype {
+  CONTACTS
+  MATTERS
+  COMBINED_BATCH
+}
+
+enum ClioHandoffCaseStatus {
+  INCLUDED
+  SKIPPED
 }
 
 model Firm {
@@ -51,6 +75,7 @@ model Firm {
   routingRule                 RoutingRule?
   providers                   Provider[]
   cases                       LegalCase[]
+  contacts                    Contact[]
   caseProviders               CaseProvider[]
   crmPushLogs                 CrmPushLog[]
   crmCaseMappings             CrmCaseMapping[]
@@ -64,6 +89,8 @@ model Firm {
   caseFinancials              CaseFinancial[]
   caseSummaries               CaseSummary[]
   casePacketExports           CasePacketExport[]
+  clioHandoffExports          ClioHandoffExport[]
+  clioHandoffExportCases      ClioHandoffExportCase[]
   appBugReports               AppBugReport[]
   demandPackages              DemandPackage[]
   reviewQueueEvents           ReviewQueueEvent[]
@@ -147,6 +174,60 @@ model ApiKey {
   @@index([firmId])
 }
 
+model ClioHandoffExport {
+  id               String                  @id @default(cuid())
+  firmId           String
+  exportType       ClioHandoffExportType
+  exportSubtype    ClioHandoffExportSubtype
+  idempotencyKey   String?
+  requestFingerprint String?
+  reExportOverride Boolean                 @default(false)
+  reExportReason   String?                 @db.Text
+  actorType        String?
+  actorUserId      String?
+  actorApiKeyId    String?
+  actorLabel       String?
+  actorRole        String?
+  archiveFileName  String?
+  contactsFileName String?
+  mattersFileName  String?
+  manifestFileName String?
+  contactsRowCount Int?
+  mattersRowCount  Int?
+  manifestJson     Json?
+  exportedAt       DateTime                @default(now())
+  createdAt        DateTime                @default(now())
+
+  firm        Firm                     @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  memberships ClioHandoffExportCase[]
+
+  @@index([firmId, exportedAt])
+  @@index([firmId, exportType, exportedAt])
+  @@index([firmId, requestFingerprint, exportedAt])
+  @@unique([firmId, idempotencyKey])
+}
+
+model ClioHandoffExportCase {
+  id         String                @id @default(cuid())
+  exportId   String
+  firmId     String
+  caseId     String
+  caseNumber String?
+  caseTitle  String?
+  clientName String?
+  status     ClioHandoffCaseStatus
+  isReExport Boolean               @default(false)
+  skipReason String?               @db.Text
+  createdAt  DateTime              @default(now())
+
+  export ClioHandoffExport @relation(fields: [exportId], references: [id], onDelete: Cascade)
+  firm   Firm              @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@index([exportId])
+  @@index([firmId, caseId, createdAt])
+  @@index([firmId, status, createdAt])
+}
+
 model Document {
   id                  String          @id @default(cuid())
   firmId              String
@@ -166,6 +247,7 @@ model Document {
 
   extractedFields Json?
   confidence      Float?
+  reviewState     DocumentReviewState?
   routedSystem    String?
   routedCaseId    String?
   routingStatus   String?
@@ -189,6 +271,7 @@ model Document {
   @@index([firmId])
   @@index([status])
   @@index([firmId, file_sha256])
+  @@index([firmId, reviewState])
 }
 
 model RoutingRule {
@@ -322,7 +405,7 @@ model RecordsRequest {
   dateTo              DateTime?
   notes               String?
   letterBody          String?
-  status              String    @default("Draft")
+  status              String    @default("DRAFT")
   generatedDocumentId String?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
@@ -432,14 +515,20 @@ model RecordsRequestAttempt {
 }
 
 model LegalCase {
-  id         String   @id @default(cuid())
-  firmId     String
-  title      String?
-  caseNumber String?
-  clientName String?
-  createdAt  DateTime @default(now())
+  id              String    @id @default(cuid())
+  firmId          String
+  title           String?
+  caseNumber      String?
+  clientName      String?
+  clientContactId String?
+  incidentDate    DateTime?
+  status          String    @default("open")
+  notes           String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   firm              Firm               @relation(fields: [firmId], references: [id])
+  clientContact     Contact?           @relation("CaseClientContact", fields: [clientContactId], references: [id], onDelete: SetNull)
   caseProviders     CaseProvider[]
   caseNotes         CaseNote[]
   caseTasks         CaseTask[]
@@ -450,7 +539,34 @@ model LegalCase {
   activityFeedItems ActivityFeedItem[]
 
   @@index([firmId])
+  @@index([clientContactId])
+  @@index([firmId, status])
   @@map("Case")
+}
+
+model Contact {
+  id         String     @id @default(cuid())
+  firmId     String
+  firstName  String?
+  lastName   String?
+  fullName   String
+  email      String?
+  phone      String?
+  dateOfBirth DateTime?
+  address1    String?
+  address2    String?
+  city        String?
+  state       String?
+  postalCode  String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  firm          Firm        @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  clientCases   LegalCase[] @relation("CaseClientContact")
+
+  @@index([firmId])
+  @@index([firmId, fullName])
+  @@index([firmId, email])
 }
 
 model CaseNote {

@@ -4,6 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "control-tower:dev": "pnpm --dir apps/control-tower dev",
+    "control-tower:build": "pnpm --dir apps/control-tower build",
+    "control-tower:typecheck": "pnpm --dir apps/control-tower typecheck",
+    "control-tower:db:setup": "pnpm --dir apps/control-tower db:setup",
     "test": "echo \"Error: no test specified\" && exit 1",
     "snapshot": "bash scripts/snapshot.sh",
     "smoke": "bash scripts/smoke_test.sh",

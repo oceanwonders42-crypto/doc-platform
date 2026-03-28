@@ -78,10 +78,23 @@ export async function buildExportBundle(
 
   const docs = await prisma.document.findMany({
     where: docWhere,
-    select: { id: true, spacesKey: true, originalName: true, mimeType: true, metaJson: true, extractedFields: true },
+    select: {
+      id: true,
+      spacesKey: true,
+      originalName: true,
+      mimeType: true,
+      metaJson: true,
+      extractedFields: true,
+      reviewState: true,
+    },
   });
 
-  let docsToUse = docs;
+  // New review-aware cases should only export documents that were explicitly marked export-ready.
+  // Legacy cases without any persisted review lifecycle keep the old routed-document behavior.
+  const hasPersistedReviewState = docs.some((d) => d.reviewState != null);
+  let docsToUse = hasPersistedReviewState
+    ? docs.filter((d) => d.reviewState === "EXPORT_READY")
+    : docs;
   if (packetType !== "combined" && docs.length > 0) {
     const docIds = docs.map((d) => d.id);
     const { rows } = await pgPool.query<{ document_id: string; doc_type: string | null }>(

@@ -71,7 +71,7 @@ export default function PerFirmTable({
   };
 
   const drillToFirm = (id: string) => {
-    const next = new URLSearchParams(searchParams);
+    const next = new URLSearchParams(searchParams?.toString() ?? "");
     next.set("firmId", id);
     router.push(`/admin/quality?${next.toString()}`);
   };
