@@ -20,7 +20,7 @@ The transition is a **checklist-driven process** with clear steps, API touchpoin
 | 8 | `cleanup` | Cleanup & fallback: duplicates, failed docs, edge cases |
 | 9 | `complete` | Sign-off; hand off to firm for ongoing intake |
 
-**State and checklist** are stored in **Firm.settings.paperlessTransition** (no new DB tables). The app exposes:
+**State and checklist** are stored in **Firm.settings.paperlessTransition**. Batch processing now also uses dedicated **MigrationBatch** records plus explicit document-to-batch linkage. The app exposes:
 
 - **GET /me/paperless-transition/checklist** — steps, current state, default naming templates, CRM placeholders  
 - **PATCH /me/paperless-transition/state** — update `currentStepId`, `completedStepIds`, `notes`, `crmMappingNotes`
@@ -33,13 +33,17 @@ The transition is a **checklist-driven process** with clear steps, API touchpoin
    Call **POST /migration/import** with multipart `files` (max 200 per request). Response includes `batchId` (e.g. `mig_abc123...`).
 
 2. **List batches**  
-   **GET /migration/batches** — returns batch IDs, `createdAt`, and `migrationQueueLength`.
+   **GET /migration/batches** — returns batch IDs, labels, lifecycle status, routed case count, and handoff counts.
 
 3. **Monitor processing**  
    Poll **GET /migration/batches/:batchId** until processing is done. Response includes:
    - `total`, `byStatus`, `byStage`
    - `documentIds`
    - `failed` (id, originalName, failureStage, failureReason)
+   - `contactCandidates`
+   - `matterCandidates`
+   - `reviewFlags`
+   - `handoffHistory`
 
 4. **Handle failures**  
    Use `failed` list to re-upload fixed files or document for manual review (see Fallback below).
@@ -48,7 +52,10 @@ The transition is a **checklist-driven process** with clear steps, API touchpoin
    Use **GET /me/review-queue** and route/recognition APIs to clear NEEDS_REVIEW and UNMATCHED docs.
 
 6. **Export**  
-   After naming is set (see below), run case packet or single-case export and validate paths.
+   After naming is set (see below), generate batch-scoped Clio preview files:
+   - **GET /migration/batches/:batchId/exports/clio/contacts.csv**
+   - **GET /migration/batches/:batchId/exports/clio/matters.csv**
+   - **POST /migration/batches/:batchId/exports/clio/handoff** for the tracked ZIP handoff + audit record
 
 ---
 
@@ -103,10 +110,11 @@ Set naming in the **naming_setup** step; validate in **export_validation**.
 | Area | Productized (automated / in-app) | Manual / operational |
 |------|-----------------------------------|------------------------|
 | Migration upload | POST /migration/import; batch listing and detail | Splitting very large backfiles into batches; deciding what to re-ingest |
-| Processing | Queue (OCR, classification, extraction, case match) | Interpreting failures; deciding re-run vs manual review |
+| Processing | Queue (OCR, classification, extraction, case match) plus batch lifecycle status | Interpreting failures; deciding re-run vs manual review |
 | Review | Review queue API; route/recognition endpoints | Deciding routing for edge cases; bulk actions |
 | Naming | exportNaming in settings; default templates in checklist | Agreeing conventions with firm; one-off overrides |
-| CRM | crmMappingNotes in workflow state; CrmCaseMapping/Clio elsewhere | Deciding matter ID format and field mappings; handoff to CRM sync |
+| CRM | crmMappingNotes in workflow state; CrmCaseMapping/Clio exports elsewhere | Deciding matter ID format and field mappings; handoff to CRM sync |
+| Batch Clio handoff | Batch preview CSVs + tracked ZIP handoff history | Staff sign-off on unresolved review flags before handoff |
 | Cleanup | Duplicate detection; document PATCH | Deciding what to retain/drop; sign-off |
 | Workflow | Checklist and state in API; operational doc | Running steps in order; visibility in admin/UI if built |
 
@@ -125,9 +133,10 @@ Set naming in the **naming_setup** step; validate in **export_validation**.
 | Item | Location |
 |------|----------|
 | Checklist definition & state | `apps/api/src/services/paperlessTransitionWorkflow.ts` |
+| Batch workflow service | `apps/api/src/services/migrationBatchWorkflow.ts` |
 | Default naming templates | `DEFAULT_NAMING_TEMPLATES` in same file |
 | CRM mapping placeholders | `CRM_MAPPING_PLACEHOLDERS` in same file |
 | API: checklist + state | GET/PATCH `/me/paperless-transition/*` in `apps/api/src/http/server.ts` |
-| Migration import/batches | POST/GET `/migration/*` in same file |
+| Migration import/batches | `apps/api/src/http/routes/migration.ts` |
 | Export naming read/write | GET/PATCH `/me/export-naming`; `namingRules.ts` |
 | This runbook | `docs/PAPERLESS_TRANSITION_WORKFLOW.md` |

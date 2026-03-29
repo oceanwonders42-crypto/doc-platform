@@ -69,6 +69,7 @@ import {
 } from "../services/documentReviewState";
 import casesRouter from "./routes/cases";
 import contactsRouter from "./routes/contacts";
+import migrationRouter from "./routes/migration";
 import recordsRequestsRouter from "./routes/recordsRequests";
 import trafficRouter from "./routes/traffic";
 import { Prisma, Role } from "@prisma/client";
@@ -204,6 +205,7 @@ app.get("/auth/microsoft", (req, res) => {
 
 app.use("/cases", casesRouter);
 app.use("/contacts", contactsRouter);
+app.use("/migration", migrationRouter);
 app.use("/records-requests", recordsRequestsRouter);
 app.use("/traffic", trafficRouter);
 
@@ -2230,14 +2232,28 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
     const firmId = (req as any).firmId as string;
     const limitRaw = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
     const cursorRaw = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
+    const migrationBatchIdRaw = Array.isArray(req.query.migrationBatchId)
+      ? req.query.migrationBatchId[0]
+      : req.query.migrationBatchId;
+    const documentIdRaw = Array.isArray(req.query.documentId) ? req.query.documentId[0] : req.query.documentId;
     const limit = Math.min(Math.max(parseInt(String(limitRaw ?? "50"), 10) || 50, 1), 100);
     const cursor = cursorRaw ? String(cursorRaw) : null;
+    const migrationBatchId =
+      typeof migrationBatchIdRaw === "string" && migrationBatchIdRaw.trim()
+        ? migrationBatchIdRaw.trim()
+        : null;
+    const documentId =
+      typeof documentIdRaw === "string" && documentIdRaw.trim() ? documentIdRaw.trim() : null;
 
     const docs = await prisma.document.findMany({
       where: {
         firmId,
+        ...(migrationBatchId ? { migrationBatchId } : {}),
+        ...(documentId ? { id: documentId } : {}),
         OR: [
           { reviewState: "IN_REVIEW" },
+          { status: "FAILED" },
+          { status: "UNMATCHED" },
           {
             reviewState: null,
             status: { in: ["NEEDS_REVIEW", "UPLOADED"] },
@@ -2259,7 +2275,10 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
         routedCaseId: true,
         routingStatus: true,
         duplicateOfId: true,
+        migrationBatchId: true,
         reviewState: true,
+        failureStage: true,
+        failureReason: true,
       },
     });
 
@@ -2324,6 +2343,12 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
       return "review_manually";
     }
 
+    function pushReason(target: string[], value: string | null) {
+      const trimmed = typeof value === "string" ? value.trim() : "";
+      if (!trimmed || target.includes(trimmed)) return;
+      target.push(trimmed);
+    }
+
     const items = page.map((d: typeof page[number]) => {
       const rec = recByDoc.get(d.id);
       const suggestedCaseId = rec?.suggested_case_id ?? null;
@@ -2334,6 +2359,35 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
       const docTypeConfidence = rec?.doc_type_confidence != null ? Number(rec.doc_type_confidence) : null;
       const matchReason = rec?.match_reason ?? null;
       const recommendation = routingRecommendation(caseMatchConfidence, suggestedCaseId);
+      const effectiveReviewState = getEffectiveDocumentReviewState({
+        reviewState: d.reviewState,
+        status: d.status,
+      });
+      const providerName =
+        (d.extractedFields as any)?.providerName ??
+        (d.extractedFields as any)?.provider ??
+        (d.extractedFields as any)?.facility ??
+        null;
+      const caseNumber =
+        rec?.case_number ??
+        (d.extractedFields as any)?.caseNumber ??
+        (d.extractedFields as any)?.claimNumber ??
+        null;
+      const unmatchedReason =
+        !d.routedCaseId && !suggestedCaseId
+          ? d.status === "FAILED"
+            ? "Document processing failed before routing."
+            : "No case match has been confirmed yet."
+          : null;
+      const reviewReasons: string[] = [];
+      if (d.duplicateOfId) pushReason(reviewReasons, "Possible duplicate");
+      if (d.status === "FAILED") pushReason(reviewReasons, "Processing failed");
+      if (d.status === "UNMATCHED") pushReason(reviewReasons, "Unmatched");
+      if (effectiveReviewState === "IN_REVIEW" || d.status === "NEEDS_REVIEW") {
+        pushReason(reviewReasons, "Needs manual review");
+      }
+      if (!d.routedCaseId && !suggestedCaseId) pushReason(reviewReasons, "Needs case routing");
+      if (recommendation === "review_manually") pushReason(reviewReasons, "Low-confidence match");
       const summaryPayload =
         rec?.summary != null
           ? typeof rec.summary === "object"
@@ -2350,27 +2404,36 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
         id: d.id,
         fileName: d.originalName,
         clientName: rec?.client_name ?? (d.extractedFields as any)?.clientName ?? null,
+        caseNumber,
         suggestedCaseId,
         routedCaseId: d.routedCaseId,
+        status: d.status,
+        failureStage: d.failureStage ?? null,
+        failureReason: d.failureReason ?? null,
+        reviewReasons,
+        migrationBatchId: d.migrationBatchId ?? null,
         matchConfidence: caseMatchConfidence,
         matchReason,
+        unmatchedReason,
         docTypeConfidence,
         routingRecommendation: recommendation,
         extractedFields: d.extractedFields,
         docType,
+        providerName,
         createdAt: d.createdAt,
         claimedBy: lastClaimByDoc.get(d.id) ?? null,
-        reviewState: getEffectiveDocumentReviewState({
-          reviewState: d.reviewState,
-          status: d.status,
-        }),
+        reviewState: effectiveReviewState,
         routingStatus: d.routingStatus ?? null,
         lastAuditAction: lastAuditByDoc.get(d.id) ?? null,
         risks,
         insights,
+        classificationSignals: { risks, insights },
         summary: summaryPayload,
         insuranceFields: rec?.insurance_fields ?? null,
         duplicateOfId: d.duplicateOfId ?? null,
+        ocrDiagnostics: ((d.extractedFields as any)?.ocrDiagnostics ?? null) as
+          | { ocrConfidence?: number | null }
+          | null,
       };
     });
     res.json({ items, nextCursor });

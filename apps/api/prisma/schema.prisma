@@ -54,6 +54,15 @@ enum ClioHandoffCaseStatus {
   SKIPPED
 }
 
+enum MigrationBatchStatus {
+  UPLOADED
+  PROCESSING
+  NEEDS_REVIEW
+  READY_FOR_EXPORT
+  EXPORTED
+  FAILED
+}
+
 model Firm {
   id                String    @id @default(cuid())
   name              String
@@ -91,6 +100,8 @@ model Firm {
   casePacketExports           CasePacketExport[]
   clioHandoffExports          ClioHandoffExport[]
   clioHandoffExportCases      ClioHandoffExportCase[]
+  migrationBatches            MigrationBatch[]
+  migrationBatchHandoffs      MigrationBatchClioHandoff[]
   appBugReports               AppBugReport[]
   demandPackages              DemandPackage[]
   reviewQueueEvents           ReviewQueueEvent[]
@@ -200,11 +211,49 @@ model ClioHandoffExport {
 
   firm        Firm                     @relation(fields: [firmId], references: [id], onDelete: Cascade)
   memberships ClioHandoffExportCase[]
+  migrationBatchHandoffs MigrationBatchClioHandoff[]
 
   @@index([firmId, exportedAt])
   @@index([firmId, exportType, exportedAt])
   @@index([firmId, requestFingerprint, exportedAt])
   @@unique([firmId, idempotencyKey])
+}
+
+model MigrationBatch {
+  id             String               @id
+  firmId         String
+  label          String?
+  source         String               @default("paperless_scan_batch")
+  status         MigrationBatchStatus @default(UPLOADED)
+  createdByUserId String?
+  notes          String?              @db.Text
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  completedAt    DateTime?
+  lastExportedAt DateTime?
+
+  firm      Firm                      @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  documents  Document[]
+  handoffs   MigrationBatchClioHandoff[]
+
+  @@index([firmId, createdAt])
+  @@index([firmId, status, createdAt])
+}
+
+model MigrationBatchClioHandoff {
+  id                  String   @id @default(cuid())
+  batchId             String
+  firmId              String
+  clioHandoffExportId String
+  createdAt           DateTime @default(now())
+
+  batch            MigrationBatch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  firm             Firm             @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  clioHandoffExport ClioHandoffExport @relation(fields: [clioHandoffExportId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, clioHandoffExportId])
+  @@index([firmId, createdAt])
+  @@index([batchId, createdAt])
 }
 
 model ClioHandoffExportCase {
@@ -231,6 +280,7 @@ model ClioHandoffExportCase {
 model Document {
   id                  String          @id @default(cuid())
   firmId              String
+  migrationBatchId    String?
   source              String
   spacesKey           String
   originalName        String
@@ -264,11 +314,14 @@ model Document {
   duplicates  Document[] @relation("DocumentDuplicate")
 
   firm Firm @relation(fields: [firmId], references: [id])
+  migrationBatch MigrationBatch? @relation(fields: [migrationBatchId], references: [id], onDelete: SetNull)
 
   auditEvents       DocumentAuditEvent[]
   activityFeedItems ActivityFeedItem[]
 
   @@index([firmId])
+  @@index([migrationBatchId])
+  @@index([firmId, migrationBatchId])
   @@index([status])
   @@index([firmId, file_sha256])
   @@index([firmId, reviewState])

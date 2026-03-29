@@ -14,9 +14,13 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const limit = searchParams.get("limit") ?? "50";
   const cursor = searchParams.get("cursor") ?? "";
+  const migrationBatchId = searchParams.get("migrationBatchId") ?? "";
+  const documentId = searchParams.get("documentId") ?? "";
   const url = new URL("/me/review-queue", base);
   url.searchParams.set("limit", limit);
   if (cursor) url.searchParams.set("cursor", cursor);
+  if (migrationBatchId) url.searchParams.set("migrationBatchId", migrationBatchId);
+  if (documentId) url.searchParams.set("documentId", documentId);
   const res = await fetch(String(url), {
     headers: { Authorization: `Bearer ${key}` },
     cache: "no-store",

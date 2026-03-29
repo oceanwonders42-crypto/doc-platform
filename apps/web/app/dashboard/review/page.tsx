@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DataTable, Column } from "@/components/dashboard/DataTable";
@@ -28,6 +29,7 @@ type ReviewItem = {
   providerName: string | null;
   routingRecommendation: "route" | "reject" | "review_manually";
   createdAt: string;
+  migrationBatchId?: string | null;
   ocrDiagnostics?: { ocrConfidence?: number | null } | null;
 };
 
@@ -46,6 +48,7 @@ function isCasesListResponse(res: unknown): res is CasesListResponse {
 }
 
 export default function ReviewQueuePage() {
+  const searchParams = useSearchParams();
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [cases, setCases] = useState<CaseItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -58,11 +61,32 @@ export default function ReviewQueuePage() {
   const [drawerCaseNumber, setDrawerCaseNumber] = useState("");
   const [drawerCaseId, setDrawerCaseId] = useState("");
   const [drawerSaving, setDrawerSaving] = useState(false);
+  const migrationBatchId = searchParams?.get("migrationBatchId")?.trim() ?? "";
+  const focusDocumentId = searchParams?.get("documentId")?.trim() ?? "";
+  const batchLabel = searchParams?.get("batchLabel")?.trim() ?? "";
+  const returnTo = searchParams?.get("returnTo")?.trim() ?? "";
+  const batchContextActive = migrationBatchId.length > 0;
+  const batchLabelText = batchLabel || (batchContextActive ? `Batch ${migrationBatchId.slice(-8)}` : "");
+  const fallbackReturnHref = batchContextActive ? `/dashboard/migration/${migrationBatchId}` : "/dashboard/migration";
+  const returnHref = returnTo || fallbackReturnHref;
+  const showAllBatchHref = useMemo(() => {
+    if (!batchContextActive) return "/dashboard/review";
+    const params = new URLSearchParams();
+    params.set("migrationBatchId", migrationBatchId);
+    if (batchLabelText) params.set("batchLabel", batchLabelText);
+    if (returnTo) params.set("returnTo", returnTo);
+    return `/dashboard/review?${params.toString()}`;
+  }, [batchContextActive, batchLabelText, migrationBatchId, returnTo]);
 
-  function load() {
+  const load = useCallback(() => {
     setLoading(true);
+    setError(null);
     const base = getApiBase();
-    fetch(`${base}/me/review-queue?limit=50`, { headers: getAuthHeader(), ...getFetchOptions() })
+    const params = new URLSearchParams();
+    params.set("limit", "50");
+    if (migrationBatchId) params.set("migrationBatchId", migrationBatchId);
+    if (focusDocumentId) params.set("documentId", focusDocumentId);
+    fetch(`${base}/me/review-queue?${params.toString()}`, { headers: getAuthHeader(), ...getFetchOptions() })
       .then(parseJsonResponse)
       .then((res: unknown) => {
         if (isReviewQueueResponse(res) && res.items) setItems(res.items);
@@ -70,11 +94,19 @@ export default function ReviewQueuePage() {
       })
       .catch((e) => setError(e?.message ?? "Request failed"))
       .finally(() => setLoading(false));
-  }
+  }, [focusDocumentId, migrationBatchId]);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
+
+  useEffect(() => {
+    if (!focusDocumentId || items.length === 0) return;
+    const matchingItem = items.find((item) => item.id === focusDocumentId);
+    if (matchingItem) {
+      setDrawerItem(matchingItem);
+    }
+  }, [focusDocumentId, items]);
 
   useEffect(() => {
     if (!drawerItem) return;
@@ -381,13 +413,68 @@ export default function ReviewQueuePage() {
     },
   ];
 
+  const pageDescription = batchContextActive
+    ? focusDocumentId
+      ? `Focused review for one blocked document from ${batchLabelText}. Resolve it here, then return to the batch.`
+      : `Showing only blocked documents from ${batchLabelText}. Resolve these items to unblock batch export.`
+    : "Documents needing manual review or routing. Confirm route, reject, or open to review.";
+  const emptyTitle = batchContextActive
+    ? focusDocumentId
+      ? "This document is no longer in batch review"
+      : "No blocked documents remain in this batch"
+    : "No documents in review";
+  const emptyDescription = batchContextActive
+    ? focusDocumentId
+      ? "The selected document may already be resolved or no longer needs manual review."
+      : "The batch does not currently have any documents in the review workflow."
+    : "When documents need manual routing or review, they’ll appear here.";
+  const primaryEmptyHref = batchContextActive ? returnHref : "/dashboard/documents";
+  const primaryEmptyLabel = batchContextActive ? "Back to batch" : "View documents";
+
   return (
     <div style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
       <PageHeader
         breadcrumbs={[{ label: "Review Queue" }]}
         title="Review queue"
-        description="Documents needing manual review or routing. Confirm route, reject, or open to review."
+        description={pageDescription}
+        action={
+          batchContextActive ? (
+            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
+              <Link href={returnHref} className="onyx-link">
+                Back to batch
+              </Link>
+              {focusDocumentId ? (
+                <Link href={showAllBatchHref} className="onyx-link">
+                  Show all batch docs
+                </Link>
+              ) : (
+                <Link href="/dashboard/review" className="onyx-link">
+                  Clear batch filter
+                </Link>
+              )}
+            </div>
+          ) : undefined
+        }
       />
+
+      {batchContextActive && (
+        <div
+          className="onyx-card"
+          style={{ padding: "1rem 1.25rem", marginBottom: "1rem", borderColor: "var(--onyx-accent)" }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
+            <div style={{ display: "grid", gap: "0.35rem" }}>
+              <p style={{ margin: 0, fontWeight: 600 }}>Batch-scoped review: {batchLabelText}</p>
+              <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+                Showing only documents from this migration batch that still need manual review, routing, or correction before export.
+              </p>
+            </div>
+            <Link href={returnHref} className="onyx-btn-secondary" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+              Return to batch
+            </Link>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="onyx-card" style={{ padding: "1rem", marginBottom: "1rem", borderColor: "var(--onyx-error)" }}>
@@ -415,13 +502,25 @@ export default function ReviewQueuePage() {
           <div style={{ flex: 1, minWidth: 0 }}>
             {items.length === 0 ? (
               <div className="onyx-card" style={{ padding: "2.5rem", textAlign: "center" }}>
-                <p style={{ margin: 0, fontSize: "1rem", fontWeight: 500, color: "var(--onyx-text)" }}>No documents in review</p>
+                <p style={{ margin: 0, fontSize: "1rem", fontWeight: 500, color: "var(--onyx-text)" }}>{emptyTitle}</p>
                 <p style={{ margin: "0.5rem 0 0", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
                   When documents need manual routing or review, they’ll appear here.
                 </p>
-                <Link href="/dashboard/documents" className="onyx-btn-primary" style={{ display: "inline-block", marginTop: "1rem", textDecoration: "none" }}>
-                  View documents
-                </Link>
+                {batchContextActive && (
+                  <p style={{ margin: "0.5rem 0 0", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+                    {emptyDescription}
+                  </p>
+                )}
+                <div style={{ display: "flex", justifyContent: "center", gap: "0.75rem", flexWrap: "wrap", marginTop: "1rem" }}>
+                  <Link href={primaryEmptyHref} className="onyx-btn-primary" style={{ display: "inline-block", textDecoration: "none" }}>
+                    {primaryEmptyLabel}
+                  </Link>
+                  {batchContextActive && (
+                    <Link href="/dashboard/review" className="onyx-btn-secondary" style={{ display: "inline-block", textDecoration: "none" }}>
+                      Open full review queue
+                    </Link>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="onyx-card" style={{ overflow: "hidden" }}>
@@ -447,6 +546,11 @@ export default function ReviewQueuePage() {
                   {actioningId === drawerItem.id ? "…" : "Reject"}
                 </button>
                 <Link href={`/dashboard/documents/${drawerItem.id}`} className="onyx-link" style={{ fontSize: "0.8125rem", alignSelf: "center" }}>Open full page</Link>
+                {batchContextActive && (
+                  <Link href={returnHref} className="onyx-link" style={{ fontSize: "0.8125rem", alignSelf: "center" }}>
+                    Back to batch
+                  </Link>
+                )}
               </div>
               {drawerItem.duplicateOfId && (
                 <div style={{ marginBottom: "0.75rem" }}>

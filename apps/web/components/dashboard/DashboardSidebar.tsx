@@ -76,6 +76,13 @@ const IconDownload = () => (
     <path d="M12 15V3" />
   </svg>
 );
+const IconArchive = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <rect x="3" y="4" width="18" height="4" rx="1" />
+    <path d="M5 8h14v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2Z" />
+    <path d="M10 12h4" />
+  </svg>
+);
 const IconTraffic = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
     <circle cx="12" cy="12" r="3" />
@@ -168,6 +175,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard/demands", labelKey: "nav.demands", icon: <IconDollar /> },
   { href: "/dashboard/records-requests", labelKey: "nav.recordsRequests", icon: <IconClipboard /> },
   { href: "/dashboard/exports", labelKey: "nav.exports", icon: <IconDownload />, staffOnly: true },
+  { href: "/dashboard/migration", labelKey: "nav.migration", icon: <IconArchive />, staffOnly: true },
   { href: "/dashboard/review", labelKey: "nav.reviewQueue", icon: <IconEye />, staffOnly: true },
   { href: "/dashboard/analytics", labelKey: "nav.reports", icon: <IconChart />, analyticsUsageOnly: true },
   { href: "/dashboard/traffic", labelKey: "nav.traffic", icon: <IconTraffic />, staffOnly: true },

@@ -50,6 +50,7 @@ export async function ingestMigrationDocument(input: MigrationIngestInput): Prom
   const doc = await prisma.document.create({
     data: {
       firmId,
+      migrationBatchId: batchId,
       source: "migration",
       spacesKey: key,
       originalName: originalMeta.normalizedFilename,
