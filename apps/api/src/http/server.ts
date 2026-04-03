@@ -89,6 +89,7 @@ import {
 import { startDocumentWorkerLoop } from "../workers/documentWorkerLoop";
 import { validateProductionRuntime } from "../lib/productionRuntime";
 import { ensureDemoSeedObjects } from "../dev/demoSeedObjects";
+import { getJobCounts } from "../services/jobQueue";
 
 export const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -1607,6 +1608,69 @@ app.patch("/me/notifications/read-all", auth, requireRole(Role.STAFF), async (re
     const count = await markAllNotificationsRead(firmId);
     res.json({ ok: true, markedCount: count });
   } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Recent activity feed for dashboard
+app.get("/activity-feed", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const limitRaw = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
+    const limit = Math.min(Math.max(1, parseInt(String(limitRaw ?? "10"), 10) || 10), 50);
+
+    const items = await prisma.activityFeedItem.findMany({
+      where: { firmId },
+      select: {
+        id: true,
+        caseId: true,
+        documentId: true,
+        type: true,
+        title: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
+
+    res.json({
+      ok: true,
+      items: items.map((item) => ({
+        ...item,
+        createdAt: item.createdAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    console.error("Failed to get activity feed", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// Queue status summary for dashboard
+app.get("/me/queue-status", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const [db, documentPipelinePending] = await Promise.all([
+      getJobCounts(firmId),
+      prisma.document.count({
+        where: {
+          firmId,
+          processingStage: { not: "complete" },
+        },
+      }),
+    ]);
+
+    res.json({
+      ok: true,
+      db: {
+        queued: db.queued,
+        running: db.running,
+        failed: db.failed,
+      },
+      documentPipelinePending,
+    });
+  } catch (e: any) {
+    console.error("Failed to get queue status", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
