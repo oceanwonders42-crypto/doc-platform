@@ -25,6 +25,25 @@ function splitName(fullName: string): { firstName: string | null; lastName: stri
   return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
 }
 
+function isLocalObjectStorageUnavailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  const nestedErrors =
+    typeof error === "object" && error !== null && "errors" in error && Array.isArray((error as { errors?: unknown }).errors)
+      ? ((error as { errors: unknown[] }).errors as unknown[])
+      : [];
+
+  return (
+    code === "ECONNREFUSED" ||
+    message.includes("ECONNREFUSED") ||
+    message.includes("connect ECONNREFUSED") ||
+    nestedErrors.some((nested) => isLocalObjectStorageUnavailable(nested))
+  );
+}
+
 async function main() {
   const databaseUrl = process.env.DATABASE_URL?.trim();
   if (!databaseUrl) {
@@ -178,17 +197,25 @@ async function main() {
     }
   }
 
-  await ensureDemoSeedObjects(
-    documentData.map((d, index) => ({
-      spacesKey: `demo/seed-${index + 1}.pdf`,
-      originalName: `demo-doc-${index + 1}.pdf`,
-      caseNumber: d.caseNumber,
-      clientName: d.clientName,
-      routedCaseId: d.routedCaseId,
-      status: d.status,
-      hasOffer: d.hasOffer,
-    }))
-  );
+  try {
+    await ensureDemoSeedObjects(
+      documentData.map((d, index) => ({
+        spacesKey: `demo/seed-${index + 1}.pdf`,
+        originalName: `demo-doc-${index + 1}.pdf`,
+        caseNumber: d.caseNumber,
+        clientName: d.clientName,
+        routedCaseId: d.routedCaseId,
+        status: d.status,
+        hasOffer: d.hasOffer,
+      }))
+    );
+  } catch (error) {
+    if (process.env.NODE_ENV !== "production" && isLocalObjectStorageUnavailable(error)) {
+      console.warn("Local object storage is unavailable; continuing demo seed without uploading demo PDFs.");
+    } else {
+      throw error;
+    }
+  }
 
   const auditActions: Array<{ documentIndex: number; action: string; fromCaseId: string | null; toCaseId: string | null }> = [
     { documentIndex: 0, action: "suggested", fromCaseId: null, toCaseId: null },
