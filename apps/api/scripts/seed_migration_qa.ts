@@ -137,7 +137,35 @@ async function createQaDocuments(
   }>
 ) {
   for (const document of input) {
-    await prisma.document.create({ data: document });
+    await pgPool.query(
+      `insert into "Document"
+        ("id", "firmId", "migrationBatchId", "source", "spacesKey", "originalName", "mimeType", "pageCount",
+         "status", "processingStage", "reviewState", "routedCaseId", "routedSystem", "routingStatus",
+         "confidence", "ingestedAt", "processedAt")
+       values
+        ($1, $2, $3, $4, $5, $6, $7, $8,
+         $9::"DocumentStatus", $10::"ProcessingStage", $11::"DocumentReviewState", $12, $13, $14,
+         $15, $16, $17)`,
+      [
+        document.id,
+        document.firmId,
+        document.migrationBatchId,
+        document.source,
+        document.spacesKey,
+        document.originalName,
+        document.mimeType,
+        document.pageCount,
+        document.status,
+        document.processingStage,
+        document.reviewState,
+        document.routedCaseId,
+        document.routedSystem,
+        document.routingStatus,
+        document.confidence,
+        document.ingestedAt,
+        document.processedAt,
+      ]
+    );
   }
 }
 
@@ -341,11 +369,12 @@ async function main() {
 }
 
 main()
-  .catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
+  .then(async () => {
     await Promise.allSettled([prisma.$disconnect(), pgPool.end()]);
-    process.exit(process.exitCode ?? 0);
+    process.exit(0);
+  })
+  .catch(async (error) => {
+    console.error(error);
+    await Promise.allSettled([prisma.$disconnect(), pgPool.end()]);
+    process.exit(1);
   });
