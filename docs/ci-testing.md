@@ -1,6 +1,6 @@
 # CI test runs
 
-Current checked-in CI covers the build-time validation that is already proven locally for the doc-platform repo.
+Current checked-in CI covers both the base build-time validation path and a dedicated seeded migration browser path for the doc-platform repo.
 
 **Local launch path:** For service startup, demo seed, and manual migration QA, see [launch-readiness-runbook.md](launch-readiness-runbook.md).
 
@@ -14,12 +14,12 @@ Current checked-in CI covers the build-time validation that is already proven lo
 
 - **Migration browser validation:** `.github/workflows/migration-browser-validation.yml`
   - Triggers: `push` / `pull_request` → `main`
-  - Spins up Postgres, runs Prisma migrations, seeds demo + migration QA data
+  - Spins up Postgres, runs Prisma migrations, seeds demo data, then reruns the migration QA seed to prove deterministic final state
   - Boots API (port 4000) and Web (port 3211) against the seeded DB
   - Runs Playwright spec `apps/web/tests/migration-workflow.live.spec.ts` (chromium only)
   - Uploads Playwright report artifact
 
-This workflow is intentionally small. It only runs checks that are already stable and valuable without requiring database, Redis, API secrets, or demo seed data.
+This workflow is intentionally small. It only runs checks that are already stable and valuable without requiring Redis, production secrets, or unrelated browser coverage.
 
 ## Exact commands mirrored by CI
 
@@ -39,16 +39,18 @@ pnpm --dir apps/web build
 - No email/worker pipelines
 - No object storage integration
 
-## Why Playwright is not in the workflow yet
+## Browser workflow boundary
 
-The migration workflow is now validated locally with seeded data, but a deterministic CI browser pass would still require extra setup:
+The migration browser workflow is scoped to the rerun-safe seeded local path only:
 
-- local database service
-- optional Redis service depending on the path under test
-- API startup
-- seed/setup commands for migration data
+- Postgres service
+- Prisma migrations
+- demo seed + migration QA seed + migration QA seed rerun
+- API startup with the inline worker disabled
+- web startup
+- one live seeded Playwright spec
 
-That can be added later as a separate workflow once the repo is ready to own that extra setup. This file should not claim that browser CI already exists until that workflow is actually checked in.
+It does not try to cover Redis-backed processing, object storage integrations, or the full browser suite.
 
 ## See also
 

@@ -27,11 +27,13 @@ jobs:
           --health-retries 5
 
     env:
+      CI: true
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/doc_platform
       NEXT_PUBLIC_API_URL: http://127.0.0.1:4000
       SESSION_SECRET: ci-session-secret
       NEXTAUTH_SECRET: ci-nextauth-secret
       OPENAI_API_KEY: dummy
+      ENABLE_INLINE_DOCUMENT_WORKER: "false"
       NODE_ENV: development
 
     steps:
@@ -56,7 +58,7 @@ jobs:
         run: pnpm --dir apps/web exec playwright install --with-deps chromium
 
       - name: Run database migrations
-        run: pnpm --dir apps/api prisma migrate deploy
+        run: pnpm --dir apps/api exec prisma migrate deploy
 
       - name: Seed demo data
         run: pnpm --dir apps/api exec tsx scripts/seed_demo_data.ts
@@ -64,9 +66,12 @@ jobs:
       - name: Seed migration QA data
         run: pnpm --dir apps/api exec tsx scripts/seed_migration_qa.ts
 
+      - name: Rerun migration QA seed for determinism
+        run: pnpm --dir apps/api exec tsx scripts/seed_migration_qa.ts
+
       - name: Start API server
         run: |
-          PORT=4000 pnpm --dir apps/api exec tsx src/http/server.ts &
+          PORT=4000 ENABLE_INLINE_DOCUMENT_WORKER=false pnpm --dir apps/api exec tsx src/http/server.ts &
           echo $! > /tmp/api.pid
 
       - name: Start Web server
@@ -74,13 +79,14 @@ jobs:
           PORT=3211 NEXT_PUBLIC_API_URL=http://127.0.0.1:4000 pnpm --dir apps/web dev --hostname 0.0.0.0 &
           echo $! > /tmp/web.pid
 
-      - name: Wait for web to be ready
-        run: pnpm dlx wait-on http://127.0.0.1:3211/login
+      - name: Wait for app readiness
+        run: pnpm dlx wait-on http://127.0.0.1:4000/health http://127.0.0.1:3211/login
 
       - name: Run migration Playwright spec
         env:
           PLAYWRIGHT_BASE_URL: http://127.0.0.1:3211
-        run: pnpm --dir apps/web exec playwright test tests/migration-workflow.live.spec.ts --project=chromium
+          PLAYWRIGHT_HTML_OPEN: never
+        run: pnpm --dir apps/web exec playwright test tests/migration-workflow.live.spec.ts --project=chromium --reporter=line,html
 
       - name: Upload Playwright report
         if: always()
