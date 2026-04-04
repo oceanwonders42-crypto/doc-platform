@@ -34,6 +34,11 @@ jobs:
       NEXTAUTH_SECRET: ci-nextauth-secret
       OPENAI_API_KEY: dummy
       ENABLE_INLINE_DOCUMENT_WORKER: "false"
+      S3_ENDPOINT: http://127.0.0.1:9000
+      S3_ACCESS_KEY: demo
+      S3_SECRET_KEY: demo-secret
+      S3_BUCKET: demo-seed-bucket
+      S3_REGION: us-east-1
       NODE_ENV: development
 
     steps:
