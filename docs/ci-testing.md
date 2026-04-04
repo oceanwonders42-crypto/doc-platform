@@ -4,16 +4,20 @@ Current checked-in CI covers the build-time validation that is already proven lo
 
 **Local launch path:** For service startup, demo seed, and manual migration QA, see [launch-readiness-runbook.md](launch-readiness-runbook.md).
 
-## Current GitHub Actions workflow
+## Current GitHub Actions workflows
 
-- **File:** `.github/workflows/doc-platform-validation.yml`
-- **Triggers:** `push` and `pull_request` targeting `main`
-- **Package manager:** `pnpm@10.30.3`
-- **Node version:** `20`
-- **Checks run:**
-  - `apps/api` TypeScript compile
-  - `apps/web` TypeScript compile
-  - `apps/web` production build
+- **Base validation:** `.github/workflows/doc-platform-validation.yml`
+  - Triggers: `push` / `pull_request` → `main`
+  - Package manager: `pnpm@10.30.3`
+  - Node: `20`
+  - Checks: `apps/api` typecheck, `apps/web` typecheck, `apps/web` production build
+
+- **Migration browser validation:** `.github/workflows/migration-browser-validation.yml`
+  - Triggers: `push` / `pull_request` → `main`
+  - Spins up Postgres, runs Prisma migrations, seeds demo + migration QA data
+  - Boots API (port 4000) and Web (port 3211) against the seeded DB
+  - Runs Playwright spec `apps/web/tests/migration-workflow.live.spec.ts` (chromium only)
+  - Uploads Playwright report artifact
 
 This workflow is intentionally small. It only runs checks that are already stable and valuable without requiring database, Redis, API secrets, or demo seed data.
 
@@ -28,15 +32,12 @@ pnpm --dir apps/web exec tsc --noEmit
 pnpm --dir apps/web build
 ```
 
-## What CI does not run yet
+## What CI still does not run
 
-- No Playwright browser tests
-- No API server startup
-- No PostgreSQL or Redis services
-- No seeded migration workflow data
-- No secret-dependent validation
-
-That is intentional for now. The current workflow is meant to catch type/build regressions on every push and PR with minimal infrastructure.
+- No Redis service
+- No full Playwright suite (only the migration live spec)
+- No email/worker pipelines
+- No object storage integration
 
 ## Why Playwright is not in the workflow yet
 

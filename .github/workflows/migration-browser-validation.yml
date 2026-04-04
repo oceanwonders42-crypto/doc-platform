@@ -1,0 +1,91 @@
+name: Migration Browser Validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  migration-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: doc_platform
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d doc_platform"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/doc_platform
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:4000
+      SESSION_SECRET: ci-session-secret
+      NEXTAUTH_SECRET: ci-nextauth-secret
+      OPENAI_API_KEY: dummy
+      NODE_ENV: development
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright (chromium only)
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+
+      - name: Run database migrations
+        run: pnpm --dir apps/api prisma migrate deploy
+
+      - name: Seed demo data
+        run: pnpm --dir apps/api exec tsx scripts/seed_demo_data.ts
+
+      - name: Seed migration QA data
+        run: pnpm --dir apps/api exec tsx scripts/seed_migration_qa.ts
+
+      - name: Start API server
+        run: |
+          PORT=4000 pnpm --dir apps/api exec tsx src/http/server.ts &
+          echo $! > /tmp/api.pid
+
+      - name: Start Web server
+        run: |
+          PORT=3211 NEXT_PUBLIC_API_URL=http://127.0.0.1:4000 pnpm --dir apps/web dev --hostname 0.0.0.0 &
+          echo $! > /tmp/web.pid
+
+      - name: Wait for web to be ready
+        run: pnpm dlx wait-on http://127.0.0.1:3211/login
+
+      - name: Run migration Playwright spec
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:3211
+        run: pnpm --dir apps/web exec playwright test tests/migration-workflow.live.spec.ts --project=chromium
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-playwright-report
+          path: apps/web/playwright-report
+          if-no-files-found: ignore
