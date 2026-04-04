@@ -137,35 +137,48 @@ async function createQaDocuments(
   }>
 ) {
   for (const document of input) {
-    await pgPool.query(
-      `insert into "Document"
-        ("id", "firmId", "migrationBatchId", "source", "spacesKey", "originalName", "mimeType", "pageCount",
-         "status", "processingStage", "reviewState", "routedCaseId", "routedSystem", "routingStatus",
-         "confidence", "ingestedAt", "processedAt")
-       values
-        ($1, $2, $3, $4, $5, $6, $7, $8,
-         $9::"DocumentStatus", $10::"ProcessingStage", $11::"DocumentReviewState", $12, $13, $14,
-         $15, $16, $17)`,
-      [
-        document.id,
-        document.firmId,
-        document.migrationBatchId,
-        document.source,
-        document.spacesKey,
-        document.originalName,
-        document.mimeType,
-        document.pageCount,
-        document.status,
-        document.processingStage,
-        document.reviewState,
-        document.routedCaseId,
-        document.routedSystem,
-        document.routingStatus,
-        document.confidence,
-        document.ingestedAt,
-        document.processedAt,
-      ]
-    );
+    await prisma.document.upsert({
+      where: { id: document.id },
+      create: {
+        id: document.id,
+        firmId: document.firmId,
+        migrationBatchId: document.migrationBatchId,
+        source: document.source,
+        spacesKey: document.spacesKey,
+        originalName: document.originalName,
+        mimeType: document.mimeType,
+        pageCount: document.pageCount,
+        status: document.status,
+        processingStage: document.processingStage,
+        reviewState: document.reviewState,
+        routedCaseId: document.routedCaseId,
+        routedSystem: document.routedSystem,
+        routingStatus: document.routingStatus,
+        confidence: document.confidence,
+        ingestedAt: document.ingestedAt,
+        processedAt: document.processedAt,
+      },
+      update: {
+        firmId: document.firmId,
+        migrationBatchId: document.migrationBatchId,
+        source: document.source,
+        spacesKey: document.spacesKey,
+        originalName: document.originalName,
+        mimeType: document.mimeType,
+        pageCount: document.pageCount,
+        status: document.status,
+        processingStage: document.processingStage,
+        reviewState: document.reviewState,
+        routedCaseId: document.routedCaseId,
+        routedSystem: document.routedSystem,
+        routingStatus: document.routingStatus,
+        confidence: document.confidence,
+        ingestedAt: document.ingestedAt,
+        processedAt: document.processedAt,
+        failureStage: null,
+        failureReason: null,
+      },
+    });
   }
 }
 
