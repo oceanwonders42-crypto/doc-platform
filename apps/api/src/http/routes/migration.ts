@@ -16,6 +16,7 @@ import {
 } from "../../services/migrationBatchWorkflow";
 import { auth } from "../middleware/auth";
 import { requireRole } from "../middleware/requireRole";
+import { computeMigrationSystemReadiness } from "../../services/migrationSystemReadiness";
 
 const router = Router();
 const upload = multer({
@@ -233,6 +234,17 @@ router.post("/batches/:batchId/exports/clio/handoff", auth, requireRole(Role.STA
         ? 404
         : 500;
     res.status(status).json({ ok: false, error: message });
+  }
+});
+
+router.get("/system-readiness", auth, requireRole(Role.STAFF), async (_req, res) => {
+  try {
+    const result = await computeMigrationSystemReadiness();
+    res.json({ ok: true, readiness: result.readiness, warnings: result.warnings, nextActions: result.nextActions });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[migration/system-readiness GET]", e);
+    res.status(500).json({ ok: false, error: msg });
   }
 });
 
