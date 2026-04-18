@@ -3,6 +3,11 @@ import { ClioHandoffExportSubtype, ClioHandoffExportType, Role } from "@prisma/c
 import { Router } from "express";
 
 import {
+  buildBatchClioHandoffExport,
+  type BatchClioHandoffExportResult,
+  type BatchClioHandoffManifest,
+} from "../../services/batchClioHandoffExport";
+import {
   findRecentClioHandoffDuplicate,
   recordBatchClioHandoff,
   resolveClioHandoffActorSnapshot,
@@ -35,6 +40,137 @@ function parseBooleanFlag(value: unknown): boolean {
   if (typeof value !== "string") return false;
   const normalized = value.trim().toLowerCase();
   return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
+function readIncludedCaseIdsFromManifestJson(value: unknown): string[] {
+  if (!value || typeof value !== "object" || !("includedCaseIds" in value)) {
+    return [];
+  }
+
+  const includedCaseIds = (value as { includedCaseIds?: unknown }).includedCaseIds;
+  if (!Array.isArray(includedCaseIds)) {
+    return [];
+  }
+
+  return includedCaseIds
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+type ReplayManifestSignature = {
+  includedCaseIds: string[];
+  includedCaseNumbers: string[];
+  includedCases: string[];
+  skippedCases: string[];
+  contactsRowCount: number;
+  mattersRowCount: number;
+};
+
+function makeReplayManifestSignature(manifest: BatchClioHandoffManifest): ReplayManifestSignature {
+  return {
+    includedCaseIds: [...manifest.includedCaseIds].map((value) => value.trim()).sort(),
+    includedCaseNumbers: [...manifest.includedCaseNumbers].map((value) => value.trim()).sort(),
+    includedCases: manifest.includedCases.map((item) => item.id).sort(),
+    skippedCases: manifest.skippedCases.map((item) => `${item.id}:::${item.reason}`).sort(),
+    contactsRowCount: Number(manifest.contactsRowCount) || 0,
+    mattersRowCount: Number(manifest.mattersRowCount) || 0,
+  };
+}
+
+function buildReplayManifestSignature(result: BatchClioHandoffExportResult): ReplayManifestSignature {
+  return makeReplayManifestSignature(result.manifest);
+}
+
+function readReplayManifestSignature(value: unknown): ReplayManifestSignature | null {
+  if (!value || typeof value !== "object") return null;
+
+  const record = value as Record<string, unknown>;
+  const includedCaseIds = Array.isArray(record.includedCaseIds)
+    ? record.includedCaseIds
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .sort()
+    : null;
+  const includedCaseNumbers = Array.isArray(record.includedCaseNumbers)
+    ? record.includedCaseNumbers
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .sort()
+    : null;
+  const includedCases = Array.isArray(record.includedCases)
+    ? record.includedCases
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const candidate = item as { id?: unknown };
+          return typeof candidate.id === "string" ? candidate.id : null;
+        })
+        .filter((item): item is string => item !== null)
+        .map((item) => item.trim())
+        .sort()
+    : null;
+  const skippedCases = Array.isArray(record.skippedCases)
+    ? record.skippedCases
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const candidate = item as { id?: unknown; reason?: unknown };
+          if (typeof candidate.id !== "string") return null;
+          if (typeof candidate.reason !== "string") return null;
+          return `${candidate.id}:::${candidate.reason}`;
+        })
+        .filter((item): item is string => item !== null)
+        .sort()
+    : null;
+  const contactsRowCount =
+    typeof record.contactsRowCount === "number"
+      ? record.contactsRowCount
+      : typeof record.contactsRowCount === "string"
+        ? Number(record.contactsRowCount)
+        : null;
+  const mattersRowCount =
+    typeof record.mattersRowCount === "number"
+      ? record.mattersRowCount
+      : typeof record.mattersRowCount === "string"
+        ? Number(record.mattersRowCount)
+        : null;
+
+  if (
+    includedCaseIds === null ||
+    includedCaseNumbers === null ||
+    includedCases === null ||
+    skippedCases === null ||
+    contactsRowCount === null ||
+    mattersRowCount === null
+  ) {
+    return null;
+  }
+
+  return {
+    includedCaseIds,
+    includedCaseNumbers,
+    includedCases,
+    skippedCases,
+    contactsRowCount,
+    mattersRowCount,
+  };
+}
+
+function isSameReplayManifestSignature(
+  left: ReplayManifestSignature,
+  right: ReplayManifestSignature
+): boolean {
+  return (
+    left.contactsRowCount === right.contactsRowCount &&
+    left.mattersRowCount === right.mattersRowCount &&
+    left.includedCaseIds.length === right.includedCaseIds.length &&
+    left.includedCaseNumbers.length === right.includedCaseNumbers.length &&
+    left.includedCases.length === right.includedCases.length &&
+    left.skippedCases.length === right.skippedCases.length &&
+    left.includedCaseIds.every((value, index) => value === right.includedCaseIds[index]) &&
+    left.includedCaseNumbers.every((value, index) => value === right.includedCaseNumbers[index]) &&
+    left.includedCases.every((value, index) => value === right.includedCases[index]) &&
+    left.skippedCases.every((value, index) => value === right.skippedCases[index])
+  );
 }
 
 function getClioIdempotencyKey(req: Parameters<typeof auth>[0]): string | null {
@@ -180,25 +316,23 @@ router.post("/batches/:batchId/exports/clio/handoff", auth, requireRole(Role.STA
     const reExportReason = allowReexport
       ? trimToNull((req.body ?? {}).reexportReason) ?? "operator_override"
       : null;
-
-    const preview = await buildMigrationBatchClioPreview(firmId, batchId, {
-      allowReexport,
-    });
-    if (preview.manifest.includedCaseIds.length === 0) {
+    const batchDetail = await getMigrationBatchDetail(firmId, batchId);
+    const currentCaseIds = [...batchDetail.exportSummary.routedCaseIds].sort();
+    if (currentCaseIds.length === 0) {
       return res.status(409).json({
         ok: false,
         error: "No routed cases in this migration batch are currently ready for Clio handoff.",
-        skippedCases: preview.manifest.skippedCases,
+        skippedCases: [],
       });
     }
 
-    const idempotencyKey = getClioIdempotencyKey(req);
     const requestFingerprint = [
       "migration_batch",
       batchId,
       allowReexport ? "reexport" : "first_export",
-      [...preview.manifest.includedCaseIds].sort().join(","),
+      currentCaseIds.join(","),
     ].join(":");
+    const idempotencyKey = getClioIdempotencyKey(req);
     const duplicate = await findRecentClioHandoffDuplicate({
       firmId,
       exportType: ClioHandoffExportType.BATCH,
@@ -208,9 +342,69 @@ router.post("/batches/:batchId/exports/clio/handoff", auth, requireRole(Role.STA
     });
 
     if (duplicate) {
+      if (
+        duplicate.reExportOverride !== allowReexport ||
+        (duplicate.reExportReason ?? null) !== reExportReason
+      ) {
+        return res.status(409).json({
+          ok: false,
+          error: "This Idempotency-Key was already used for a different Clio handoff export request.",
+        });
+      }
+      const replayCurrentPreview = await buildBatchClioHandoffExport({
+        firmId,
+        caseIds: currentCaseIds,
+        allowReexport: true,
+      });
+      const persistedReplaySignature = readReplayManifestSignature(duplicate.manifestJson);
+      const currentReplaySignature = buildReplayManifestSignature(replayCurrentPreview);
+      if (
+        persistedReplaySignature === null ||
+        !isSameReplayManifestSignature(persistedReplaySignature, currentReplaySignature)
+      ) {
+        return res.status(409).json({
+          ok: false,
+          error: "This Idempotency-Key cannot be replayed because batch export data changed since the prior handoff.",
+        });
+      }
+      const replayCaseIds = readIncludedCaseIdsFromManifestJson(duplicate.manifestJson);
+      if (replayCaseIds.length === 0) {
+        return res.status(409).json({
+          ok: false,
+          error: "Stored Clio handoff replay data is missing included case ids.",
+        });
+      }
+      const replayPreview = await buildBatchClioHandoffExport({
+        firmId,
+        caseIds: replayCaseIds,
+        allowReexport: true,
+        exportedAt: duplicate.exportedAt,
+      });
       await linkMigrationBatchToClioHandoff(firmId, batchId, duplicate.id);
-      res.setHeader("X-Clio-Idempotent-Replay", "true");
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${replayPreview.fileName}"`);
+      return res.send(replayPreview.zipBuffer);
     } else {
+      if (idempotencyKey) {
+        const sameKeyDuplicate = await findRecentClioHandoffDuplicate({
+          firmId,
+          exportType: ClioHandoffExportType.BATCH,
+          exportSubtype: ClioHandoffExportSubtype.COMBINED_BATCH,
+          idempotencyKey,
+        });
+        if (sameKeyDuplicate) {
+          return res.status(409).json({
+            ok: false,
+            error: "This Idempotency-Key was already used for a different Clio handoff export request.",
+          });
+        }
+      }
+
+      const preview = await buildBatchClioHandoffExport({
+        firmId,
+        caseIds: currentCaseIds,
+        allowReexport,
+      });
       const exportRecord = await recordBatchClioHandoff({
         firmId,
         actor,
@@ -221,11 +415,10 @@ router.post("/batches/:batchId/exports/clio/handoff", auth, requireRole(Role.STA
         batchResult: preview,
       });
       await linkMigrationBatchToClioHandoff(firmId, batchId, exportRecord.id);
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${preview.fileName}"`);
+      return res.send(preview.zipBuffer);
     }
-
-    res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", `attachment; filename="${preview.fileName}"`);
-    res.send(preview.zipBuffer);
   } catch (e: any) {
     const message = String(e?.message ?? e);
     const status =

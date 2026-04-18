@@ -485,16 +485,29 @@ export async function findRecentClioHandoffDuplicate(
   input: FindRecentDuplicateInput
 ) {
   const idempotencyKey = input.idempotencyKey?.trim() || null;
+  const requestFingerprint = input.requestFingerprint?.trim() || null;
   if (idempotencyKey) {
+    if (requestFingerprint) {
+      return db.clioHandoffExport.findFirst({
+        where: {
+          firmId: input.firmId,
+          exportType: input.exportType,
+          exportSubtype: input.exportSubtype,
+          idempotencyKey,
+          requestFingerprint,
+        },
+      });
+    }
     return db.clioHandoffExport.findFirst({
       where: {
         firmId: input.firmId,
+        exportType: input.exportType,
+        exportSubtype: input.exportSubtype,
         idempotencyKey,
       },
     });
   }
 
-  const requestFingerprint = input.requestFingerprint?.trim() || null;
   if (!requestFingerprint) return null;
 
   const withinMinutes = Math.max(1, input.withinMinutes ?? 5);
