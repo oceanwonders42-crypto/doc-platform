@@ -137,6 +137,24 @@ function compareCasesForBatchExport(a: BatchExportCandidate, b: BatchExportCandi
   return a.id.localeCompare(b.id);
 }
 
+function formatCanonicalExportDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
+function formatCanonicalExportTimestamp(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  const iso = parsed.toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
+
+function formatCountLabel(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 function createClioIdempotencyKey(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -525,6 +543,17 @@ export default function ExportsPage() {
               const handoffSummary = item.clioHandoff?.alreadyExported && item.clioHandoff.lastExportedAt
                 ? `Already handed off ${new Date(item.clioHandoff.lastExportedAt).toLocaleDateString()}${item.clioHandoff.lastActorLabel ? ` by ${item.clioHandoff.lastActorLabel}` : ""}.`
                 : null;
+              const handoffAuditSummary = item.clioHandoff?.alreadyExported
+                ? [
+                    formatCountLabel(item.clioHandoff.exportCount, "recorded handoff"),
+                    item.clioHandoff.lastExportWasReExport ? "latest marked as re-export" : null,
+                    formatCanonicalExportDate(item.clioHandoff.lastExportedAt)
+                      ? `API export date ${formatCanonicalExportDate(item.clioHandoff.lastExportedAt)}`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" • ")
+                : null;
               const selectionLocked = status === "already_exported" && !includeReexports;
 
               return (
@@ -588,6 +617,11 @@ export default function ExportsPage() {
                         {handoffSummary}
                       </p>
                     )}
+                    {handoffAuditSummary && (
+                      <p style={{ margin: "0.2rem 0 0", fontSize: "0.78rem", color: "var(--onyx-text-muted)" }}>
+                        {handoffAuditSummary}
+                      </p>
+                    )}
                     {selectionLocked && (
                       <p style={{ margin: "0.35rem 0 0", fontSize: "0.78rem", color: "#9a3412" }}>
                         Turn on include re-exports to select this case again.
@@ -634,65 +668,89 @@ export default function ExportsPage() {
           <p style={{ margin: 0, color: "var(--onyx-text-muted)" }}>No Clio handoff history has been recorded yet.</p>
         ) : (
           <div style={{ display: "grid", gap: "0.85rem" }}>
-            {history.map((item) => (
-              <div
-                key={item.exportId}
-                style={{
-                  border: "1px solid var(--onyx-border-subtle)",
-                  borderRadius: "var(--onyx-radius-md)",
-                  padding: "1rem",
-                  background: "var(--onyx-background-surface)",
-                }}
-              >
+            {history.map((item) => {
+              const reexportCaseCount = item.includedCases.filter((caseItem) => caseItem.isReExport).length;
+              const countSummary = [
+                formatCountLabel(item.includedCases.length, "included case"),
+                item.skippedCases.length > 0 ? formatCountLabel(item.skippedCases.length, "skipped case") : null,
+                reexportCaseCount > 0 ? formatCountLabel(reexportCaseCount, "re-export") : null,
+              ]
+                .filter(Boolean)
+                .join(" • ");
+              const rowSummary = [
+                item.contactsRowCount !== null ? formatCountLabel(item.contactsRowCount, "contact row") : null,
+                item.mattersRowCount !== null ? formatCountLabel(item.mattersRowCount, "matter row") : null,
+              ]
+                .filter(Boolean)
+                .join(" • ");
+
+              return (
                 <div
+                  key={item.exportId}
                   style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: "0.6rem",
-                    alignItems: "center",
-                    marginBottom: "0.45rem",
+                    border: "1px solid var(--onyx-border-subtle)",
+                    borderRadius: "var(--onyx-radius-md)",
+                    padding: "1rem",
+                    background: "var(--onyx-background-surface)",
                   }}
                 >
-                  <strong style={{ fontSize: "0.95rem" }}>
-                    {item.exportSubtype === "combined_batch"
-                      ? "Batch Clio handoff"
-                      : `${item.exportSubtype === "contacts" ? "Contacts" : "Matters"} CSV`}
-                  </strong>
-                  <span
+                  <div
                     style={{
-                      borderRadius: 999,
-                      padding: "0.18rem 0.55rem",
-                      fontSize: "0.72rem",
-                      fontWeight: 600,
-                      color: item.exportType === "batch" ? "var(--onyx-accent)" : "#0f766e",
-                      background: item.exportType === "batch" ? "rgba(12, 74, 110, 0.08)" : "rgba(15, 118, 110, 0.08)",
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "0.6rem",
+                      alignItems: "center",
+                      marginBottom: "0.45rem",
                     }}
                   >
-                    {item.exportType === "batch" ? "Batch" : "Single case"}
-                  </span>
+                    <strong style={{ fontSize: "0.95rem" }}>
+                      {item.exportSubtype === "combined_batch"
+                        ? "Batch Clio handoff"
+                        : `${item.exportSubtype === "contacts" ? "Contacts" : "Matters"} CSV`}
+                    </strong>
+                    <span
+                      style={{
+                        borderRadius: 999,
+                        padding: "0.18rem 0.55rem",
+                        fontSize: "0.72rem",
+                        fontWeight: 600,
+                        color: item.exportType === "batch" ? "var(--onyx-accent)" : "#0f766e",
+                        background: item.exportType === "batch" ? "rgba(12, 74, 110, 0.08)" : "rgba(15, 118, 110, 0.08)",
+                      }}
+                    >
+                      {item.exportType === "batch" ? "Batch" : "Single case"}
+                    </span>
+                  </div>
+                  <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+                    {new Date(item.exportedAt).toLocaleString()}
+                    {item.actorLabel ? ` • ${item.actorLabel}` : ""}
+                  </p>
+                  <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+                    API timestamp: {formatCanonicalExportTimestamp(item.exportedAt)}
+                  </p>
+                  <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+                    {countSummary}
+                    {rowSummary ? ` • ${rowSummary}` : ""}
+                  </p>
+                  <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+                    Included: {item.includedCases.map((caseItem) => `${caseItem.caseNumber ?? caseItem.clientName ?? caseItem.caseId}${caseItem.isReExport ? " (re-export)" : ""}`).join(", ") || "None"}
+                  </p>
+                  {item.reExportOverride && (
+                    <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", color: "#9a3412" }}>
+                      Re-export override used{item.reExportReason ? `: ${item.reExportReason}` : "."}
+                    </p>
+                  )}
+                  {item.skippedCases.length > 0 && (
+                    <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
+                      Skipped: {item.skippedCases.map((caseItem) => `${caseItem.caseNumber ?? caseItem.caseId} (${caseItem.reason})`).join(", ")}
+                    </p>
+                  )}
+                  <p style={{ margin: 0, fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+                    {item.archiveFileName ?? item.contactsFileName ?? item.mattersFileName ?? "Export artifact recorded"}
+                  </p>
                 </div>
-                <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
-                  {new Date(item.exportedAt).toLocaleString()}
-                  {item.actorLabel ? ` • ${item.actorLabel}` : ""}
-                </p>
-                <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
-                  Included: {item.includedCases.map((caseItem) => `${caseItem.caseNumber ?? caseItem.clientName ?? caseItem.caseId}${caseItem.isReExport ? " (re-export)" : ""}`).join(", ") || "None"}
-                </p>
-                {item.reExportOverride && (
-                  <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", color: "#9a3412" }}>
-                    Re-export override used{item.reExportReason ? `: ${item.reExportReason}` : "."}
-                  </p>
-                )}
-                {item.skippedCases.length > 0 && (
-                  <p style={{ margin: "0 0 0.5rem", fontSize: "0.82rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
-                    Skipped: {item.skippedCases.map((caseItem) => `${caseItem.caseNumber ?? caseItem.caseId} (${caseItem.reason})`).join(", ")}
-                  </p>
-                )}
-                <p style={{ margin: 0, fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
-                  {item.archiveFileName ?? item.contactsFileName ?? item.mattersFileName ?? "Export artifact recorded"}
-                </p>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </DashboardCard>

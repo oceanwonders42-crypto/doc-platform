@@ -27,8 +27,17 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+/logs/
 logs/deploy/
 logs/pm2/
+/audit/*.out.log
+/audit/*.err.log
+
+# Root clutter from accidental shell/file artifacts
+/cd
+/dir
+/git
+/__MACOSX
 
 # IDE & OS
 .DS_Store
