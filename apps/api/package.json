@@ -30,6 +30,10 @@
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.30.3",
+  "trustedDependencies": [
+    "canvas",
+    "sharp"
+  ],
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1001.0",
     "@aws-sdk/s3-request-presigner": "^3.1001.0",
@@ -37,10 +41,11 @@
     "@prisma/client": "^7.4.2",
     "@types/nodemailer": "^7.0.11",
     "bcryptjs": "^3.0.3",
+    "canvas": "3.2.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
-    "dotenv": "^17.3.1",
     "docx": "^9.5.0",
+    "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "express-session": "^1.18.1",
     "form-data": "^4.0.5",
@@ -53,9 +58,10 @@
     "nodemailer": "^8.0.1",
     "openai": "^4.104.0",
     "pdf-lib": "^1.17.1",
-    "pdf-to-img": "^2.0.0",
+    "pdf-to-img": "^6.0.0",
     "pdfjs-dist": "^3",
     "pg": "^8.19.0",
+    "sharp": "^0.34.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -64,8 +70,8 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/express-session": "^1.18.0",
-    "@types/jszip": "^3.4.1",
     "@types/jsonwebtoken": "^9.0.7",
+    "@types/jszip": "^3.4.1",
     "@types/mailparser": "^3.4.5",
     "@types/multer": "^2.0.0",
     "@types/node": "^25.3.3",
