@@ -86,14 +86,8 @@ async function renderPdfPage(pdfBuffer: Buffer, pageNum: number): Promise<Buffer
     const pdfFn = (mod.default ?? mod.pdf) as PdfToImgModule["default"];
     if (typeof pdfFn !== "function") return null;
     const doc = await pdfFn(pdfBuffer, { scale: PDF_PAGE_SCALE });
-    let pageIndex = 1;
-    for await (const pageBuffer of doc) {
-      if (pageIndex === pageNum) {
-        return Buffer.isBuffer(pageBuffer) && pageBuffer.length > 0 ? pageBuffer : null;
-      }
-      pageIndex += 1;
-    }
-    return null;
+    const pageBuffer = await doc.getPage(pageNum);
+    return Buffer.isBuffer(pageBuffer) && pageBuffer.length > 0 ? pageBuffer : null;
   } catch {
     return null;
   }
