@@ -101,12 +101,10 @@ const buildInfo = getBuildInfo();
 const nodeEnv = process.env.NODE_ENV ?? "development";
 
 function buildVersionPayload(service: string) {
-  const branchLabel = buildInfo.branch?.trim() || "detached";
-  const versionLabel = `${branchLabel}@${buildInfo.shortSha}${buildInfo.dirty === true ? "-dirty" : ""}`;
   return {
     ok: true,
     service,
-    versionLabel,
+    versionLabel: buildInfo.versionLabel,
     packageName: buildInfo.packageName,
     packageVersion: buildInfo.packageVersion,
     commitHash: buildInfo.sha,

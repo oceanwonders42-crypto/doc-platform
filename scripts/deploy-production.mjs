@@ -10,6 +10,7 @@ import {
   repoRoot,
   resolveGitState,
 } from "./deploy-lib.mjs";
+import { verifyDeployConfig } from "./verify-deploy-config.mjs";
 
 const rawArgs = new Set(process.argv.slice(2));
 const dryRun = rawArgs.has("--dry-run");
@@ -254,6 +255,20 @@ async function main() {
   await run("pnpm", ["--dir", "apps/api", "exec", "prisma", "migrate", "deploy"]);
   await run("pnpm", ["--dir", "apps/api", "build"]);
   await run("pnpm", ["--dir", "apps/web", "build"]);
+  const deployConfig = await verifyDeployConfig({
+    requireBuilt: true,
+    expectedSha: buildMeta.sha,
+    expectedVersionLabel: buildMeta.versionLabel,
+  });
+  if (deployConfig.failures.length > 0) {
+    throw new Error(`deploy config verification failed: ${deployConfig.failures.join(" | ")}`);
+  }
+  for (const warning of deployConfig.warnings) {
+    printWarn(warning);
+  }
+  for (const pass of deployConfig.passes) {
+    logStep(pass);
+  }
   await run("pm2", ["startOrReload", "ecosystem.config.cjs", "--update-env"]);
   await verifyPm2Apps(["doc-platform-api", "doc-platform-worker", "doc-platform-web"]);
   await waitForHealth("http://127.0.0.1:4000/health", "API");

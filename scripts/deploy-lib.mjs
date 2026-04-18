@@ -102,7 +102,8 @@ export async function readBuildMeta(appDir) {
   };
 }
 
-export function assessBuildMeta(service, buildMeta, gitState) {
+export function assessBuildMeta(service, buildMeta, gitState, options = {}) {
+  const allowDirty = options.allowDirty === true;
   const failures = [];
   const warnings = [];
 
@@ -131,14 +132,14 @@ export function assessBuildMeta(service, buildMeta, gitState) {
     failures.push(`${service} build-meta.json shortSha does not match HEAD (${buildMeta.shortSha} != ${gitState.shortSha})`);
   }
 
-  if (buildMeta.dirty === true) {
+  if (buildMeta.dirty === true && !allowDirty) {
     failures.push(`${service} build-meta.json reports dirty=true`);
   }
 
   const expectedVersionLabel = computeVersionLabel({
     branch: gitState.branch,
     shortSha: gitState.shortSha,
-    dirty: false,
+    dirty: allowDirty ? gitState.dirty : false,
   });
   if (buildMeta.versionLabel && buildMeta.versionLabel !== expectedVersionLabel) {
     warnings.push(

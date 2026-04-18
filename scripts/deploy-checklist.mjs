@@ -8,6 +8,7 @@ import {
   repoRoot,
   resolveGitState,
 } from "./deploy-lib.mjs";
+import { verifyDeployConfig } from "./verify-deploy-config.mjs";
 
 const rawArgs = new Set(process.argv.slice(2));
 const allowDirty = rawArgs.has("--allow-dirty");
@@ -18,10 +19,19 @@ const apiBuildMeta = await readBuildMeta(path.join(repoRoot, "apps", "api"));
 const webBuildMeta = await readBuildMeta(path.join(repoRoot, "apps", "web"));
 
 const failures = [];
+const deployConfig = await verifyDeployConfig();
 
 console.log(
   `[deploy-checklist] branch=${gitState.branch} sha=${gitState.sha} dirty=${gitState.dirty ? "YES" : "NO"}`
 );
+
+for (const pass of deployConfig.passes) {
+  printPass(pass);
+}
+for (const warning of deployConfig.warnings) {
+  printWarn(warning);
+}
+failures.push(...deployConfig.failures);
 
 if (gitState.sha === "unknown") {
   failures.push("git SHA could not be resolved");
@@ -51,7 +61,7 @@ for (const [service, buildMeta] of [
     continue;
   }
 
-  const assessment = assessBuildMeta(service, buildMeta, gitState);
+  const assessment = assessBuildMeta(service, buildMeta, gitState, { allowDirty });
   for (const warning of assessment.warnings) {
     printWarn(warning);
   }

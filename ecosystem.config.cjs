@@ -9,7 +9,8 @@ module.exports = {
     {
       name: "doc-platform-api",
       cwd: path.join(__dirname, "apps", "api"),
-      script: "dist/http/server.js",
+      script: path.join(__dirname, "scripts", "start-service-with-build-info.mjs"),
+      args: ["api", "node", "dist/http/server.js"],
       interpreter: "node",
       instances: 1,
       autorestart: true,
@@ -29,7 +30,8 @@ module.exports = {
     {
       name: "doc-platform-worker",
       cwd: path.join(__dirname, "apps", "api"),
-      script: "dist/workers/worker.js",
+      script: path.join(__dirname, "scripts", "start-service-with-build-info.mjs"),
+      args: ["worker", "node", "dist/workers/worker.js"],
       interpreter: "node",
       instances: 1,
       autorestart: true,

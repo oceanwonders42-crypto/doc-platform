@@ -4,6 +4,7 @@ import path from "node:path";
 export type BuildInfo = {
   sha: string;
   shortSha: string;
+  versionLabel: string;
   builtAt: string | null;
   source: string;
   branch: string | null;
@@ -15,6 +16,7 @@ export type BuildInfo = {
 type BuildMetaFile = {
   sha?: unknown;
   shortSha?: unknown;
+  versionLabel?: unknown;
   builtAt?: unknown;
   source?: unknown;
   branch?: unknown;
@@ -28,6 +30,11 @@ type PackageMeta = {
 
 function getShortSha(sha: string) {
   return sha === "unknown" ? "unknown" : sha.slice(0, 12);
+}
+
+function computeVersionLabel(branch: string | null, shortSha: string, dirty: boolean | null) {
+  const branchLabel = branch?.trim() || "detached";
+  return `${branchLabel}@${shortSha}${dirty === true ? "-dirty" : ""}`;
 }
 
 function readPackageMeta() {
@@ -59,6 +66,16 @@ function readBuildMetaFile(): BuildInfo | null {
         typeof parsed.shortSha === "string" && parsed.shortSha.trim()
           ? parsed.shortSha.trim()
           : getShortSha(sha),
+      versionLabel:
+        typeof parsed.versionLabel === "string" && parsed.versionLabel.trim()
+          ? parsed.versionLabel.trim()
+          : computeVersionLabel(
+              typeof parsed.branch === "string" && parsed.branch.trim() ? parsed.branch.trim() : null,
+              typeof parsed.shortSha === "string" && parsed.shortSha.trim()
+                ? parsed.shortSha.trim()
+                : getShortSha(sha),
+              typeof parsed.dirty === "boolean" ? parsed.dirty : null
+            ),
       builtAt: typeof parsed.builtAt === "string" && parsed.builtAt.trim() ? parsed.builtAt.trim() : null,
       source: typeof parsed.source === "string" && parsed.source.trim() ? parsed.source.trim() : "build-meta-file",
       branch: typeof parsed.branch === "string" && parsed.branch.trim() ? parsed.branch.trim() : null,
@@ -90,6 +107,7 @@ export function getBuildInfo(): BuildInfo {
   return {
     sha,
     shortSha: getShortSha(sha),
+    versionLabel: computeVersionLabel(branch, getShortSha(sha), dirtyEnv === "true" ? true : dirtyEnv === "false" ? false : null),
     builtAt,
     source,
     branch,
