@@ -16,35 +16,20 @@ export { detectHandwritingFromText } from "./handwritingDetection";
 export { runImageOcrFallback, isLowTextResult } from "./imageOcrFallback";
 
 export type OcrPipelineOptions = {
+  mimeType?: string;
   documentId?: string;
   firmId?: string;
   /** Called when OCR fallback is used or fails (structured failure logging). */
   onOcrFailure?: (opts: { stage: string; message: string; documentId?: string; firmId?: string }) => void;
 };
 
-export async function runOcrPipeline(pdfBuffer: Buffer, options?: OcrPipelineOptions): Promise<OcrResult> {
-  const hasEmbedded = await hasEmbeddedText(pdfBuffer);
-  let result: OcrResult | null = hasEmbedded ? await extractEmbeddedText(pdfBuffer) : null;
+export type OcrPipelineDependencies = {
+  hasEmbeddedText?: typeof hasEmbeddedText;
+  extractEmbeddedText?: typeof extractEmbeddedText;
+  runImageOcrFallback?: typeof runImageOcrFallback;
+};
 
-  if (!result) {
-    result = await extractEmbeddedText(pdfBuffer).catch(() => null);
-  }
-  if (!result || isLowTextResult(result)) {
-    const fallback = await runImageOcrFallback(
-      pdfBuffer,
-      "application/pdf",
-      {
-        documentId: options?.documentId,
-        firmId: options?.firmId,
-        onFailure: options?.onOcrFailure,
-      }
-    );
-    if (result && result.fullText.trim().length > fallback.fullText.trim().length) return result;
-    const merged =
-      fallback.fullText.trim().length > 0 ? fallback : { ...fallback, lowQualityExtraction: true };
-    return merged;
-  }
-
+function applyDerivedMetadata(result: OcrResult): OcrResult {
   const lang = detectLanguageFromText(result.fullText);
   result.detectedLanguage = lang.detectedLanguage;
   result.possibleLanguages = lang.possibleLanguages;
@@ -59,11 +44,11 @@ export async function runOcrPipeline(pdfBuffer: Buffer, options?: OcrPipelineOpt
       const needsReview =
         p.status === "LOW_CONFIDENCE" ||
         p.status === "HANDWRITTEN" ||
-        (result!.hasHandwriting && result!.handwritingHeavy);
+        (result.hasHandwriting && result.handwritingHeavy);
       return {
         ...p,
-        detectedLanguage: result!.detectedLanguage,
-        hasHandwriting: result!.hasHandwriting,
+        detectedLanguage: result.detectedLanguage,
+        hasHandwriting: result.hasHandwriting,
         needsReview,
         status: needsReview ? "NEEDS_REVIEW" : p.status,
       } as PageDiagnostic;
@@ -71,4 +56,53 @@ export async function runOcrPipeline(pdfBuffer: Buffer, options?: OcrPipelineOpt
   }
 
   return result;
+}
+
+export async function runOcrPipeline(
+  documentBuffer: Buffer,
+  options?: OcrPipelineOptions,
+  dependencies: OcrPipelineDependencies = {}
+): Promise<OcrResult> {
+  const checkEmbeddedText = dependencies.hasEmbeddedText ?? hasEmbeddedText;
+  const extractText = dependencies.extractEmbeddedText ?? extractEmbeddedText;
+  const runFallback = dependencies.runImageOcrFallback ?? runImageOcrFallback;
+  const mimeType = (options?.mimeType || "application/pdf").toLowerCase();
+  const shouldTryEmbeddedText = mimeType === "application/pdf";
+  let result: OcrResult | null = null;
+
+  if (shouldTryEmbeddedText) {
+    const fallback = await runFallback(
+      documentBuffer,
+      mimeType,
+      {
+        documentId: options?.documentId,
+        firmId: options?.firmId,
+        onFailure: options?.onOcrFailure,
+      }
+    );
+
+    if (!isLowTextResult(fallback)) {
+      return applyDerivedMetadata(fallback);
+    }
+
+    result = await extractText(documentBuffer).catch(() => null);
+    if (result && !isLowTextResult(result)) {
+      return applyDerivedMetadata(result);
+    }
+
+    const merged = fallback.fullText.trim().length > 0 ? fallback : { ...fallback, lowQualityExtraction: true };
+    return applyDerivedMetadata(merged);
+  }
+
+  result = await runFallback(
+    documentBuffer,
+    mimeType,
+    {
+      documentId: options?.documentId,
+      firmId: options?.firmId,
+      onFailure: options?.onOcrFailure,
+    }
+  );
+
+  return applyDerivedMetadata(result);
 }

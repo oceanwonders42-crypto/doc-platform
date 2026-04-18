@@ -9,7 +9,8 @@ import {
 } from "../services/queue";
 import { getObjectBuffer } from "../services/storage";
 import { countPagesFromBuffer } from "../services/pageCount";
-import { extractTextFromPdf, classifyAndExtract } from "../ai/docRecognition";
+import { classifyAndExtract } from "../ai/docRecognition";
+import { runOcrPipeline } from "../services/ocr";
 import { analyzeRisks } from "../ai/riskAnalyzer";
 import { analyzeDocumentInsights } from "../ai/documentInsights";
 import { summarizeDocument } from "../ai/documentSummary";
@@ -37,6 +38,118 @@ function yearMonth(d = new Date()) {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
+}
+
+type WorkerOcrDocument = {
+  mimeType?: string | null;
+  originalName?: string | null;
+  documentId?: string;
+  firmId?: string;
+};
+
+type WorkerOcrDependencies = {
+  runOcrPipeline: typeof runOcrPipeline;
+};
+
+type RecognitionTextQuery = (sql: string, params: [string, string]) => Promise<unknown>;
+
+function normalizeMimeType(mimeType?: string | null): string {
+  return (mimeType ?? "").toLowerCase();
+}
+
+function normalizeOriginalName(originalName?: string | null): string {
+  return (originalName ?? "").toLowerCase();
+}
+
+export function getOcrNoTextReviewState() {
+  return {
+    status: "NEEDS_REVIEW" as const,
+    reviewState: "IN_REVIEW" as const,
+    processingStage: "ocr" as const,
+    failureStage: "ocr" as const,
+    failureReason: "No OCR text extracted" as const,
+  };
+}
+
+export function inferWorkerOcrMimeType(
+  doc: Pick<WorkerOcrDocument, "mimeType" | "originalName">
+): string | undefined {
+  const mimeType = normalizeMimeType(doc.mimeType);
+  if (mimeType) {
+    return mimeType;
+  }
+
+  const originalName = normalizeOriginalName(doc.originalName);
+  if (originalName.endsWith(".pdf")) {
+    return "application/pdf";
+  }
+  if (originalName.endsWith(".jpg") || originalName.endsWith(".jpeg")) {
+    return "image/jpeg";
+  }
+  if (originalName.endsWith(".png")) {
+    return "image/png";
+  }
+  if (originalName.endsWith(".tif") || originalName.endsWith(".tiff")) {
+    return "image/tiff";
+  }
+
+  return undefined;
+}
+
+export function isPdfLikeDocument(doc: Pick<WorkerOcrDocument, "mimeType" | "originalName">): boolean {
+  const mimeType = normalizeMimeType(doc.mimeType);
+  const originalName = normalizeOriginalName(doc.originalName);
+  return mimeType === "application/pdf" || originalName.endsWith(".pdf");
+}
+
+export function isImageLikeDocument(doc: Pick<WorkerOcrDocument, "mimeType" | "originalName">): boolean {
+  const mimeType = normalizeMimeType(doc.mimeType);
+  const originalName = normalizeOriginalName(doc.originalName);
+  return mimeType.startsWith("image/")
+    || originalName.endsWith(".jpg")
+    || originalName.endsWith(".jpeg")
+    || originalName.endsWith(".png")
+    || originalName.endsWith(".tif")
+    || originalName.endsWith(".tiff");
+}
+
+export function isWorkerOcrEligibleDocument(doc: Pick<WorkerOcrDocument, "mimeType" | "originalName">): boolean {
+  return isPdfLikeDocument(doc) || isImageLikeDocument(doc);
+}
+
+export async function runWorkerOcr(
+  buffer: Buffer,
+  doc: WorkerOcrDocument,
+  deps: WorkerOcrDependencies = { runOcrPipeline }
+): Promise<string> {
+  if (!isWorkerOcrEligibleDocument(doc)) {
+    return "";
+  }
+
+  const result = await deps.runOcrPipeline(buffer, {
+    mimeType: inferWorkerOcrMimeType(doc),
+    documentId: doc.documentId,
+    firmId: doc.firmId,
+  });
+
+  return result.fullText.trim();
+}
+
+export async function upsertRecognitionTextExcerpt(
+  documentId: string,
+  text: string,
+  query: RecognitionTextQuery = (sql, params) => pgPool.query(sql, params)
+): Promise<void> {
+  await query(
+    `
+    insert into document_recognition (document_id, text_excerpt, updated_at)
+    values ($1, $2, now())
+    on conflict (document_id) do update set
+      text_excerpt = excluded.text_excerpt,
+      updated_at = now()
+    `,
+    [documentId, text]
+  );
 }
 
 async function handleTimelineRebuild(caseId: string, firmId: string): Promise<void> {
@@ -94,9 +207,7 @@ async function handleOcrJob(documentId: string, firmId: string): Promise<void> {
     });
   });
 
-  const isPdf =
-    doc.mimeType === "application/pdf" || (doc.originalName || "").toLowerCase().endsWith(".pdf");
-  if (!isPdf) {
+  if (!isWorkerOcrEligibleDocument({ mimeType: doc.mimeType, originalName: doc.originalName })) {
     await prisma.document.update({
       where: { id: documentId },
       data: { processingStage: "complete" },
@@ -107,7 +218,7 @@ async function handleOcrJob(documentId: string, firmId: string): Promise<void> {
       pageCount: pages,
       processingStage: "complete",
     }).catch((e) => console.warn("[webhooks] document.processed emit failed", e));
-    console.log(`Done (non-PDF): ${documentId} (pages=${pages})`);
+    console.log(`Done (non-OCR doc): ${documentId} (pages=${pages})`);
     return;
   }
 
@@ -115,17 +226,13 @@ async function handleOcrJob(documentId: string, firmId: string): Promise<void> {
     where: { id: documentId },
     data: { processingStage: "ocr" },
   });
-  const text = await extractTextFromPdf(buf);
-  await pgPool.query(
-    `
-    insert into document_recognition (document_id, text_excerpt, updated_at)
-    values ($1, $2, now())
-    on conflict (document_id) do update set
-      text_excerpt = excluded.text_excerpt,
-      updated_at = now()
-    `,
-    [documentId, text]
-  );
+  const text = await runWorkerOcr(buf, {
+    mimeType: doc.mimeType,
+    originalName: doc.originalName,
+    documentId,
+    firmId,
+  });
+  await upsertRecognitionTextExcerpt(documentId, text);
 
   if (!text.trim()) {
     await pgPool.query(
@@ -138,22 +245,18 @@ async function handleOcrJob(documentId: string, firmId: string): Promise<void> {
       `,
       ["unknown", 0, documentId]
     );
+    const ocrReviewState = getOcrNoTextReviewState();
     await prisma.document.update({
       where: { id: documentId },
-      data: {
-        status: "NEEDS_REVIEW",
-        reviewState: "IN_REVIEW",
-        processingStage: "complete",
-        failureStage: "ocr",
-        failureReason: "No OCR text extracted",
-      },
+      data: ocrReviewState,
     });
     emitWebhookEvent(firmId, "document.processed", {
       documentId,
-      status: "NEEDS_REVIEW",
+      status: ocrReviewState.status,
       pageCount: pages,
-      processingStage: "complete",
-      failureStage: "ocr",
+      processingStage: ocrReviewState.processingStage,
+      failureStage: ocrReviewState.failureStage,
+      failureReason: ocrReviewState.failureReason,
     }).catch((e) => console.warn("[webhooks] document.processed emit failed", e));
     console.log(`[worker] OCR produced no text; routed to review: ${documentId}`);
     return;
