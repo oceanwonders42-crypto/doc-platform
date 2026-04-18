@@ -19,12 +19,16 @@ build
 .next
 out
 *.tsbuildinfo
+apps/api/build-meta.json
+apps/web/build-meta.json
 
 # Debug & logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+logs/deploy/
+logs/pm2/
 
 # IDE & OS
 .DS_Store

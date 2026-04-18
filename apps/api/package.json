@@ -8,7 +8,7 @@
     "prisma": "prisma",
     "dev": "ts-node-dev --respawn --transpile-only src/http/server.ts",
     "dev:worker": "ts-node-dev --respawn --transpile-only src/workers/worker.ts",
-    "build": "tsc",
+    "build": "node ../../scripts/write-build-meta.mjs . && tsc",
     "start": "node dist/http/server.js",
     "email:poller": "tsx src/email/pollerProcess.ts",
     "email:once": "tsx src/email/pollerOnce.ts",

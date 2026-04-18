@@ -90,16 +90,41 @@ import { startDocumentWorkerLoop } from "../workers/documentWorkerLoop";
 import { validateProductionRuntime } from "../lib/productionRuntime";
 import { ensureDemoSeedObjects } from "../dev/demoSeedObjects";
 import { getJobCounts } from "../services/jobQueue";
+import { getBuildInfo } from "../lib/buildInfo";
 
 export const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: "25mb" }));
+const buildInfo = getBuildInfo();
+const nodeEnv = process.env.NODE_ENV ?? "development";
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
+function buildVersionPayload(service: string) {
+  const branchLabel = buildInfo.branch?.trim() || "detached";
+  const versionLabel = `${branchLabel}@${buildInfo.shortSha}${buildInfo.dirty === true ? "-dirty" : ""}`;
+  return {
+    ok: true,
+    service,
+    versionLabel,
+    packageName: buildInfo.packageName,
+    packageVersion: buildInfo.packageVersion,
+    commitHash: buildInfo.sha,
+    shortCommitHash: buildInfo.shortSha,
+    buildTime: buildInfo.builtAt,
+    buildSource: buildInfo.source,
+    buildBranch: buildInfo.branch,
+    buildDirty: buildInfo.dirty,
+    build: buildInfo,
+    nodeEnv,
+  };
+}
 
-app.get("/healthz", (_req, res) => res.json({ ok: true, service: "api" }));
+app.get("/health", (_req, res) => res.json({ ok: true, build: buildInfo }));
+
+app.get("/healthz", (_req, res) => res.json({ ok: true, service: "api", build: buildInfo }));
+
+app.get("/version", (_req, res) => res.json(buildVersionPayload("api")));
 
 app.get("/readyz", async (_req, res) => {
   try {
@@ -6023,6 +6048,7 @@ export function startServer(listenPort: number = port) {
   validateProductionRuntime();
   return app.listen(listenPort, () => {
     console.log(`API listening on :${listenPort}`);
+    console.log("[server] version", buildVersionPayload("api"));
     // Keep the normal local stack self-contained: API dev also drains doc_jobs unless explicitly disabled.
     if (process.env.NODE_ENV !== "production" && process.env.ENABLE_INLINE_DOCUMENT_WORKER !== "false") {
       startDocumentWorkerLoop({ label: "inline-worker" }).catch((e) => {
