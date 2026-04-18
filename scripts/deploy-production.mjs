@@ -42,6 +42,17 @@ function resolveCommand(command) {
   return command;
 }
 
+function withPlatformSpawnOptions(command, baseOptions) {
+  const resolved = resolveCommand(command);
+  return {
+    resolved,
+    options: {
+      ...baseOptions,
+      shell: process.platform === "win32" && resolved.endsWith(".cmd"),
+    },
+  };
+}
+
 async function run(command, args) {
   logStep(`running ${command} ${args.join(" ")}`);
   if (dryRun) {
@@ -49,7 +60,7 @@ async function run(command, args) {
   }
 
   await new Promise((resolve, reject) => {
-    const child = spawn(resolveCommand(command), args, {
+    const { resolved, options } = withPlatformSpawnOptions(command, {
       cwd: repoRoot,
       stdio: "inherit",
       env: {
@@ -61,6 +72,7 @@ async function run(command, args) {
         DOC_BUILD_DIRTY: buildMeta.dirty ? "true" : "false",
       },
     });
+    const child = spawn(resolved, args, options);
 
     child.on("exit", (code) => {
       if (code === 0) {
@@ -131,10 +143,11 @@ async function verifyPm2Apps(appNames) {
   }
 
   const output = await new Promise((resolve, reject) => {
-    const child = spawn(resolveCommand("pm2"), ["jlist"], {
+    const { resolved, options } = withPlatformSpawnOptions("pm2", {
       cwd: repoRoot,
       stdio: ["ignore", "pipe", "inherit"],
     });
+    const child = spawn(resolved, ["jlist"], options);
 
     let stdout = "";
     child.stdout.on("data", (chunk) => {
