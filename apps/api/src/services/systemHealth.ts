@@ -4,11 +4,9 @@
  */
 import { prisma } from "../db/prisma";
 import { pgPool } from "../db/pg";
-import { redis } from "../services/queue";
+import { getRedisQueueStatus } from "../services/queue";
 import { getAbuseStats } from "../services/abuseTracking";
 import { getBackupStatusSummary } from "./backupManager";
-
-const QUEUE_KEY = "doc_jobs";
 
 export type BackupStatusInfo = {
   lastBackupTime: string | null;
@@ -51,8 +49,9 @@ export async function getSystemHealth(): Promise<HealthSummary> {
   let redisStatus: "up" | "down" = "down";
   let queueDepth = 0;
   try {
-    queueDepth = await redis.llen(QUEUE_KEY);
-    redisStatus = "up";
+    const redisQueue = await getRedisQueueStatus();
+    queueDepth = redisQueue.queueDepth;
+    redisStatus = redisQueue.available ? "up" : "down";
   } catch {
     // leave down
   }
