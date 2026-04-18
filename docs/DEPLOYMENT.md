@@ -1,162 +1,138 @@
-# Deployment runbook — GitHub → DigitalOcean App Platform
+# Onyx Deploy Runbook
 
-This doc describes how **every push to the production branch** triggers a live update on DigitalOcean App Platform, and what you must configure once in the DO dashboard.
+This runbook documents the repo-committed deploy path only. Anything outside these commands or script checks is an operator decision, not a repo guarantee.
 
----
+## Repo-proven deploy commands
 
-## 1. Branch that deploys
+- `pnpm deploy:checklist`
+- `pnpm deploy:production`
+- `pnpm deploy:verify`
+- `pnpm deploy:status`
+- `pnpm deploy:history`
 
-| Item | Value |
-|------|--------|
-| **Production branch** | `main` |
-| **Auto-deploy** | Yes. Pushes to `main` trigger a new build and deploy for both **api** and **web**. |
-| **Other branches** | Not configured to deploy. Only `main` is used in the app spec (`.do/app.yaml`). |
+## Repo-proven release flow
 
-To change the branch, edit `.do/app.yaml`: update `branch: main` under both `api` and `web` to your desired branch name, then commit and push. The next deploy will use the new branch only after you trigger a deploy (e.g. by pushing a commit or using "Deploy" in the DO dashboard).
+The committed production path is `pnpm deploy:production`, which in turn:
 
----
+- reruns `pnpm deploy:checklist`
+- clears `apps/web/.next`
+- runs `prisma generate` and `prisma migrate deploy` in `apps/api`
+- rebuilds `apps/api` and `apps/web`
+- verifies the committed PM2 ecosystem and built artifacts
+- reloads PM2 using `ecosystem.config.cjs`
+- waits for API health at `http://127.0.0.1:4000/health`
+- waits for web health at `http://127.0.0.1:3000/healthz`
+- verifies live version data from API and web
+- records a deploy history entry on success
 
-## 2. Build and run commands
+The strict checklist command is `pnpm deploy:checklist`. It is repo-proven to fail when:
 
-These are defined in `.do/app.yaml` and used by App Platform.
+- the git worktree is dirty
+- `apps/api/build-meta.json` or `apps/web/build-meta.json` is missing
+- build metadata does not match `HEAD`
+- the committed deploy wiring in `ecosystem.config.cjs` no longer matches the app scripts
 
-### API (`apps/api`)
+## Repo-proven verification
 
-| Phase | Command |
-|-------|---------|
-| **Build** | `pnpm install && pnpm run build` |
-| **Run** | `pnpm prisma migrate deploy && pnpm start` |
-| **HTTP port** | 8080 (App Platform sets `PORT=8080`) |
+- `pnpm deploy:verify` checks the live API and web `/version` endpoints and compares commit, short commit, version label, and dirty state against the expected deployment.
+- `pnpm deploy:status` compares local git state with the live API and web `/version` endpoints on localhost.
+- `pnpm deploy:history` prints the recorded deploy log, if any.
 
-- **Install:** runs in `apps/api` (source_dir). Installs deps and runs `postinstall` → `prisma generate`.
-- **Build:** `pnpm run build` → `tsc` (output in `dist/`).
-- **Run:** Migrations run on every deploy, then `pnpm start` → `node dist/http/server.js`.
+## Operator-host assumptions
 
-### Web (`apps/web`)
+The repo assumes, but does not itself provide, the following host conditions:
 
-| Phase | Command |
-|-------|---------|
-| **Build** | `pnpm install && pnpm run build` |
-| **Run** | `pnpm start` |
-| **HTTP port** | 8080 |
+- a clean checkout of this repo
+- `pnpm@10.30.3`
+- Node available for the committed scripts
+- `pm2` available if you are using the committed PM2-based release path
+- database connectivity for `DATABASE_URL`
+- the runtime configuration required by the API and web services
+- local service availability on ports `4000` and `3000` for the committed verification commands
+- a deployment host that can run the committed `ecosystem.config.cjs` process model
 
-- **Install/Build:** runs in `apps/web`. `next build` bakes `NEXT_PUBLIC_API_URL` into the client bundle — **must be set at build time**.
-- **Run:** `next start`; Next.js reads `PORT` from the environment (set by App Platform).
+The repository does not prove staging topology, dashboard smoke checks, or any extra manual verification beyond the scripted commands above. If you add those, treat them as operator-owned checks.
+OCR runtime dependencies such as `tesseract`, OCR language data, and image/PDF rasterization support are also operator-owned; the deploy scripts do not provision or verify them.
 
----
+## Production release
 
-## 3. Environment variables
+1. Move to the intended production commit.
+   ```bash
+   git fetch --all --prune
+   git checkout <release-sha>
+   ```
 
-### 3.1 Web (frontend)
+2. Confirm the checkout is clean and build metadata is current.
+   ```bash
+   pnpm deploy:checklist
+   ```
 
-| Variable | When | Required | Description |
-|----------|------|----------|-------------|
-| **NEXT_PUBLIC_API_URL** | **Build time** | Yes | Full URL of the live API (e.g. `https://api-xxxx.ondigitalocean.app`). Set in DO and enable **"Available at build"** so the Next.js build sees it. |
-| **NODE_ENV** | Run | Set by spec | `production` (in `.do/app.yaml`). |
-| **PORT** | Run | Set by DO | Injected by App Platform (e.g. 8080). |
+3. Run the committed production deploy.
+   ```bash
+   pnpm deploy:production
+   ```
 
-**Important:** If `NEXT_PUBLIC_API_URL` is missing or points to localhost at build time, the production site will call the wrong API or none. Set it to the **API component’s public URL** in DigitalOcean (e.g. from the API service’s URL in the app overview).
+4. Verify the live release.
+   ```bash
+   pnpm deploy:verify
+   pnpm deploy:status
+   pnpm deploy:history
+   ```
 
-### 3.2 API (backend)
+Release is complete only when the committed verification commands pass.
 
-| Variable | When | Required | Description |
-|----------|------|----------|-------------|
-| **DATABASE_URL** | Run (and migrate at run) | Yes | PostgreSQL connection string. Use a DO Managed Database or external Postgres. |
-| **SESSION_SECRET** or **JWT_SECRET** or **API_SECRET** | Run | Yes (prod) | At least one for sessions/JWT. Use strong random values in production. |
-| **NODE_ENV** | Run | Set by spec | `production`. |
-| **PORT** | Run | Set by DO | Injected by App Platform (8080). |
-| **DOC_WEB_BASE_URL** | Run | Recommended | Public URL of the web app (e.g. `https://web-xxxx.ondigitalocean.app`). Used for invite links; if unset, code falls back to `http://localhost:3000` in some paths. |
+## Rollback
 
-**Optional (feature-dependent):**
+Rollback is done by redeploying a previously known-good commit from deploy history.
 
-- **S3_ENDPOINT**, **S3_ACCESS_KEY**, **S3_SECRET_KEY**, **S3_REGION**, **S3_BUCKET** — object storage (required if you use file uploads/storage that hit S3).
-- **REDIS_URL** — job queue; defaults to `redis://localhost:6379` if unset (not available on App Platform unless you add a Redis component).
-- **OPENAI_API_KEY** — AI features (summaries, extraction, etc.).
-- **PLATFORM_ADMIN_API_KEY** — admin API access.
-- **SMTP_***, **INGEST_URL**, **INGEST_API_KEY**, **ENCRYPTION_KEY**, **PROVIDER_SESSION_SECRET**, Stripe/Clio/CRM vars, etc. — see `apps/api` code and `.env.example` if present.
+1. Inspect recent deploy records.
+   ```bash
+   pnpm deploy:history
+   ```
 
-Set **secrets** (DATABASE_URL, SESSION_SECRET, etc.) in the DO dashboard as **Encrypted** (type SECRET). Do not commit them to the repo.
+2. Choose a known-good commit SHA from deploy history.
 
----
+3. Move the checkout to that commit.
+   ```bash
+   git fetch --all --prune
+   git checkout <known-good-sha>
+   ```
 
-## 4. Exact files changed (in repo)
+4. Confirm the rollback candidate is clean.
+   ```bash
+   pnpm deploy:checklist
+   ```
 
-- **`.do/app.yaml`** — App Platform app spec: two services (`api`, `web`), source dirs `apps/api` and `apps/web`, GitHub `branch: main`, `deploy_on_push: true`, build/run commands, `http_port: 8080`.
-- **`docs/DEPLOYMENT.md`** — This runbook.
+5. Redeploy the known-good commit.
+   ```bash
+   pnpm deploy:production
+   ```
 
-No application code was changed for deployment. Production config uses env vars only; no localhost is used in production when env vars are set correctly.
+6. Re-verify live state.
+   ```bash
+   pnpm deploy:verify
+   pnpm deploy:status
+   pnpm deploy:history
+   ```
 
----
+## Failure handling
 
-## 5. Manual steps in DigitalOcean (one-time)
+If deploy fails before PM2 reload:
 
-Do these once so the app can deploy and run.
+- fix the blocking issue
+- keep the current live system untouched
+- rerun `pnpm deploy:production`
 
-1. **Create the app from GitHub**
-   - In DigitalOcean: **Apps → Create App → GitHub**.
-   - Select the repo (e.g. `YOUR_ORG/doc-platform`) and branch **main**.
-   - If DigitalOcean offers “Load app spec from repo”, use it so it reads **`.do/app.yaml`**. Otherwise add two **Services** manually and set source directory, build command, run command, and HTTP port to match the spec above.
+If deploy fails after PM2 reload or live verification fails:
 
-2. **Replace repo placeholder in spec (if you used app spec)**
-   - In `.do/app.yaml` the repo is set to `YOUR_GITHUB_ORG/doc-platform`. Either:
-     - Edit the spec in the DO dashboard after creation and set the correct GitHub repo, or
-     - Replace `YOUR_GITHUB_ORG` in `.do/app.yaml` with your GitHub org/username, commit and push, then (re)create or update the app from the spec.
+- inspect status and history
+  ```bash
+  pnpm deploy:status
+  pnpm deploy:history
+  ```
+- redeploy the last known-good commit if the live API and web are mismatched or unhealthy
 
-3. **Database**
-   - Create a **PostgreSQL** database (DO Managed Database or external).
-   - Add **DATABASE_URL** to the **api** component as an **encrypted** env var (e.g. attach the DB to the app so DO injects it, or paste the connection string as a secret).
+## Operator notes
 
-4. **API env vars**
-   - In the app → **api** component → **Settings → App-Level Environment Variables** (or equivalent):
-     - **DATABASE_URL** (encrypted).
-     - **SESSION_SECRET** or **JWT_SECRET** or **API_SECRET** (encrypted).
-     - **DOC_WEB_BASE_URL** = your web app’s public URL (recommended).
-   - Add any optional vars (S3_*, REDIS_URL, OPENAI_API_KEY, etc.) as needed.
-
-5. **Web env vars**
-   - In the app → **web** component → **Settings → App-Level Environment Variables**:
-     - **NEXT_PUBLIC_API_URL** = the **API** component’s public URL (e.g. `https://api-xxxx.ondigitalocean.app`).
-   - Ensure **NEXT_PUBLIC_API_URL** is available **at build time** (e.g. “Available at build” or equivalent checkbox).
-
-6. **Deploy on push**
-   - In App → **Settings** (or each component), ensure **Deploy on push** is enabled for the **main** branch (or the branch you set in `.do/app.yaml`). This is usually the default when you connect GitHub with the spec.
-
-7. **First deploy**
-   - Trigger a deploy (push a commit to `main`, or use **Deploy** in the dashboard). After the first successful deploy, copy the **API** public URL and set it as **NEXT_PUBLIC_API_URL** for the **web** component if you used a placeholder, then redeploy **web** so the build picks up the correct API URL.
-
----
-
-## 6. Deployment readiness verdict
-
-- **Ready for auto-deploy from code:** Yes, once the one-time DO setup above is done.
-- **What’s in the repo:** App spec (`.do/app.yaml`) and this runbook. No GitHub Actions are required; DigitalOcean’s native “deploy on push” is sufficient.
-- **What you must do in DO:** Connect GitHub (repo + branch), add **DATABASE_URL** and **SESSION_SECRET** (or equivalent) for the API, set **NEXT_PUBLIC_API_URL** (build-time) for the web to the live API URL, and ensure deploy on push is enabled for `main`.
-
----
-
-## 7. Missing secrets / variables (you must set in DO)
-
-- **API:** **DATABASE_URL**, **SESSION_SECRET** (or **JWT_SECRET** or **API_SECRET**). Optional: S3_*, REDIS_URL, OPENAI_API_KEY, PLATFORM_ADMIN_API_KEY, DOC_WEB_BASE_URL, etc.
-- **Web:** **NEXT_PUBLIC_API_URL** (build-time) = API’s public URL.
-
-Do not commit these values; set them only in the DigitalOcean dashboard.
-
----
-
-## 8. Exact Git push flow to see changes live
-
-1. Make a local change.
-2. Commit: `git add -A && git commit -m "Your message"`.
-3. Push to the production branch: `git push origin main`.
-4. DigitalOcean rebuilds and redeploys both **api** and **web** (if deploy on push is enabled for `main`).
-5. When the deploy finishes, the live site and API reflect your change.
-
-To avoid deploying from the wrong branch, only push to `main` when you intend to update production. Other branches are not configured in `.do/app.yaml` and will not deploy unless you add them or change the spec.
-
----
-
-## 9. References
-
-- **App spec:** `.do/app.yaml`
-- **Web-only deploy notes:** `apps/web/DEPLOY_APP_PLATFORM.md`
-- **DigitalOcean:** [App Platform reference](https://docs.digitalocean.com/products/app-platform/reference/app-spec/)
+- Do not use `--allow-dirty` or `--allow-stale-meta` unless you explicitly accept the release risk.
+- The repo-proven release path is the PM2-based path in `scripts/deploy-production.mjs` and `ecosystem.config.cjs`.
