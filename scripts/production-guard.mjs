@@ -252,41 +252,38 @@ async function collectRecognitionCacheHealth(apiRuntimeEnv) {
     }
 
     const aggregate = await client.query(`
+      with cache_rows as (
+        select
+          extracted_json->'taskCache' as task_cache,
+          case
+            when jsonb_typeof(extracted_json->'taskCache') = 'object'
+            then (
+              select count(*)::int
+              from jsonb_object_keys(extracted_json->'taskCache')
+            )
+            else 0
+          end as task_count
+        from document_recognition
+      )
       select
         count(*)::int as total_rows,
         count(*) filter (
-          where jsonb_typeof(extracted_json->'taskCache') = 'object'
+          where jsonb_typeof(task_cache) = 'object'
         )::int as rows_with_task_cache,
         count(*) filter (
-          where jsonb_typeof(extracted_json->'taskCache') = 'object'
-            and jsonb_object_length(extracted_json->'taskCache') > 0
+          where task_count > 0
         )::int as rows_with_nonempty_task_cache,
-        coalesce(
-          max(
-            case
-              when jsonb_typeof(extracted_json->'taskCache') = 'object'
-              then jsonb_object_length(extracted_json->'taskCache')
-              else 0
-            end
-          ),
-          0
-        )::int as max_task_entries,
-        coalesce(
-          avg(
-            case
-              when jsonb_typeof(extracted_json->'taskCache') = 'object'
-              then jsonb_object_length(extracted_json->'taskCache')
-              else 0
-            end
-          ),
-          0
-        )::float as avg_task_entries
-      from document_recognition
+        coalesce(max(task_count), 0)::int as max_task_entries,
+        coalesce(avg(task_count), 0)::float as avg_task_entries
+      from cache_rows
     `);
     const recent = await client.query(`
       select
         document_id,
-        jsonb_object_length(extracted_json->'taskCache')::int as task_count,
+        (
+          select count(*)::int
+          from jsonb_object_keys(extracted_json->'taskCache')
+        ) as task_count,
         updated_at
       from document_recognition
       where jsonb_typeof(extracted_json->'taskCache') = 'object'
