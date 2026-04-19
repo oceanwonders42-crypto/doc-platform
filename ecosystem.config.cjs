@@ -25,7 +25,14 @@ module.exports = {
       time: true,
       out_file: path.join(__dirname, "logs", "pm2", "api-out.log"),
       error_file: path.join(__dirname, "logs", "pm2", "api-error.log"),
-      env: { NODE_ENV: "production" },
+      env: {
+        NODE_ENV: "production",
+        SESSION_SECRET: process.env.SESSION_SECRET,
+        JWT_SECRET: process.env.JWT_SECRET,
+        API_SECRET: process.env.API_SECRET,
+        PROVIDER_SESSION_SECRET: process.env.PROVIDER_SESSION_SECRET,
+        TESSERACT_PATH: process.env.TESSERACT_PATH,
+      },
     },
     {
       name: "doc-platform-worker",
