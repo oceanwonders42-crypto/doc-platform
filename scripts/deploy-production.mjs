@@ -143,35 +143,51 @@ async function verifyPm2Apps(appNames) {
     return;
   }
 
-  const output = await new Promise((resolve, reject) => {
-    const { resolved, options } = withPlatformSpawnOptions("pm2", {
-      cwd: repoRoot,
-      stdio: ["ignore", "pipe", "inherit"],
-    });
-    const child = spawn(resolved, ["jlist"], options);
+  const deadline = Date.now() + 45_000;
+  let lastStatuses = "unknown";
 
-    let stdout = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolve(stdout);
-        return;
-      }
-      reject(new Error(`pm2 jlist exited with code ${code ?? "unknown"}`));
-    });
-    child.on("error", reject);
-  });
+  while (Date.now() < deadline) {
+    const output = await new Promise((resolve, reject) => {
+      const { resolved, options } = withPlatformSpawnOptions("pm2", {
+        cwd: repoRoot,
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      const child = spawn(resolved, ["jlist"], options);
 
-  const parsed = JSON.parse(output);
-  for (const appName of appNames) {
-    const app = parsed.find((entry) => entry.name === appName);
-    const status = app?.pm2_env?.status;
-    if (!app || status !== "online") {
-      throw new Error(`PM2 app ${appName} is not online (status=${status ?? "missing"})`);
+      let stdout = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.on("exit", (code) => {
+        if (code === 0) {
+          resolve(stdout);
+          return;
+        }
+        reject(new Error(`pm2 jlist exited with code ${code ?? "unknown"}`));
+      });
+      child.on("error", reject);
+    });
+
+    const parsed = JSON.parse(output);
+    const statuses = appNames.map((appName) => {
+      const app = parsed.find((entry) => entry.name === appName);
+      return `${appName}=${app?.pm2_env?.status ?? "missing"}`;
+    });
+    lastStatuses = statuses.join(", ");
+
+    if (
+      appNames.every((appName) => {
+        const app = parsed.find((entry) => entry.name === appName);
+        return app?.pm2_env?.status === "online";
+      })
+    ) {
+      return;
     }
+
+    await new Promise((resolve) => setTimeout(resolve, 1500));
   }
+
+  throw new Error(`PM2 apps did not reach online state before timeout (${lastStatuses})`);
 }
 
 async function verifyLiveVersions() {
