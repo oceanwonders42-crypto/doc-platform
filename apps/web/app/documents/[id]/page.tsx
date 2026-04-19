@@ -1,9 +1,13 @@
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { notFound } from "next/navigation";
 import DocumentActions from "./DocumentActions";
-import DocumentViewer from "./DocumentViewer";
 import DocumentActionCenter from "./DocumentActionCenter";
 import DocumentExplainPanel from "./DocumentExplainPanel";
+
+const DocumentViewer = dynamic(() => import("./DocumentViewer"), {
+  ssr: false,
+});
 
 type AuditEvent = {
   id: string;
