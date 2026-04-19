@@ -1,5 +1,8 @@
 import "dotenv/config";
 
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+
 import { Role } from "@prisma/client";
 
 process.env.ENABLE_INLINE_DOCUMENT_WORKER = "false";
@@ -9,6 +12,19 @@ import { prisma } from "../../db/prisma";
 import { signToken } from "../../lib/jwt";
 import { app } from "../server";
 import { assert, startTestServer, stopTestServer } from "./cases.batchClioRouteTestUtils";
+
+const documentRecognitionRepairMigrationPath = path.join(
+  process.cwd(),
+  "prisma",
+  "migrations",
+  "20260619000000_repair_document_recognition_runtime",
+  "migration.sql"
+);
+
+async function ensureDocumentRecognitionRuntimeSchema(): Promise<void> {
+  const sql = await readFile(documentRecognitionRepairMigrationPath, "utf8");
+  await pgPool.query(sql);
+}
 
 async function main() {
   const suffix = Date.now();
@@ -44,6 +60,7 @@ async function main() {
       },
     ],
   });
+  await ensureDocumentRecognitionRuntimeSchema();
   await prisma.document.createMany({
     data: [
       {
