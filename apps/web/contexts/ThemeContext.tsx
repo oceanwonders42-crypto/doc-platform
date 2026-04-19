@@ -6,10 +6,10 @@ const STORAGE_KEY = "onyx-theme";
 export type ThemeId = "dark" | "light" | "gradient";
 
 function readStoredTheme(): ThemeId {
-  if (typeof window === "undefined") return "dark";
+  if (typeof window === "undefined") return "light";
   const s = window.localStorage.getItem(STORAGE_KEY);
-  if (s === "light" || s === "gradient") return s;
-  return "dark";
+  if (s === "dark" || s === "light" || s === "gradient") return s;
+  return "light";
 }
 
 type ThemeContextValue = { theme: ThemeId; setTheme: (id: ThemeId) => void };
@@ -18,7 +18,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<ThemeId>(() =>
-    typeof window !== "undefined" ? readStoredTheme() : "dark"
+    typeof window !== "undefined" ? readStoredTheme() : "light"
   );
 
   useEffect(() => {
@@ -41,6 +41,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
 export function useTheme(): ThemeContextValue {
   const ctx = useContext(ThemeContext);
-  if (!ctx) return { theme: "dark", setTheme: () => {} };
+  if (!ctx) return { theme: "light", setTheme: () => {} };
   return ctx;
 }

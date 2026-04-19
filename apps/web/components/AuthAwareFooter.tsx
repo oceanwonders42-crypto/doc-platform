@@ -7,17 +7,33 @@ export function AuthAwareFooter() {
   if (pathname === "/" || pathname === "/login") return null;
   return (
     <footer
+      className="onyx-header"
       style={{
-        padding: "0.5rem 1rem",
-        fontSize: "0.75rem",
-        color: "var(--onyx-text-muted)",
-        borderTop: "1px solid var(--onyx-border-subtle)",
+        padding: "0.85rem var(--onyx-content-padding)",
         marginTop: "auto",
-        background: "var(--onyx-bg)",
         flexShrink: 0,
       }}
     >
-      <a href="/dashboard/support/report" style={{ color: "var(--onyx-accent)" }}>Report a problem</a>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "0.75rem",
+          flexWrap: "wrap",
+        }}
+      >
+        <span style={{ fontSize: "0.78rem", color: "var(--onyx-text-muted)" }}>
+          Premium case operations for firms that need speed, traceability, and trust.
+        </span>
+        <a
+          href="/dashboard/support/report"
+          className="onyx-link"
+          style={{ fontSize: "0.82rem", fontWeight: 600 }}
+        >
+          Report a problem
+        </a>
+      </div>
     </footer>
   );
 }

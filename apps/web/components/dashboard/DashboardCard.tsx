@@ -16,24 +16,37 @@ export function DashboardCard({
     <div
       className={`onyx-card ${className}`}
       style={{
+        position: "relative",
+        overflow: "hidden",
         padding: "1.5rem 1.375rem",
         borderRadius: "var(--onyx-radius-lg)",
         ...style,
       }}
     >
       {title && (
-        <h3
-          className={isSupportCard ? "support-report-card__heading" : undefined}
-          style={{
-            margin: "0 0 1.125rem",
-            fontSize: isSupportCard ? undefined : "var(--onyx-dash-font-md)",
-            fontWeight: 600,
-            color: "var(--onyx-text)",
-            letterSpacing: "-0.01em",
-          }}
-        >
-          {title}
-        </h3>
+        <div style={{ marginBottom: "1.125rem" }}>
+          <div
+            style={{
+              width: "2.35rem",
+              height: "3px",
+              borderRadius: "999px",
+              background: "var(--onyx-gradient-gold)",
+              marginBottom: "0.8rem",
+            }}
+          />
+          <h3
+            className={isSupportCard ? "support-report-card__heading" : undefined}
+            style={{
+              margin: 0,
+              fontSize: isSupportCard ? undefined : "var(--onyx-dash-font-md)",
+              fontWeight: 700,
+              color: "var(--onyx-text)",
+              letterSpacing: "-0.015em",
+            }}
+          >
+            {title}
+          </h3>
+        </div>
       )}
       {children}
     </div>

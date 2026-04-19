@@ -18,7 +18,10 @@ export function PageHeader({
   return (
     <div
       className={isLarge ? "page-header--large" : undefined}
-      style={{ padding: "var(--onyx-content-padding) var(--onyx-content-padding) 0", marginBottom: isLarge ? "1.75rem" : "1.25rem" }}
+      style={{
+        padding: "var(--onyx-content-padding) var(--onyx-content-padding) 0",
+        marginBottom: isLarge ? "1.75rem" : "1.4rem",
+      }}
     >
       <Breadcrumbs items={breadcrumbs} className={isLarge ? "page-header__breadcrumbs" : undefined} />
       <div
@@ -31,14 +34,35 @@ export function PageHeader({
           flexWrap: "wrap",
         }}
       >
-        <div>
+        <div style={{ maxWidth: "46rem" }}>
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              marginBottom: "0.7rem",
+              padding: "0.3rem 0.65rem",
+              borderRadius: "999px",
+              background: "rgba(18, 60, 115, 0.08)",
+              border: "1px solid rgba(18, 60, 115, 0.1)",
+              color: "var(--onyx-accent)",
+              fontSize: "0.72rem",
+              fontWeight: 700,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+            }}
+          >
+            Onyx Intel
+          </div>
           <h1
             className={isLarge ? "page-header__title" : undefined}
             style={{
               margin: 0,
-              fontSize: isLarge ? undefined : "1.5rem",
-              fontWeight: 600,
-              letterSpacing: "-0.02em",
+              fontFamily: "var(--onyx-font-display)",
+              fontSize: isLarge ? undefined : "1.85rem",
+              fontWeight: 700,
+              letterSpacing: "-0.03em",
+              lineHeight: 1.08,
               color: "var(--onyx-text)",
             }}
           >
@@ -48,17 +72,17 @@ export function PageHeader({
             <p
               className={isLarge ? "page-header__description" : undefined}
               style={{
-                margin: "0.35rem 0 0",
-                fontSize: isLarge ? undefined : "0.875rem",
-                color: "var(--onyx-text-muted)",
-                lineHeight: 1.45,
+                margin: "0.55rem 0 0",
+                fontSize: isLarge ? undefined : "0.95rem",
+                color: "var(--onyx-text-secondary)",
+                lineHeight: 1.65,
               }}
             >
               {description}
             </p>
           )}
         </div>
-        {action && <div>{action}</div>}
+        {action && <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>{action}</div>}
       </div>
     </div>
   );

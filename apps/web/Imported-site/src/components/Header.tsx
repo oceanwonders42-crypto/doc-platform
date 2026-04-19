@@ -21,7 +21,7 @@ export default function Header() {
   return (
     <header
       className="fixed top-0 left-0 right-0 z-50 border-b border-[var(--border-subtle)] bg-[var(--bg-primary)]/95 backdrop-blur-xl"
-      style={{ boxShadow: "0 1px 0 var(--border-subtle)" }}
+      style={{ boxShadow: "0 1px 0 var(--border-subtle), 0 18px 40px rgba(11, 35, 68, 0.06)" }}
     >
       <div className="mx-auto flex h-[4.25rem] max-w-7xl items-center justify-between gap-6 px-5 sm:px-6 lg:px-8">
         <Link
@@ -31,7 +31,7 @@ export default function Header() {
         >
           <span
             className="flex items-center rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-2.5"
-            style={{ boxShadow: "var(--shadow-glow), inset 0 1px 0 rgba(255,255,255,0.02)" }}
+            style={{ boxShadow: "var(--shadow-glow), 0 10px 24px rgba(11, 35, 68, 0.08)" }}
           >
             <Image
               src="/onyx-intel-logo.png"
@@ -43,31 +43,32 @@ export default function Header() {
             />
           </span>
         </Link>
-        <nav className="hidden items-center gap-0.5 md:flex">
-          {navLinks.map((link) =>
-            link.cta ? (
-              <Link
-                key={link.href}
-                href={link.href}
-                className="btn-primary px-5 py-2.5 text-sm"
-              >
-                {link.label}
-              </Link>
-            ) : (
-              <Link
-                key={link.href}
-                href={link.href}
-                className={`rounded-[var(--radius-md)] px-4 py-2.5 text-sm font-medium tracking-wide transition-colors duration-200 ${
-                  pathname === link.href
-                    ? "bg-[var(--bg-card)] text-[var(--text-primary)]"
-                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-card)]/80 hover:text-[var(--text-primary)]"
-                }`}
-              >
-                {link.label}
-              </Link>
-            )
-          )}
-        </nav>
+
+        <div className="hidden items-center gap-4 md:flex">
+          <span className="landing-eyebrow !mb-0">Built for plaintiff firms</span>
+          <nav className="flex items-center gap-0.5">
+            {navLinks.map((link) =>
+              link.cta ? (
+                <Link key={link.href} href={link.href} className="btn-primary px-5 py-2.5 text-sm">
+                  {link.label}
+                </Link>
+              ) : (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  className={`rounded-[var(--radius-md)] px-4 py-2.5 text-sm font-medium tracking-wide transition-colors duration-200 ${
+                    pathname === link.href
+                      ? "bg-[var(--bg-card)] text-[var(--text-primary)]"
+                      : "text-[var(--text-secondary)] hover:bg-[var(--bg-card)]/80 hover:text-[var(--text-primary)]"
+                  }`}
+                >
+                  {link.label}
+                </Link>
+              )
+            )}
+          </nav>
+        </div>
+
         <button
           type="button"
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -85,8 +86,12 @@ export default function Header() {
           )}
         </button>
       </div>
+
       {mobileMenuOpen && (
-        <div className="border-t border-[var(--border-subtle)] bg-[var(--bg-primary)] px-5 py-4 md:hidden">
+        <div
+          className="border-t border-[var(--border-subtle)] bg-[var(--bg-primary)] px-5 py-4 md:hidden"
+          style={{ boxShadow: "0 16px 32px rgba(11, 35, 68, 0.08)" }}
+        >
           <nav className="flex flex-col gap-0.5">
             {navLinks.map((link) => (
               <Link

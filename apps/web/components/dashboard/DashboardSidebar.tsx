@@ -222,26 +222,81 @@ export function DashboardSidebar() {
         flexDirection: "column",
       }}
     >
-      <div style={{ padding: "1.25rem 1rem", borderBottom: "1px solid var(--onyx-border-subtle)" }}>
+      <div
+        style={{
+          padding: "1.35rem 1rem 1.2rem",
+          borderBottom: "1px solid var(--onyx-sidebar-border)",
+        }}
+      >
         <Link
           href="/dashboard"
           style={{
             display: "inline-flex",
             alignItems: "center",
-            gap: "0.5rem",
+            gap: "0.75rem",
             textDecoration: "none",
-            color: "var(--onyx-text)",
-            fontWeight: 600,
-            fontSize: "1rem",
-            letterSpacing: "-0.02em",
+            color: "var(--onyx-sidebar-text)",
           }}
         >
-          <span style={{ color: "var(--onyx-accent)", opacity: 0.95 }}>O</span>
-          <span>nyx Intel</span>
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: "2.5rem",
+              height: "2.5rem",
+              borderRadius: "0.9rem",
+              background: "var(--onyx-gradient-hero)",
+              color: "var(--onyx-surface)",
+              fontSize: "0.85rem",
+              fontWeight: 800,
+              letterSpacing: "0.08em",
+              boxShadow: "var(--onyx-shadow)",
+            }}
+          >
+            OI
+          </span>
+          <span style={{ display: "flex", flexDirection: "column", gap: "0.15rem" }}>
+            <span
+              style={{
+                fontFamily: "var(--onyx-font-display)",
+                fontWeight: 700,
+                fontSize: "1.05rem",
+                letterSpacing: "-0.03em",
+                color: "var(--onyx-sidebar-text)",
+              }}
+            >
+              Onyx Intel
+            </span>
+            <span
+              style={{
+                fontSize: "0.72rem",
+                fontWeight: 600,
+                letterSpacing: "0.09em",
+                textTransform: "uppercase",
+                color: "var(--onyx-sidebar-muted)",
+              }}
+            >
+              Premium legal operations
+            </span>
+          </span>
         </Link>
       </div>
-      <nav style={{ flex: 1, padding: "0.75rem 0.5rem", overflowY: "auto" }}>
-        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "2px" }}>
+      <nav style={{ flex: 1, padding: "0.95rem 0.65rem 0.75rem", overflowY: "auto" }}>
+        <p
+          style={{
+            margin: "0 0 0.65rem",
+            padding: "0 0.5rem",
+            fontSize: "0.7rem",
+            fontWeight: 700,
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+            color: "var(--onyx-sidebar-muted)",
+          }}
+        >
+          Workspace
+        </p>
+        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
           {navItemsWithAdmin.map((item) => {
             const isActive =
               item.href === "/dashboard"
@@ -256,21 +311,34 @@ export function DashboardSidebar() {
                     display: "flex",
                     alignItems: "center",
                     gap: "0.625rem",
-                    padding: "0.5rem 0.75rem",
-                    borderRadius: "var(--onyx-radius-md)",
-                    fontSize: "var(--onyx-dash-font-base)",
+                    padding: "0.7rem 0.8rem",
+                    borderRadius: "calc(var(--onyx-radius-md) + 2px)",
+                    fontSize: "0.92rem",
+                    fontWeight: 500,
                     ...(isActive
                       ? {
-                          background: "var(--onyx-accent-muted)",
-                          color: "var(--onyx-text)",
-                          borderLeft: "2px solid var(--onyx-accent)",
-                          marginLeft: "-2px",
-                          paddingLeft: "calc(0.75rem + 2px)",
+                          background:
+                            "linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(201, 162, 39, 0.18))",
+                          color: "var(--onyx-sidebar-text)",
+                          boxShadow: "inset 0 0 0 1px rgba(201, 162, 39, 0.18)",
                         }
                       : {}),
                   }}
                 >
-                  <span style={{ flexShrink: 0, opacity: isActive ? 1 : 0.7 }}>{item.icon}</span>
+                  <span
+                    style={{
+                      display: "grid",
+                      placeItems: "center",
+                      width: "1.95rem",
+                      height: "1.95rem",
+                      borderRadius: "0.8rem",
+                      flexShrink: 0,
+                      opacity: isActive ? 1 : 0.82,
+                      background: isActive ? "rgba(255, 255, 255, 0.12)" : "rgba(255, 255, 255, 0.04)",
+                    }}
+                  >
+                    {item.icon}
+                  </span>
                   <span>{t(item.labelKey)}</span>
                 </Link>
               </li>
@@ -278,6 +346,44 @@ export function DashboardSidebar() {
           })}
         </ul>
       </nav>
+      <div
+        style={{
+          padding: "0.95rem 1rem 1.1rem",
+          borderTop: "1px solid var(--onyx-sidebar-border)",
+        }}
+      >
+        <div
+          style={{
+            borderRadius: "var(--onyx-radius-lg)",
+            background: "rgba(255, 255, 255, 0.06)",
+            border: "1px solid rgba(255, 255, 255, 0.08)",
+            padding: "0.9rem",
+          }}
+        >
+          <p
+            style={{
+              margin: 0,
+              fontSize: "0.72rem",
+              fontWeight: 700,
+              letterSpacing: "0.09em",
+              textTransform: "uppercase",
+              color: "#f3d57a",
+            }}
+          >
+            Trusted workflow
+          </p>
+          <p
+            style={{
+              margin: "0.45rem 0 0",
+              fontSize: "0.8rem",
+              lineHeight: 1.55,
+              color: "var(--onyx-sidebar-muted)",
+            }}
+          >
+            Review, migration, and exports stay visible from intake through delivery.
+          </p>
+        </div>
+      </div>
     </aside>
   );
 }

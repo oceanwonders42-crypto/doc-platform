@@ -13,7 +13,7 @@ export default function RootLayout({
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){var d=document.documentElement;var t=d.getAttribute('data-theme');if(!t){try{var s=localStorage.getItem('onyx-theme');if(s==='light'||s==='gradient')t=s;}catch(e){}}d.setAttribute('data-theme',t||'dark');})();`,
+            __html: `(function(){var d=document.documentElement;var t=d.getAttribute('data-theme');if(!t){try{var s=localStorage.getItem('onyx-theme');if(s==='dark'||s==='light'||s==='gradient')t=s;}catch(e){}}d.setAttribute('data-theme',t||'light');})();`,
           }}
         />
       </head>

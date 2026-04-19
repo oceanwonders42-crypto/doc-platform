@@ -45,12 +45,13 @@ export default function Footer() {
             <p className="mt-6 max-w-[280px] text-sm leading-[1.6] text-[var(--text-secondary)]">
               AI Document Intelligence for Law Firms
             </p>
+            <p className="mt-3 text-xs font-medium uppercase tracking-[0.16em] text-[var(--accent-gold)]">
+              Blue-chip software for legal operations
+            </p>
           </div>
 
           <div>
-            <p className="landing-eyebrow">
-              Product
-            </p>
+            <p className="landing-eyebrow">Product</p>
             <nav className="mt-4 flex flex-col gap-3">
               {productLinks.map((link) => (
                 <Link
@@ -65,9 +66,7 @@ export default function Footer() {
           </div>
 
           <div>
-            <p className="landing-eyebrow">
-              Company
-            </p>
+            <p className="landing-eyebrow">Company</p>
             <nav className="mt-4 flex flex-col gap-3">
               {companyLinks.map((link) => (
                 <Link
@@ -82,9 +81,7 @@ export default function Footer() {
           </div>
 
           <div>
-            <p className="landing-eyebrow">
-              Legal
-            </p>
+            <p className="landing-eyebrow">Legal</p>
             <nav className="mt-4 flex flex-col gap-3">
               {legalLinks.map((link) => (
                 <Link
@@ -100,12 +97,13 @@ export default function Footer() {
         </div>
 
         <TrustStrip />
+
         <div className="mt-14 border-t border-[var(--border-subtle)] pt-8">
           <p className="text-center text-sm text-[var(--text-secondary)]">
-            © {currentYear} Onyx Intel. All rights reserved.
+            Copyright {currentYear} Onyx Intel. All rights reserved.
           </p>
           <p className="mt-2 text-center text-xs text-[var(--text-muted)]">
-            Enterprise security · HIPAA-ready · Built for law firms
+            Enterprise security - HIPAA-ready - Built for law firms
           </p>
         </div>
       </div>

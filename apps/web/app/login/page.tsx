@@ -44,7 +44,6 @@ function LoginContent() {
   const base = getApiBase();
   const apiUrlMissing = !base;
 
-  // Handle OAuth callback: ?token=JWT or ?error=...
   useEffect(() => {
     const token = searchParams?.get("token");
     if (token) {
@@ -53,6 +52,7 @@ function LoginContent() {
       router.refresh();
       return;
     }
+
     const oauthError = searchParams?.get("error");
     if (oauthError === "no_account") {
       setError("No account found for this email. Contact your administrator to get access.");
@@ -61,10 +61,12 @@ function LoginContent() {
     } else if (oauthError === "oauth_not_implemented") {
       setError("Use email and password to sign in for this demo.");
     }
+
     if (!base) {
       setCheckingAuth(false);
       return;
     }
+
     fetch(`${base}/auth/me`, { headers: getAuthHeader(), ...getFetchOptions() })
       .then((res) => {
         if (res.ok) router.replace("/dashboard");
@@ -77,13 +79,15 @@ function LoginContent() {
     e.preventDefault();
     setError(null);
     setLoading(true);
+
     if (!base) {
       setError(
-        "Frontend configuration: API URL is not set. This is not a login or password error. Set NEXT_PUBLIC_API_URL in apps/web/.env.local (e.g. http://localhost:4000) and restart the dev server."
+        "Frontend configuration: API URL is not set. This is not a login or password error. Set NEXT_PUBLIC_API_URL in apps/web/.env.local (for example http://localhost:4000) and restart the dev server."
       );
       setLoading(false);
       return;
     }
+
     fetch(`${base}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -96,17 +100,20 @@ function LoginContent() {
           setLoading(false);
           return;
         }
+
         if (data.ok && data.token) {
           setAuthToken(data.token);
           router.push("/dashboard");
           router.refresh();
           return;
         }
+
         if (data.ok) {
           router.push("/dashboard");
           router.refresh();
           return;
         }
+
         setError(data.error ?? "Login failed");
         setLoading(false);
       })
@@ -120,7 +127,7 @@ function LoginContent() {
     (provider: "google" | "microsoft") => {
       if (!base) {
         setError(
-          "Frontend configuration: API URL is not set. This is not a login or password error. Set NEXT_PUBLIC_API_URL in apps/web/.env.local (e.g. http://localhost:4000) and restart the dev server."
+          "Frontend configuration: API URL is not set. This is not a login or password error. Set NEXT_PUBLIC_API_URL in apps/web/.env.local (for example http://localhost:4000) and restart the dev server."
         );
         return;
       }
@@ -134,7 +141,7 @@ function LoginContent() {
   if (checkingAuth) {
     return (
       <div className="login-page dashboard-theme">
-        <p style={{ color: "var(--onyx-text-muted)" }}>Loading…</p>
+        <p style={{ color: "var(--onyx-text-muted)" }}>Loading...</p>
       </div>
     );
   }
@@ -142,78 +149,158 @@ function LoginContent() {
   return (
     <div className="login-page dashboard-theme">
       {apiUrlMissing && (
-        <div className="onyx-card" style={{ marginBottom: "1rem", padding: "0.75rem 1rem", borderColor: "var(--onyx-warning)", background: "var(--onyx-background-surface)" }}>
-          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text)", fontWeight: 500 }}>Frontend configuration: API URL not set</p>
+        <div
+          className="onyx-card"
+          style={{
+            marginBottom: "1rem",
+            padding: "0.9rem 1rem",
+            borderColor: "var(--onyx-warning)",
+            background: "var(--onyx-surface-elevated)",
+            maxWidth: "76rem",
+            width: "100%",
+          }}
+        >
+          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text)", fontWeight: 500 }}>
+            Frontend configuration: API URL not set
+          </p>
           <p style={{ margin: "0.25rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-            This is not a login or password error. Add <code style={{ fontSize: "0.75rem" }}>NEXT_PUBLIC_API_URL=http://localhost:4000</code> to <code style={{ fontSize: "0.75rem" }}>apps/web/.env.local</code> (copy from <code style={{ fontSize: "0.75rem" }}>.env.local.example</code>) and restart the dev server.
+            This is not a login or password error. Add{" "}
+            <code style={{ fontSize: "0.75rem" }}>NEXT_PUBLIC_API_URL=http://localhost:4000</code> to{" "}
+            <code style={{ fontSize: "0.75rem" }}>apps/web/.env.local</code> (copy from{" "}
+            <code style={{ fontSize: "0.75rem" }}>.env.local.example</code>) and restart the dev server.
           </p>
         </div>
       )}
-      <div className="login-card onyx-card">
-        <h1 className="login-title">Onyx Intel</h1>
-        <p className="login-subtitle">Sign in to your account</p>
 
-        <div className="login-btn-social" role="button" onClick={() => redirectToOAuth("google")}>
-          <GoogleIcon />
-          <span>Continue with Google</span>
-        </div>
-        <div className="login-btn-social" role="button" onClick={() => redirectToOAuth("microsoft")}>
-          <MicrosoftIcon />
-          <span>Continue with Microsoft</span>
-        </div>
-
-        <div className="login-divider">or continue with email</div>
-
-        <form onSubmit={handleSubmit}>
-          <div className="login-input-wrap">
-            <label htmlFor="email" className="login-label">
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              className="login-input"
-              placeholder="you@firm.com"
-            />
+      <div className="login-shell">
+        <aside className="login-aside">
+          <p className="login-eyebrow">Trusted legal intelligence</p>
+          <h1 className="login-aside-title">
+            Premium document workflows for firms that need confidence at every step.
+          </h1>
+          <p className="login-aside-copy">
+            Onyx Intel helps teams move from intake to review with clear status, elegant routing,
+            and export-ready output built for legal operations.
+          </p>
+          <div className="login-aside-grid">
+            <div className="login-aside-card">
+              <strong style={{ display: "block", marginBottom: "0.35rem", color: "var(--onyx-text)" }}>
+                Honest OCR and review
+              </strong>
+              <span>
+                Documents surface real review states so teams can trust what is complete and what still needs attention.
+              </span>
+            </div>
+            <div className="login-aside-card">
+              <strong style={{ display: "block", marginBottom: "0.35rem", color: "var(--onyx-text)" }}>
+                Secure handoff and export
+              </strong>
+              <span>
+                Migration, replay, and export history stay visible for staff who need accountability and traceability.
+              </span>
+            </div>
+            <div className="login-aside-card">
+              <strong style={{ display: "block", marginBottom: "0.35rem", color: "var(--onyx-text)" }}>
+                Built for plaintiff firms
+              </strong>
+              <span>
+                A clean enterprise workspace with strong hierarchy, protected access, and case-ready output.
+              </span>
+            </div>
           </div>
-          <div className="login-input-wrap">
-            <label htmlFor="password" className="login-label">
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              className="login-input"
-              placeholder="••••••••"
-            />
-          </div>
-          {error && <p className="login-error">{error}</p>}
-          <button type="submit" disabled={loading} className="login-btn-primary">
-            {loading ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
+        </aside>
 
-        <p className="login-support-line">Secure access for authorized firm staff only.</p>
-        {(typeof window === "undefined" || process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_DEMO_MODE === "true") && (
-          <details style={{ marginTop: "0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-            <summary style={{ cursor: "pointer", fontWeight: 500 }}>Demo accounts</summary>
-            <ul style={{ margin: "0.5rem 0 0 1rem", paddingLeft: "0.5rem" }}>
-              <li>owner@onyxintel.com → Platform Admin</li>
-              <li>admin@demo.com → Firm Admin</li>
-              <li>paralegal@demo.com → Paralegal</li>
-              <li>demo@example.com → Staff</li>
-            </ul>
-            <p style={{ margin: "0.25rem 0 0", fontSize: "0.75rem" }}>Password: demo</p>
-          </details>
-        )}
+        <div className="login-panel">
+          <div className="login-card onyx-card">
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "0.5rem",
+                marginBottom: "1rem",
+                padding: "0.4rem 0.75rem",
+                borderRadius: "999px",
+                background: "rgba(18, 60, 115, 0.08)",
+                border: "1px solid rgba(18, 60, 115, 0.12)",
+                color: "var(--onyx-accent)",
+                fontSize: "0.78rem",
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+              }}
+            >
+              Onyx Intel access
+            </div>
+            <h2 className="login-title">Sign in to your account</h2>
+            <p className="login-subtitle">
+              Enter the secure workspace for documents, review, migration, and exports.
+            </p>
+
+            <button type="button" className="login-btn-social" onClick={() => redirectToOAuth("google")}>
+              <GoogleIcon />
+              <span>Continue with Google</span>
+            </button>
+            <button type="button" className="login-btn-social" onClick={() => redirectToOAuth("microsoft")}>
+              <MicrosoftIcon />
+              <span>Continue with Microsoft</span>
+            </button>
+
+            <div className="login-divider">or continue with email</div>
+
+            <form onSubmit={handleSubmit}>
+              <div className="login-input-wrap">
+                <label htmlFor="email" className="login-label">
+                  Email
+                </label>
+                <input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  className="login-input"
+                  placeholder="you@firm.com"
+                />
+              </div>
+              <div className="login-input-wrap">
+                <label htmlFor="password" className="login-label">
+                  Password
+                </label>
+                <input
+                  id="password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  className="login-input"
+                  placeholder="Enter your password"
+                />
+              </div>
+              {error && <p className="login-error">{error}</p>}
+              <button type="submit" disabled={loading} className="login-btn-primary">
+                {loading ? "Signing in..." : "Sign in"}
+              </button>
+            </form>
+
+            <p className="login-support-line">Secure access for authorized firm staff only.</p>
+            {(typeof window === "undefined" ||
+              process.env.NODE_ENV !== "production" ||
+              process.env.NEXT_PUBLIC_DEMO_MODE === "true") && (
+              <details style={{ marginTop: "0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+                <summary style={{ cursor: "pointer", fontWeight: 600 }}>Demo accounts</summary>
+                <ul style={{ margin: "0.5rem 0 0 1rem", paddingLeft: "0.5rem" }}>
+                  <li>owner@onyxintel.com - Platform Admin</li>
+                  <li>admin@demo.com - Firm Admin</li>
+                  <li>paralegal@demo.com - Paralegal</li>
+                  <li>demo@example.com - Staff</li>
+                </ul>
+                <p style={{ margin: "0.25rem 0 0", fontSize: "0.75rem" }}>Password: demo</p>
+              </details>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -221,11 +308,13 @@ function LoginContent() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={
-      <div className="login-page dashboard-theme">
-        <p style={{ color: "var(--onyx-text-muted)" }}>Loading…</p>
-      </div>
-    }>
+    <Suspense
+      fallback={
+        <div className="login-page dashboard-theme">
+          <p style={{ color: "var(--onyx-text-muted)" }}>Loading...</p>
+        </div>
+      }
+    >
       <LoginContent />
     </Suspense>
   );

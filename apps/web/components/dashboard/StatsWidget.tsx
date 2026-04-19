@@ -17,13 +17,15 @@ export function StatsWidget({
     <div
       className="onyx-card"
       style={{
+        position: "relative",
+        overflow: "hidden",
         padding: "1.375rem 1.25rem",
         borderRadius: "var(--onyx-radius-lg)",
       }}
     >
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "0.75rem" }}>
         <div>
-          <p style={{ margin: 0, fontSize: "0.75rem", fontWeight: 500, color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+          <p style={{ margin: 0, fontSize: "0.72rem", fontWeight: 700, color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.09em" }}>
             {label}
           </p>
           {skeleton ? (
@@ -33,7 +35,7 @@ export function StatsWidget({
             </>
           ) : (
             <>
-              <p style={{ margin: "0.35rem 0 0", fontSize: "1.625rem", fontWeight: 700, letterSpacing: "-0.02em", color: "var(--onyx-text)" }}>
+              <p style={{ margin: "0.4rem 0 0", fontSize: "1.75rem", fontWeight: 800, letterSpacing: "-0.04em", color: "var(--onyx-text)" }}>
                 {value}
               </p>
               {subtext && (
@@ -44,7 +46,22 @@ export function StatsWidget({
             </>
           )}
         </div>
-        {icon && !skeleton && <div style={{ color: "var(--onyx-accent)", opacity: 0.85 }}>{icon}</div>}
+        {icon && !skeleton && (
+          <div
+            style={{
+              display: "grid",
+              placeItems: "center",
+              width: "2.75rem",
+              height: "2.75rem",
+              borderRadius: "999px",
+              background: "linear-gradient(135deg, rgba(18, 60, 115, 0.1), rgba(201, 162, 39, 0.18))",
+              color: "var(--onyx-accent)",
+              boxShadow: "inset 0 0 0 1px rgba(18, 60, 115, 0.08)",
+            }}
+          >
+            {icon}
+          </div>
+        )}
       </div>
     </div>
   );
