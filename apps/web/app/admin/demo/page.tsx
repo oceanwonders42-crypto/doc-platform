@@ -1,7 +1,12 @@
+import { notFound } from "next/navigation";
 import Link from "next/link";
 import DemoSeedClient from "./DemoSeedClient";
 
 export default function AdminDemoPage() {
+  if (process.env.NODE_ENV === "production") {
+    notFound();
+  }
+
   return (
     <main
       style={{

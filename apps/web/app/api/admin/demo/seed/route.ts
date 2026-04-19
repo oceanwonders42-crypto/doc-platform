@@ -7,6 +7,13 @@ export async function POST(req: NextRequest) {
   const key = process.env.DOC_API_KEY?.trim() || "";
   const isProd = process.env.NODE_ENV === "production";
 
+  if (isProd) {
+    return NextResponse.json(
+      { ok: false, error: "Demo seed disabled in production" },
+      { status: 403 }
+    );
+  }
+
   if (!base) {
     return NextResponse.json(
       { ok: false, error: "Missing DOC_API_URL" },

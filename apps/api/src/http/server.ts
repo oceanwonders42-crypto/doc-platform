@@ -158,7 +158,7 @@ app.post("/auth/login", async (req, res) => {
       return res.status(401).json({ ok: false, error: "Invalid email or password" });
     }
     const isDemo =
-      (process.env.NODE_ENV !== "production" || process.env.DEMO_MODE === "true") &&
+      process.env.NODE_ENV !== "production" &&
       !user.passwordHash &&
       (password === "demo" || password === "password");
     const passwordOk =
@@ -1105,8 +1105,7 @@ app.post("/admin/demo/seed", async (req, res) => {
   try {
     console.log("[DEMO SEED] running seed handler", { ts: new Date().toISOString(), dryRun });
     const isProd = process.env.NODE_ENV === "production";
-    const demoMode = process.env.DEMO_MODE === "true";
-    if (isProd && !demoMode) {
+    if (isProd) {
       return res.status(403).json({ ok: false, error: "Demo seed disabled in production" });
     }
 

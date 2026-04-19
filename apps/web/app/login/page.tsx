@@ -59,7 +59,7 @@ function LoginContent() {
     } else if (oauthError === "oauth_failed" || oauthError === "oauth_callback_missing_params") {
       setError("Sign-in was cancelled or failed. Try again or use email and password.");
     } else if (oauthError === "oauth_not_implemented") {
-      setError("Use email and password to sign in for this demo.");
+      setError("Use email and password to sign in.");
     }
 
     if (!base) {
@@ -285,9 +285,7 @@ function LoginContent() {
             </form>
 
             <p className="login-support-line">Secure access for authorized firm staff only.</p>
-            {(typeof window === "undefined" ||
-              process.env.NODE_ENV !== "production" ||
-              process.env.NEXT_PUBLIC_DEMO_MODE === "true") && (
+            {process.env.NODE_ENV !== "production" && (
               <details style={{ marginTop: "0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
                 <summary style={{ cursor: "pointer", fontWeight: 600 }}>Demo accounts</summary>
                 <ul style={{ margin: "0.5rem 0 0 1rem", paddingLeft: "0.5rem" }}>

@@ -25,6 +25,7 @@ async function fetchStatus(): Promise<{ ok: boolean; error?: string }> {
 
 export default async function AdminDebugPage() {
   const [ping, status] = await Promise.all([fetchPing(), fetchStatus()]);
+  const isProd = process.env.NODE_ENV === "production";
 
   const docApiUrl = process.env.DOC_API_URL || "(not set)";
   const docApiKeySet = !!(process.env.DOC_API_KEY && process.env.DOC_API_KEY.trim());
@@ -86,7 +87,7 @@ export default async function AdminDebugPage() {
           )}
           {ping.latencyMs != null && ` (${ping.latencyMs} ms)`}
           {ping.error && (
-            <span style={{ color: "#666", marginLeft: 8 }}>— {ping.error}</span>
+            <span style={{ color: "#666", marginLeft: 8 }}>- {ping.error}</span>
           )}
         </p>
       </section>
@@ -108,7 +109,7 @@ export default async function AdminDebugPage() {
             <span style={{ color: "#c00" }}>FAIL</span>
           )}
           {status.error && (
-            <span style={{ color: "#666", marginLeft: 8 }}>— {status.error}</span>
+            <span style={{ color: "#666", marginLeft: 8 }}>- {status.error}</span>
           )}
         </p>
       </section>
@@ -120,39 +121,41 @@ export default async function AdminDebugPage() {
         <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
           <li style={{ marginBottom: 8 }}>
             <Link href="/onboarding" style={{ color: "#111", textDecoration: "underline" }}>
-              /onboarding — Firm onboarding wizard
+              /onboarding - Firm onboarding wizard
             </Link>
           </li>
           <li style={{ marginBottom: 8 }}>
             <Link href="/admin/firms" style={{ color: "#111", textDecoration: "underline" }}>
-              /admin/firms — Platform firms list
+              /admin/firms - Platform firms list
             </Link>
           </li>
           <li style={{ marginBottom: 8 }}>
             <Link href="/admin/dashboard" style={{ color: "#111", textDecoration: "underline" }}>
-              /admin/dashboard — Platform firms &amp; usage
+              /admin/dashboard - Platform firms &amp; usage
             </Link>
           </li>
           <li style={{ marginBottom: 8 }}>
             <Link href="/admin/errors" style={{ color: "#111", textDecoration: "underline" }}>
-              /admin/errors — System error log
+              /admin/errors - System error log
             </Link>
           </li>
           <li style={{ marginBottom: 8 }}>
             <Link href="/admin/quality" style={{ color: "#111", textDecoration: "underline" }}>
-              /admin/quality — Quality control metrics
+              /admin/quality - Quality control metrics
             </Link>
           </li>
           <li style={{ marginBottom: 8 }}>
             <Link href="/admin/jobs" style={{ color: "#111", textDecoration: "underline" }}>
-              /admin/jobs — Background jobs
+              /admin/jobs - Background jobs
             </Link>
           </li>
-          <li style={{ marginBottom: 8 }}>
-            <Link href="/admin/demo" style={{ color: "#111", textDecoration: "underline" }}>
-              /admin/demo — One-click demo seed
-            </Link>
-          </li>
+          {!isProd && (
+            <li style={{ marginBottom: 8 }}>
+              <Link href="/admin/demo" style={{ color: "#111", textDecoration: "underline" }}>
+                /admin/demo - One-click demo seed
+              </Link>
+            </li>
+          )}
           <li style={{ marginBottom: 8 }}>
             <Link href="/dashboard/review" style={{ color: "#111", textDecoration: "underline" }}>
               /dashboard/review
