@@ -200,13 +200,21 @@ export type ClassificationJobPayload = { type: "classification"; documentId: str
 export type ExtractionJobPayload = { type: "extraction"; documentId: string; firmId: string };
 export type CaseMatchJobPayload = { type: "case_match"; documentId: string; firmId: string };
 export type TimelineRebuildJobPayload = { type: "timeline_rebuild"; caseId: string; firmId: string };
+export type PostRouteSyncJobPayload = {
+  type: "post_route_sync";
+  documentId: string;
+  firmId: string;
+  caseId: string;
+  action: string;
+};
 
 export type JobPayload =
   | OcrJobPayload
   | ClassificationJobPayload
   | ExtractionJobPayload
   | CaseMatchJobPayload
-  | TimelineRebuildJobPayload;
+  | TimelineRebuildJobPayload
+  | PostRouteSyncJobPayload;
 
 export type RedisQueueStatus = {
   available: boolean;
@@ -240,6 +248,12 @@ export async function enqueueDocumentJob(payload: { documentId: string; firmId: 
 
 export async function enqueueTimelineRebuildJob(payload: { caseId: string; firmId: string }) {
   await pushJob({ type: "timeline_rebuild", ...payload });
+}
+
+export async function enqueuePostRouteSyncJob(
+  payload: Omit<PostRouteSyncJobPayload, "type">
+) {
+  await pushJob({ type: "post_route_sync", ...payload });
 }
 
 /** Alias for migration/bulk ingest; uses same OCR queue. */

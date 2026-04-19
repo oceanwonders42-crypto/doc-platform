@@ -6,6 +6,7 @@ import {
   enqueueClassificationJob,
   enqueueExtractionJob,
   enqueueCaseMatchJob,
+  type PostRouteSyncJobPayload,
 } from "../services/queue";
 import { getObjectBuffer } from "../services/storage";
 import { countPagesFromBuffer } from "../services/pageCount";
@@ -29,6 +30,9 @@ import { rebuildCaseTimeline } from "../services/caseTimeline";
 import { pushCaseIntelligenceToCrm } from "../integrations/crm/pushService";
 import { createNotification } from "../services/notifications";
 import { emitWebhookEvent } from "../services/webhooks";
+import { pushDocumentToClio } from "../integrations/clioAdapter";
+import { getPresignedGetUrl } from "../services/storage";
+import { logInfo } from "../lib/logger";
 
 async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -153,11 +157,129 @@ export async function upsertRecognitionTextExcerpt(
 }
 
 async function handleTimelineRebuild(caseId: string, firmId: string): Promise<void> {
+  const startedAt = Date.now();
+  logInfo("transfer_fast_path_async", {
+    jobType: "timeline_rebuild",
+    stage: "job_start",
+    caseId,
+    firmId,
+  });
   console.log("Processing timeline rebuild job:", { caseId, firmId });
   await rebuildCaseTimeline(caseId, firmId);
   pushCaseIntelligenceToCrm({ firmId, caseId, actionType: "timeline_rebuilt" }).catch((e) =>
     console.warn("[crm] push after timeline_rebuilt failed", e)
   );
+  logInfo("transfer_fast_path_async", {
+    jobType: "timeline_rebuild",
+    stage: "job_end",
+    caseId,
+    firmId,
+    elapsedMs: Date.now() - startedAt,
+  });
+}
+
+function getPostRouteCrmAction(action: string): "document_approved" | "document_routed" {
+  return action === "approved" ? "document_approved" : "document_routed";
+}
+
+function shouldPushDocumentToClio(action: string): boolean {
+  return action !== "approved";
+}
+
+async function handlePostRouteSyncJob(
+  documentId: string,
+  firmId: string,
+  caseId: string,
+  action: string
+): Promise<void> {
+  const startedAt = Date.now();
+  logInfo("transfer_fast_path_async", {
+    jobType: "post_route_sync",
+    stage: "job_start",
+    documentId,
+    firmId,
+    caseId,
+    action,
+  });
+  console.log("Processing post-route sync job:", { documentId, firmId, caseId, action });
+
+  const crmAction = getPostRouteCrmAction(action);
+  const [crmSyncEnabled, firm, doc] = await Promise.all([
+    hasFeature(firmId, "crm_sync"),
+    prisma.firm.findUnique({
+      where: { id: firmId },
+      select: { settings: true },
+    }),
+    prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { spacesKey: true, originalName: true },
+    }),
+  ]);
+
+  if (doc?.spacesKey && crmSyncEnabled && shouldPushDocumentToClio(action)) {
+    const settings = (firm?.settings as Record<string, unknown> | null | undefined) ?? {};
+    if (settings.crm === "clio") {
+      try {
+        logInfo("transfer_fast_path_async", {
+          jobType: "post_route_sync",
+          stage: "clio_push_start",
+          documentId,
+          firmId,
+          caseId,
+        });
+        const fileUrl = await getPresignedGetUrl(doc.spacesKey);
+        const pushResult = await pushDocumentToClio({
+          firmId,
+          caseId,
+          documentId,
+          fileName: doc.originalName || documentId,
+          fileUrl,
+        });
+        if (!pushResult.ok) {
+          console.warn("[worker] post-route Clio push failed", {
+            caseId,
+            documentId,
+            error: pushResult.error,
+          });
+        }
+        logInfo("transfer_fast_path_async", {
+          jobType: "post_route_sync",
+          stage: "clio_push_end",
+          documentId,
+          firmId,
+          caseId,
+          ok: pushResult.ok,
+          error: pushResult.ok ? null : pushResult.error,
+        });
+      } catch (e) {
+        console.warn("[worker] post-route Clio sync error", { caseId, documentId, err: e });
+      }
+    }
+  }
+
+  pushCaseIntelligenceToCrm({
+    firmId,
+    caseId,
+    actionType: crmAction,
+    documentId,
+  }).catch((e) => console.warn("[crm] push after route follow-up failed", e));
+  logInfo("transfer_fast_path_async", {
+    jobType: "post_route_sync",
+    stage: "crm_push_dispatched",
+    documentId,
+    firmId,
+    caseId,
+    action: crmAction,
+  });
+  logInfo("transfer_fast_path_async", {
+    jobType: "post_route_sync",
+    stage: "job_end",
+    documentId,
+    firmId,
+    caseId,
+    action,
+    elapsedMs: Date.now() - startedAt,
+  });
 }
 
 async function handleOcrJob(documentId: string, firmId: string): Promise<void> {
@@ -338,11 +460,33 @@ async function handleClassificationJob(documentId: string, firmId: string): Prom
     ]
   );
 
+  if (matterDetection.matterType === "TRAFFIC") {
+    await enqueueExtractionJob({ documentId, firmId });
+    console.log(
+      `Classification done, queued extraction: ${documentId} (docType=${finalDocType}, matterType=${matterDetection.matterType})`
+    );
+    return;
+  }
+
+  await prisma.document.update({
+    where: { id: documentId },
+    data: { processingStage: "case_match" },
+  });
+  await enqueueCaseMatchJob({ documentId, firmId });
   await enqueueExtractionJob({ documentId, firmId });
-  console.log(`Classification done, queued extraction: ${documentId} (docType=${finalDocType}, matterType=${matterDetection.matterType})`);
+  console.log(
+    `Classification done, queued case_match + extraction: ${documentId} (docType=${finalDocType}, matterType=${matterDetection.matterType})`
+  );
 }
 
 async function handleExtractionJob(documentId: string, firmId: string): Promise<void> {
+  const startedAt = Date.now();
+  logInfo("transfer_fast_path_async", {
+    jobType: "extraction",
+    stage: "job_start",
+    documentId,
+    firmId,
+  });
   const doc = await prisma.document.findUnique({ where: { id: documentId } });
   if (!doc) throw new Error(`Document not found: ${documentId}`);
 
@@ -456,7 +600,6 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
     data: {
       extractedFields: extractedFields as Prisma.InputJsonValue,
       confidence: finalConfidence,
-      processingStage: suggestedMatterType === "TRAFFIC" ? "complete" : "case_match",
     },
   });
 
@@ -538,11 +681,45 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
     });
   }
 
-  await enqueueCaseMatchJob({ documentId, firmId });
-  console.log(`Extraction done, queued case_match: ${documentId}`);
+  await prisma.document.update({
+    where: { id: documentId },
+    data: { processingStage: "complete" },
+  });
+  console.log(`Extraction done asynchronously: ${documentId}`);
+  logInfo("transfer_fast_path_async", {
+    jobType: "extraction",
+    stage: "job_end",
+    documentId,
+    firmId,
+    elapsedMs: Date.now() - startedAt,
+  });
 }
 
 async function handleCaseMatchJob(documentId: string, firmId: string): Promise<void> {
+  const startedAt = Date.now();
+  logInfo("transfer_fast_path_async", {
+    jobType: "case_match",
+    stage: "job_start",
+    documentId,
+    firmId,
+  });
+  const existingDocument = await prisma.document.findUnique({
+    where: { id: documentId },
+    select: { routedCaseId: true },
+  });
+  if (existingDocument?.routedCaseId) {
+    console.log(`Case match skipped (already routed): ${documentId} -> ${existingDocument.routedCaseId}`);
+    logInfo("transfer_fast_path_async", {
+      jobType: "case_match",
+      stage: "skip_already_routed",
+      documentId,
+      firmId,
+      routedCaseId: existingDocument.routedCaseId,
+      elapsedMs: Date.now() - startedAt,
+    });
+    return;
+  }
+
   const { rows: matterRows } = await pgPool.query<{ suggested_matter_type: string | null }>(
     `select coalesce(suggested_matter_type, 'PI') as suggested_matter_type
      from document_recognition where document_id = $1`,
@@ -641,6 +818,15 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
           ["Case auto-created from document", documentId, newCase.id]
         );
         console.log(`Auto-created case ${newCase.id} from document ${documentId}, routed`);
+        logInfo("transfer_fast_path_async", {
+          jobType: "case_match",
+          stage: "job_end",
+          documentId,
+          firmId,
+          routedCaseId: newCase.id,
+          mode: "auto_create",
+          elapsedMs: Date.now() - startedAt,
+        });
         return;
       }
     }
@@ -671,6 +857,15 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
         processingStage: "complete",
         caseId: matchedCaseId,
       }).catch((e) => console.warn("[webhooks] document.processed emit failed", e));
+      logInfo("transfer_fast_path_async", {
+        jobType: "case_match",
+        stage: "job_end",
+        documentId,
+        firmId,
+        routedCaseId: matchedCaseId,
+        mode: "auto_route",
+        elapsedMs: Date.now() - startedAt,
+      });
     } else {
       await prisma.document.updateMany({
         where: { id: documentId },
@@ -735,10 +930,19 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
     [matchConfidence, match.matchReason ?? null, documentId, matchedCaseId]
   );
   console.log(`Case match done: ${documentId}`);
+  logInfo("transfer_fast_path_async", {
+    jobType: "case_match",
+    stage: "job_end",
+    documentId,
+    firmId,
+    suggestedCaseId: matchedCaseId,
+    routingRequiredReview: !(autoRouteEnabled && suggestedCaseId != null && matchedCaseId != null && matchConfidence >= minAutoRouteConfidence),
+    elapsedMs: Date.now() - startedAt,
+  });
 }
 
 async function runDocumentWorkerLoop(loopLabel: string): Promise<void> {
-  console.log(`${loopLabel} started. Waiting for jobs (ocr, classification, extraction, case_match, timeline_rebuild)...`);
+  console.log(`${loopLabel} started. Waiting for jobs (ocr, classification, extraction, case_match, timeline_rebuild, post_route_sync)...`);
 
   while (true) {
     const job = await popJob();
@@ -751,6 +955,16 @@ async function runDocumentWorkerLoop(loopLabel: string): Promise<void> {
     try {
       if (job.type === "timeline_rebuild") {
         await handleTimelineRebuild(job.caseId, job.firmId);
+        continue;
+      }
+      if (job.type === "post_route_sync") {
+        const syncJob = job as PostRouteSyncJobPayload;
+        await handlePostRouteSyncJob(
+          syncJob.documentId,
+          syncJob.firmId,
+          syncJob.caseId,
+          syncJob.action
+        );
         continue;
       }
 

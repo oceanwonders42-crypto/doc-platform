@@ -37,10 +37,10 @@ import {
   enqueueDocumentJob,
   enqueueOcrJob,
   enqueueExtractionJob,
+  enqueuePostRouteSyncJob,
   enqueueTimelineRebuildJob,
 } from "../services/queue";
 import { matchDocumentToCase } from "../services/caseMatching";
-import { rebuildCaseTimeline } from "../services/caseTimeline";
 import { getCaseInsights } from "../services/caseInsights";
 import {
   createNotification,
@@ -57,7 +57,6 @@ import { generateNarrative } from "../ai/narrativeAssistant";
 import { explainDocument } from "../ai/documentExplain";
 import { pushCaseIntelligenceToCrm, pushCrmWebhook } from "../integrations/crm/pushService";
 import { buildOffersSummaryPdf } from "../services/offersSummaryPdf";
-import { pushDocumentToClio } from "../integrations/clioAdapter";
 import { getPresignedGetUrl } from "../services/storage";
 import { hasFeature } from "../services/featureFlags";
 import {
@@ -91,6 +90,7 @@ import { validateProductionRuntime } from "../lib/productionRuntime";
 import { ensureDemoSeedObjects } from "../dev/demoSeedObjects";
 import { getJobCounts } from "../services/jobQueue";
 import { getBuildInfo } from "../lib/buildInfo";
+import { logInfo } from "../lib/logger";
 
 export const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -115,6 +115,49 @@ function buildVersionPayload(service: string) {
     buildDirty: buildInfo.dirty,
     build: buildInfo,
     nodeEnv,
+  };
+}
+
+type FastPathTrace = {
+  mark: (stage: "persistence_complete" | "audit_complete" | "enqueue_complete", meta?: Record<string, unknown>) => void;
+};
+
+function createFastPathTrace(
+  res: express.Response,
+  routeName: "documents_route" | "documents_approve" | "cases_upload",
+  meta: Record<string, unknown>
+): FastPathTrace {
+  const startedAt = Date.now();
+  const baseMeta = {
+    trace: "transfer_fast_path",
+    route: routeName,
+    ...meta,
+  };
+
+  logInfo("transfer_fast_path", {
+    ...baseMeta,
+    stage: "request_start",
+    elapsedMs: 0,
+  });
+
+  res.once("finish", () => {
+    logInfo("transfer_fast_path", {
+      ...baseMeta,
+      stage: "response_sent",
+      statusCode: res.statusCode,
+      elapsedMs: Date.now() - startedAt,
+    });
+  });
+
+  return {
+    mark(stage, stageMeta) {
+      logInfo("transfer_fast_path", {
+        ...baseMeta,
+        ...stageMeta,
+        stage,
+        elapsedMs: Date.now() - startedAt,
+      });
+    },
   };
 }
 
@@ -4056,6 +4099,7 @@ app.post("/documents/:id/approve", auth, requireRole(Role.STAFF), async (req, re
     const documentId = String(req.params.id ?? "");
     const actor = (req as any).apiKeyPrefix || "reviewer";
     const body = (req.body ?? {}) as any;
+    const trace = createFastPathTrace(res, "documents_approve", { firmId, documentId });
 
     const doc = await prisma.document.findFirst({
       where: { id: documentId, firmId },
@@ -4067,6 +4111,7 @@ app.post("/documents/:id/approve", auth, requireRole(Role.STAFF), async (req, re
       where: { id: documentId },
       data: { reviewState: "APPROVED" },
     });
+    trace.mark("persistence_complete", { reviewState: "APPROVED" });
 
     await addDocumentAuditEvent({
       firmId,
@@ -4077,19 +4122,33 @@ app.post("/documents/:id/approve", auth, requireRole(Role.STAFF), async (req, re
       toCaseId: doc.routedCaseId ?? null,
       metaJson: body ?? null,
     });
+    trace.mark("audit_complete");
 
     if (doc.routedCaseId) {
-      try {
-        await rebuildCaseTimeline(doc.routedCaseId, firmId);
-      } catch (e) {
-        console.error("[timeline] rebuild after approve failed", { caseId: doc.routedCaseId, err: e });
+      const enqueueResults = await Promise.allSettled([
+        enqueueTimelineRebuildJob({ caseId: doc.routedCaseId, firmId }),
+        enqueuePostRouteSyncJob({
+          documentId,
+          firmId,
+          caseId: doc.routedCaseId,
+          action: "approved",
+        }),
+      ]);
+      for (const result of enqueueResults) {
+        if (result.status === "rejected") {
+          console.warn("[approve] failed to enqueue post-approve follow-up", {
+            caseId: doc.routedCaseId,
+            documentId,
+            error: result.reason,
+          });
+        }
       }
-      pushCaseIntelligenceToCrm({
-        firmId,
+      trace.mark("enqueue_complete", {
+        queuedJobs: ["timeline_rebuild", "post_route_sync"],
         caseId: doc.routedCaseId,
-        actionType: "document_approved",
-        documentId,
-      }).catch((e) => console.warn("[crm] push after approve failed", e));
+      });
+    } else {
+      trace.mark("enqueue_complete", { queuedJobs: [] });
     }
 
     res.json({ ok: true });
@@ -4139,6 +4198,11 @@ app.post("/documents/:id/route", auth, requireRole(Role.STAFF), async (req, res)
     const actor = (req as any).apiKeyPrefix || "reviewer";
     const body = (req.body ?? {}) as any;
     const toCaseId = body?.caseId ? String(body.caseId) : null;
+    const trace = createFastPathTrace(res, "documents_route", {
+      firmId,
+      documentId,
+      caseId: toCaseId,
+    });
 
     const result = await routeDocument(firmId, documentId, toCaseId, {
       actor,
@@ -4148,50 +4212,13 @@ app.post("/documents/:id/route", auth, requireRole(Role.STAFF), async (req, res)
       reviewState: toCaseId ? "APPROVED" : null,
       status: toCaseId ? "UPLOADED" : undefined,
       metaJson: body ?? null,
+      timingReporter: (stage, stageMeta) => {
+        trace.mark(stage, stageMeta);
+      },
     });
 
     if (!result.ok) {
       return res.status(404).json({ ok: false, error: result.error });
-    }
-
-    if (toCaseId) {
-      const crmSyncEnabled = await hasFeature(firmId, "crm_sync");
-      if (crmSyncEnabled) {
-        try {
-          const firm = await prisma.firm.findUnique({
-            where: { id: firmId },
-            select: { settings: true },
-          });
-          const settings = firm?.settings as Record<string, unknown> | null | undefined;
-          if (settings?.crm === "clio") {
-            const doc = await prisma.document.findFirst({
-              where: { id: documentId, firmId },
-              select: { spacesKey: true, originalName: true },
-            });
-            if (doc?.spacesKey) {
-              const fileUrl = await getPresignedGetUrl(doc.spacesKey);
-              const pushResult = await pushDocumentToClio({
-                firmId,
-                caseId: toCaseId,
-                documentId,
-                fileName: doc.originalName || documentId,
-                fileUrl,
-              });
-              if (!pushResult.ok) {
-                console.warn("[route] Clio push failed:", pushResult.error);
-              }
-            }
-          }
-        } catch (e) {
-          console.warn("[route] CRM sync error:", e);
-        }
-      }
-      pushCaseIntelligenceToCrm({
-        firmId,
-        caseId: toCaseId,
-        actionType: "document_routed",
-        documentId,
-      }).catch((e) => console.warn("[crm] push after route failed", e));
     }
 
     res.json({ ok: true });
@@ -5182,6 +5209,7 @@ app.post("/cases/:id/documents/upload", auth, requireRole(Role.STAFF), upload.si
     const actor = (req as any).apiKeyPrefix || "user";
     const caseId = String(req.params.id ?? "");
     const file = req.file;
+    const trace = createFastPathTrace(res, "cases_upload", { firmId, caseId });
 
     if (!file) return res.status(400).json({ error: "Missing file (multipart field name must be 'file')" });
 
@@ -5247,6 +5275,10 @@ app.post("/cases/:id/documents/upload", auth, requireRole(Role.STAFF), upload.si
         ingestedAt: new Date(),
       },
     });
+    trace.mark("persistence_complete", {
+      documentId: doc.id,
+      routedCaseId: caseId,
+    });
 
     await addDocumentAuditEvent({
       firmId,
@@ -5257,9 +5289,20 @@ app.post("/cases/:id/documents/upload", auth, requireRole(Role.STAFF), upload.si
       toCaseId: caseId,
       metaJson: { caseId, source: "case_upload" },
     });
+    trace.mark("audit_complete", {
+      documentId: doc.id,
+    });
 
-    await enqueueDocumentJob({ documentId: doc.id, firmId });
-    await enqueueTimelineRebuildJob({ caseId, firmId });
+    await Promise.all([
+      enqueueDocumentJob({ documentId: doc.id, firmId }),
+      enqueueTimelineRebuildJob({ caseId, firmId }).catch((e) => {
+        console.warn("[case_upload] timeline rebuild enqueue failed", { caseId, documentId: doc.id, err: e });
+      }),
+    ]);
+    trace.mark("enqueue_complete", {
+      documentId: doc.id,
+      queuedJobs: ["ocr", "timeline_rebuild"],
+    });
 
     res.status(201).json({
       ok: true,

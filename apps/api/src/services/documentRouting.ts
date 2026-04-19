@@ -1,13 +1,21 @@
 /**
- * Shared document routing logic: update document, audit event, rebuild timeline.
+ * Shared document routing logic: update document, audit event, queue follow-up work.
  * Used by POST /documents/:id/route and by the worker for auto-route.
  */
 import { prisma } from "../db/prisma";
-import { pgPool } from "../db/pg";
-import { rebuildCaseTimeline } from "./caseTimeline";
-import { createNotification } from "./notifications";
+import { enqueuePostRouteSyncJob, enqueueTimelineRebuildJob } from "./queue";
 import { emitWebhookEvent } from "./webhooks";
 import type { DocumentReviewStateValue } from "./documentReviewState";
+
+export type RouteDocumentTimingStage =
+  | "persistence_complete"
+  | "audit_complete"
+  | "enqueue_complete";
+
+export type RouteDocumentTimingReporter = (
+  stage: RouteDocumentTimingStage,
+  meta?: Record<string, unknown>
+) => void | Promise<void>;
 
 export type RouteDocumentOptions = {
   actor: string;
@@ -17,6 +25,7 @@ export type RouteDocumentOptions = {
   reviewState?: DocumentReviewStateValue | null;
   status?: "RECEIVED" | "PROCESSING" | "NEEDS_REVIEW" | "UPLOADED" | "FAILED" | "UNMATCHED";
   metaJson?: unknown;
+  timingReporter?: RouteDocumentTimingReporter;
 };
 
 export async function routeDocument(
@@ -25,7 +34,7 @@ export async function routeDocument(
   toCaseId: string | null,
   options: RouteDocumentOptions
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { actor, action, routedSystem, routingStatus, reviewState, status, metaJson } = options;
+  const { actor, action, routedSystem, routingStatus, reviewState, status, metaJson, timingReporter } = options;
 
   const doc = await prisma.document.findFirst({
     where: { id: documentId, firmId },
@@ -51,6 +60,10 @@ export async function routeDocument(
     where: { id: documentId },
     data: updateData,
   });
+  await timingReporter?.("persistence_complete", {
+    documentId,
+    toCaseId,
+  });
 
   await prisma.documentAuditEvent.create({
     data: {
@@ -63,32 +76,39 @@ export async function routeDocument(
       metaJson: metaJson ? JSON.parse(JSON.stringify(metaJson)) : null,
     },
   });
+  await timingReporter?.("audit_complete", {
+    documentId,
+    fromCaseId: doc.routedCaseId ?? null,
+    toCaseId,
+  });
 
+  const queuedJobs: string[] = [];
   if (toCaseId) {
-    try {
-      await rebuildCaseTimeline(toCaseId, firmId);
-    } catch (e) {
-      console.error("[documentRouting] rebuildCaseTimeline failed", { caseId: toCaseId, err: e });
-    }
-    const { rows } = await pgPool.query<{ insurance_fields: unknown }>(
-      `select insurance_fields from document_recognition where document_id = $1`,
-      [documentId]
-    );
-    const raw = rows[0]?.insurance_fields;
-    if (raw != null && typeof raw === "object" && "settlementOffer" in raw) {
-      const v = (raw as { settlementOffer?: unknown }).settlementOffer;
-      const amount = typeof v === "number" && Number.isFinite(v) ? v : null;
-      if (amount != null && amount > 0) {
-        createNotification(
-          firmId,
-          "settlement_offer_detected",
-          "Settlement offer detected",
-          `A document routed to this case contains a settlement offer of $${Number(amount).toLocaleString()}.`,
-          { caseId: toCaseId, documentId, amount }
-        ).catch((e) => console.warn("[notifications] settlement_offer_detected failed", e));
+    queuedJobs.push("timeline_rebuild", "post_route_sync");
+    const enqueueResults = await Promise.allSettled([
+      enqueueTimelineRebuildJob({ caseId: toCaseId, firmId }),
+      enqueuePostRouteSyncJob({
+        documentId,
+        firmId,
+        caseId: toCaseId,
+        action,
+      }),
+    ]);
+    for (const result of enqueueResults) {
+      if (result.status === "rejected") {
+        console.warn("[documentRouting] background route follow-up enqueue failed", {
+          caseId: toCaseId,
+          documentId,
+          error: result.reason,
+        });
       }
     }
   }
+  await timingReporter?.("enqueue_complete", {
+    documentId,
+    toCaseId,
+    queuedJobs,
+  });
 
   emitWebhookEvent(firmId, "document.routed", {
     documentId,
