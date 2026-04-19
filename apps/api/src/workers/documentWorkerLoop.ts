@@ -33,6 +33,17 @@ import { emitWebhookEvent } from "../services/webhooks";
 import { pushDocumentToClio } from "../integrations/clioAdapter";
 import { getPresignedGetUrl } from "../services/storage";
 import { logInfo } from "../lib/logger";
+import {
+  buildTaskCacheKey,
+  DOCUMENT_RECOGNITION_PROMPTS,
+  DOCUMENT_RECOGNITION_TASKS,
+  getStoredTextHash,
+  getTaskCacheResponseMeta,
+  inspectTaskCache,
+  logTaskCacheDecision,
+  resolveTaskCache,
+  upsertTaskCacheEntry,
+} from "../services/documentRecognitionCache";
 
 async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -392,78 +403,144 @@ async function handleClassificationJob(documentId: string, firmId: string): Prom
   const doc = await prisma.document.findUnique({ where: { id: documentId } });
   if (!doc) throw new Error(`Document not found: ${documentId}`);
 
-  const { rows } = await pgPool.query<{ text_excerpt: string | null }>(
-    `select text_excerpt from document_recognition where document_id = $1`,
+  const { rows } = await pgPool.query<{
+    text_excerpt: string | null;
+    doc_type: string | null;
+    client_name: string | null;
+    case_number: string | null;
+    incident_date: string | null;
+    confidence: number | null;
+    suggested_matter_type: string | null;
+    normalized_text_hash: string | null;
+    extracted_json: unknown;
+  }>(
+    `select text_excerpt, doc_type, client_name, case_number, incident_date, confidence,
+      suggested_matter_type, normalized_text_hash, extracted_json
+     from document_recognition where document_id = $1`,
     [documentId]
   );
-  const text = rows[0]?.text_excerpt ?? null;
+  const existingRecognition = rows[0] ?? null;
+  const text = existingRecognition?.text_excerpt ?? null;
   if (!text) throw new Error(`No text_excerpt for document ${documentId}`);
+  const textHash = existingRecognition?.normalized_text_hash ?? getStoredTextHash(text);
+  const [insuranceOn, courtOn] = await Promise.all([
+    hasFeature(firmId, "insurance_extraction"),
+    hasFeature(firmId, "court_extraction"),
+  ]);
+  const recognitionPrompt = {
+    ...DOCUMENT_RECOGNITION_PROMPTS.recognition,
+    promptVersion: `${DOCUMENT_RECOGNITION_PROMPTS.recognition.promptVersion}:insurance-${insuranceOn ? "on" : "off"}:court-${courtOn ? "on" : "off"}`,
+  };
+  const recognitionTaskKey = buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.recognition);
+  const recognitionCacheState = inspectTaskCache(existingRecognition?.extracted_json ?? null, recognitionTaskKey, {
+    textHash,
+    ...recognitionPrompt,
+  });
+  const canReuseRecognition =
+    existingRecognition != null &&
+    Boolean(existingRecognition.doc_type) &&
+    existingRecognition.suggested_matter_type != null &&
+    recognitionCacheState.cacheUsed;
 
   await prisma.document.update({
     where: { id: documentId },
     data: { processingStage: "classification" },
   });
 
-  const generic = classifyAndExtract(text);
-  const classification = classify(text, doc.originalName ?? "");
-  let finalDocType = classification.docType !== "unknown" ? classification.docType : generic.docType;
-  const finalConfidence =
-    classification.docType !== "unknown" ? classification.confidence : generic.confidence;
+  let finalDocType: string;
+  let finalConfidence: number;
+  let clientName: string | null;
+  let caseNumber: string | null;
+  let incidentDate: string | null;
+  let suggestedMatterType: string;
+  let recognitionCacheMeta = recognitionCacheState.meta;
 
-  const [insuranceOn, courtOn] = await Promise.all([
-    hasFeature(firmId, "insurance_extraction"),
-    hasFeature(firmId, "court_extraction"),
-  ]);
-  if ((finalDocType === "insurance_letter" || finalDocType.startsWith("insurance_")) && !insuranceOn) finalDocType = "other";
-  if ((finalDocType === "court_filing" || finalDocType.startsWith("court_")) && !courtOn) finalDocType = "other";
+  if (canReuseRecognition) {
+    finalDocType = existingRecognition.doc_type ?? "unknown";
+    finalConfidence =
+      existingRecognition.confidence == null
+        ? 0
+        : typeof existingRecognition.confidence === "number"
+          ? existingRecognition.confidence
+          : Number(existingRecognition.confidence) || 0;
+    clientName = existingRecognition.client_name ?? null;
+    caseNumber = existingRecognition.case_number ?? null;
+    incidentDate = existingRecognition.incident_date ?? null;
+    suggestedMatterType = existingRecognition.suggested_matter_type ?? "PI";
+  } else {
+    const generic = classifyAndExtract(text);
+    const classification = classify(text, doc.originalName ?? "");
+    finalDocType = classification.docType !== "unknown" ? classification.docType : generic.docType;
+    finalConfidence =
+      classification.docType !== "unknown" ? classification.confidence : generic.confidence;
+    clientName = generic.clientName;
+    caseNumber = generic.caseNumber;
+    incidentDate = generic.incidentDate;
 
-  await pgPool.query(
-    `
-    insert into document_recognition
-    (document_id, text_excerpt, doc_type, client_name, case_number, incident_date, confidence, updated_at)
-    values ($1, $2, $3, $4, $5, $6, $7, now())
-    on conflict (document_id) do update set
-      text_excerpt = excluded.text_excerpt,
-      doc_type = excluded.doc_type,
-      client_name = excluded.client_name,
-      case_number = excluded.case_number,
-      incident_date = excluded.incident_date,
-      confidence = excluded.confidence,
-      updated_at = now()
-    `,
-    [
-      documentId,
-      text,
-      finalDocType,
-      generic.clientName,
-      generic.caseNumber,
-      generic.incidentDate,
-      finalConfidence,
-    ]
+    if ((finalDocType === "insurance_letter" || finalDocType.startsWith("insurance_")) && !insuranceOn) finalDocType = "other";
+    if ((finalDocType === "court_filing" || finalDocType.startsWith("court_")) && !courtOn) finalDocType = "other";
+
+    const matterDetection = detectTrafficMatterType(text, finalDocType, doc.originalName ?? "");
+    suggestedMatterType = matterDetection.matterType;
+    const extractedJson = upsertTaskCacheEntry(existingRecognition?.extracted_json, recognitionTaskKey, {
+      textHash,
+      ...recognitionPrompt,
+      generatedAt: new Date().toISOString(),
+    });
+    recognitionCacheMeta = getTaskCacheResponseMeta(extractedJson, recognitionTaskKey, {
+      textHash,
+      ...recognitionPrompt,
+    });
+
+    await pgPool.query(
+      `
+      insert into document_recognition
+      (document_id, text_excerpt, doc_type, client_name, case_number, incident_date, confidence,
+       suggested_matter_type, matter_routing_reason, matter_review_required, normalized_text_hash, extracted_json, updated_at)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+      on conflict (document_id) do update set
+        text_excerpt = excluded.text_excerpt,
+        doc_type = excluded.doc_type,
+        client_name = excluded.client_name,
+        case_number = excluded.case_number,
+        incident_date = excluded.incident_date,
+        confidence = excluded.confidence,
+        suggested_matter_type = excluded.suggested_matter_type,
+        matter_routing_reason = excluded.matter_routing_reason,
+        matter_review_required = excluded.matter_review_required,
+        normalized_text_hash = excluded.normalized_text_hash,
+        extracted_json = excluded.extracted_json,
+        updated_at = now()
+      `,
+      [
+        documentId,
+        text,
+        finalDocType,
+        clientName,
+        caseNumber,
+        incidentDate,
+        finalConfidence,
+        matterDetection.matterType,
+        matterDetection.reason,
+        matterDetection.reviewRequired,
+        textHash,
+        extractedJson,
+      ]
+    );
+  }
+  logTaskCacheDecision(
+    { source: "worker.classification", documentId },
+    {
+      ...recognitionCacheMeta,
+      cacheUsed: recognitionCacheState.cacheUsed,
+      recomputeReason: recognitionCacheState.recomputeReason,
+    }
   );
 
-  const matterDetection = detectTrafficMatterType(text, finalDocType, doc.originalName ?? "");
-  await pgPool.query(
-    `
-    update document_recognition set
-      suggested_matter_type = $1,
-      matter_routing_reason = $2,
-      matter_review_required = $3,
-      updated_at = now()
-    where document_id = $4
-    `,
-    [
-      matterDetection.matterType,
-      matterDetection.reason,
-      matterDetection.reviewRequired,
-      documentId,
-    ]
-  );
-
-  if (matterDetection.matterType === "TRAFFIC") {
+  if (suggestedMatterType === "TRAFFIC") {
     await enqueueExtractionJob({ documentId, firmId });
     console.log(
-      `Classification done, queued extraction: ${documentId} (docType=${finalDocType}, matterType=${matterDetection.matterType})`
+      `Classification done, queued extraction: ${documentId} (docType=${finalDocType}, matterType=${suggestedMatterType})`
     );
     return;
   }
@@ -475,7 +552,7 @@ async function handleClassificationJob(documentId: string, firmId: string): Prom
   await enqueueCaseMatchJob({ documentId, firmId });
   await enqueueExtractionJob({ documentId, firmId });
   console.log(
-    `Classification done, queued case_match + extraction: ${documentId} (docType=${finalDocType}, matterType=${matterDetection.matterType})`
+    `Classification done, queued case_match + extraction: ${documentId} (docType=${finalDocType}, matterType=${suggestedMatterType})`
   );
 }
 
@@ -498,9 +575,17 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
     incident_date: string | null;
     confidence: number | null;
     suggested_matter_type: string | null;
+    normalized_text_hash: string | null;
+    extracted_json: unknown;
+    insurance_fields: unknown;
+    court_fields: unknown;
+    risks: unknown;
+    insights: unknown;
+    summary: unknown;
   }>(
     `select text_excerpt, doc_type, client_name, case_number, incident_date, confidence,
-     coalesce(suggested_matter_type, 'PI') as suggested_matter_type
+     coalesce(suggested_matter_type, 'PI') as suggested_matter_type, normalized_text_hash,
+     extracted_json, insurance_fields, court_fields, risks, insights, summary
      from document_recognition where document_id = $1`,
     [documentId]
   );
@@ -509,6 +594,7 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
   const text = rec.text_excerpt;
   const finalDocType = rec.doc_type;
   const suggestedMatterType = rec.suggested_matter_type ?? "PI";
+  const textHash = rec.normalized_text_hash ?? getStoredTextHash(text);
 
   await prisma.document.update({
     where: { id: documentId },
@@ -523,29 +609,85 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
     excerptLength: text.length,
   };
   const extractedFields = runExtractors(text, finalDocType, baseFields);
-
   const [insuranceOn, courtOn] = await Promise.all([
     hasFeature(firmId, "insurance_extraction"),
     hasFeature(firmId, "court_extraction"),
   ]);
-  let insuranceFields: { settlementOffer?: number } | null = null;
-  if (insuranceOn && finalDocType.startsWith("insurance_")) {
-    const raw = await extractInsuranceOfferFields({ text, fileName: doc.originalName ?? undefined });
-    insuranceFields = raw ? { settlementOffer: raw.settlementOffer ?? undefined } : null;
-  }
-  const insuranceFieldsJson = insuranceFields ? JSON.stringify(insuranceFields) : null;
-  const courtFieldsJson =
-    courtOn && finalDocType.startsWith("court_")
-      ? JSON.stringify(await extractCourtFields({ text, fileName: doc.originalName ?? undefined }))
-      : null;
 
-  const { risks } = analyzeRisks(text);
-  const risksJson = risks.length > 0 ? JSON.stringify(risks) : null;
-  const { insights } = analyzeDocumentInsights(text);
-  const insightsJson = insights.length > 0 ? JSON.stringify(insights) : null;
-  const { summary: summaryText, keyFacts } = await summarizeDocument(text);
-  const summaryJson =
-    summaryText || keyFacts.length > 0 ? JSON.stringify({ summary: summaryText, keyFacts }) : null;
+  let extractedJson = rec.extracted_json;
+
+  const risksResolution = await resolveTaskCache({
+    extractedJson,
+    taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.risks),
+    textHash,
+    existingValue: rec.risks ?? null,
+    compute: () => {
+      const { risks } = analyzeRisks(text);
+      return risks.length > 0 ? risks : null;
+    },
+    logContext: { source: "worker.extraction", documentId },
+    ...DOCUMENT_RECOGNITION_PROMPTS.risks,
+  });
+  extractedJson = risksResolution.extractedJson;
+
+  const insightsResolution = await resolveTaskCache({
+    extractedJson,
+    taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.insights),
+    textHash,
+    existingValue: rec.insights ?? null,
+    compute: () => {
+      const { insights } = analyzeDocumentInsights(text);
+      return insights.length > 0 ? insights : null;
+    },
+    logContext: { source: "worker.extraction", documentId },
+    ...DOCUMENT_RECOGNITION_PROMPTS.insights,
+  });
+  extractedJson = insightsResolution.extractedJson;
+
+  const summaryResolution = await resolveTaskCache({
+    extractedJson,
+    taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.summary),
+    textHash,
+    existingValue: rec.summary ?? null,
+    compute: async () => {
+      const { summary: summaryText, keyFacts } = await summarizeDocument(text);
+      return summaryText || keyFacts.length > 0 ? { summary: summaryText, keyFacts } : null;
+    },
+    logContext: { source: "worker.extraction", documentId },
+    ...DOCUMENT_RECOGNITION_PROMPTS.summary,
+  });
+  extractedJson = summaryResolution.extractedJson;
+
+  const insuranceResolution =
+    insuranceOn && finalDocType.startsWith("insurance_")
+      ? await resolveTaskCache({
+          extractedJson,
+          taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.insurance),
+          textHash,
+          existingValue: rec.insurance_fields ?? null,
+          compute: async () => {
+            const raw = await extractInsuranceOfferFields({ text, fileName: doc.originalName ?? undefined });
+            return raw ? { settlementOffer: raw.settlementOffer ?? undefined } : null;
+          },
+          logContext: { source: "worker.extraction", documentId },
+          ...DOCUMENT_RECOGNITION_PROMPTS.insurance,
+        })
+      : { value: rec.insurance_fields ?? null, reused: true, extractedJson };
+  extractedJson = insuranceResolution.extractedJson;
+
+  const courtResolution =
+    courtOn && finalDocType.startsWith("court_")
+      ? await resolveTaskCache({
+          extractedJson,
+          taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.court),
+          textHash,
+          existingValue: rec.court_fields ?? null,
+          compute: () => extractCourtFields({ text, fileName: doc.originalName ?? undefined }),
+          logContext: { source: "worker.extraction", documentId },
+          ...DOCUMENT_RECOGNITION_PROMPTS.court,
+        })
+      : { value: rec.court_fields ?? null, reused: true, extractedJson };
+  extractedJson = courtResolution.extractedJson;
 
   await pgPool.query(
     `
@@ -555,11 +697,29 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
       risks = $3,
       insights = $4,
       summary = $5,
+      normalized_text_hash = $6,
+      extraction_version = $7,
+      extracted_json = $8,
       updated_at = now()
-    where document_id = $6
+    where document_id = $9
     `,
-    [insuranceFieldsJson, courtFieldsJson, risksJson, insightsJson, summaryJson, documentId]
+    [
+      insuranceResolution.value,
+      courtResolution.value,
+      risksResolution.value,
+      insightsResolution.value,
+      summaryResolution.value,
+      textHash,
+      "document-extraction-cache-v1",
+      extractedJson,
+      documentId,
+    ]
   );
+
+  const insuranceFields =
+    insuranceResolution.value != null && typeof insuranceResolution.value === "object"
+      ? (insuranceResolution.value as { settlementOffer?: number })
+      : null;
 
   if (insuranceFields?.settlementOffer != null && insuranceFields.settlementOffer > 0) {
     const caseId = doc.routedCaseId ?? null;

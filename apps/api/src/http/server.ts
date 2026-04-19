@@ -91,6 +91,19 @@ import { ensureDemoSeedObjects } from "../dev/demoSeedObjects";
 import { getJobCounts } from "../services/jobQueue";
 import { getBuildInfo } from "../lib/buildInfo";
 import { logInfo } from "../lib/logger";
+import {
+  buildTaskCacheKey,
+  computeDocumentExplainVariant,
+  DOCUMENT_RECOGNITION_PROMPTS,
+  DOCUMENT_RECOGNITION_TASKS,
+  getStoredTextHash,
+  getTaskCacheResponseMeta,
+  inspectTaskCache,
+  invalidateTaskCacheEntries,
+  logTaskCacheDecision,
+  resolveTaskCache,
+  upsertTaskCacheEntry,
+} from "../services/documentRecognitionCache";
 
 export const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -159,6 +172,29 @@ function createFastPathTrace(
       });
     },
   };
+}
+
+function isLoopbackAddress(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.replace(/^::ffff:/, "").replace(/^\[|\]$/g, "").trim().toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost";
+}
+
+function isInternalCacheControlRequest(req: express.Request): boolean {
+  if (nodeEnv !== "production") return true;
+
+  const forwardedForHeader = req.headers["x-forwarded-for"];
+  const forwardedFor =
+    typeof forwardedForHeader === "string"
+      ? forwardedForHeader.split(",").map((part) => part.trim()).filter(Boolean)
+      : Array.isArray(forwardedForHeader)
+        ? forwardedForHeader.flatMap((value) => value.split(",").map((part) => part.trim())).filter(Boolean)
+        : [];
+  const candidates = [req.ip, req.socket.remoteAddress, ...forwardedFor].filter(
+    (value): value is string => typeof value === "string" && value.trim().length > 0
+  );
+
+  return candidates.length > 0 && candidates.every((value) => isLoopbackAddress(value));
 }
 
 app.get("/health", (_req, res) => res.json({ ok: true, build: buildInfo }));
@@ -3745,52 +3781,192 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
       extractedTextLength: text.length,
     });
 
-    const result = classifyAndExtract(text);
-    const classification = classify(text, key.split("/").pop() ?? "");
-    let finalDocType = classification.docType !== "unknown" ? classification.docType : result.docType;
-    const finalConfidence = classification.docType !== "unknown" ? classification.confidence : result.confidence;
-
+    const { rows: existingRows } = await pgPool.query<{
+      text_excerpt: string | null;
+      doc_type: string | null;
+      client_name: string | null;
+      case_number: string | null;
+      incident_date: string | null;
+      confidence: number | null;
+      insurance_fields: unknown;
+      court_fields: unknown;
+      risks: unknown;
+      insights: unknown;
+      summary: unknown;
+      normalized_text_hash: string | null;
+      extracted_json: unknown;
+    }>(
+      `select text_excerpt, doc_type, client_name, case_number, incident_date, confidence,
+        insurance_fields, court_fields, risks, insights, summary, normalized_text_hash, extracted_json
+       from document_recognition where document_id = $1`,
+      [documentId]
+    );
+    const existingRec = existingRows[0] ?? null;
+    const textHash = getStoredTextHash(text);
+    let extractedJson = existingRec?.extracted_json ?? null;
     const [insuranceOn, courtOn] = await Promise.all([
       hasFeature(firmId, "insurance_extraction"),
       hasFeature(firmId, "court_extraction"),
     ]);
+    const recognitionPrompt = {
+      ...DOCUMENT_RECOGNITION_PROMPTS.recognition,
+      promptVersion: `${DOCUMENT_RECOGNITION_PROMPTS.recognition.promptVersion}:insurance-${insuranceOn ? "on" : "off"}:court-${courtOn ? "on" : "off"}`,
+    };
+    const recognitionTaskKey = buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.recognition);
+    const recognitionCacheState = inspectTaskCache(extractedJson, recognitionTaskKey, {
+      textHash,
+      ...recognitionPrompt,
+    });
+    const canReuseRecognition =
+      existingRec != null &&
+      Boolean(existingRec.doc_type) &&
+      recognitionCacheState.cacheUsed;
+
+    let excerpt = existingRec?.text_excerpt ?? text.slice(0, 1200);
+    let finalDocType: string;
+    let finalConfidence: number;
+    let clientName: string | null;
+    let caseNumber: string | null;
+    let incidentDate: string | null;
+
+    if (canReuseRecognition) {
+      finalDocType = existingRec?.doc_type ?? "unknown";
+      finalConfidence =
+        existingRec?.confidence == null
+          ? 0
+          : typeof existingRec.confidence === "number"
+            ? existingRec.confidence
+            : Number(existingRec.confidence) || 0;
+      clientName = existingRec?.client_name ?? null;
+      caseNumber = existingRec?.case_number ?? null;
+      incidentDate = existingRec?.incident_date ?? null;
+    } else {
+      const result = classifyAndExtract(text);
+      const classification = classify(text, key.split("/").pop() ?? "");
+      finalDocType = classification.docType !== "unknown" ? classification.docType : result.docType;
+      finalConfidence = classification.docType !== "unknown" ? classification.confidence : result.confidence;
+      clientName = result.clientName;
+      caseNumber = result.caseNumber;
+      incidentDate = result.incidentDate;
+      excerpt = result.excerpt;
+      extractedJson = upsertTaskCacheEntry(extractedJson, recognitionTaskKey, {
+        textHash,
+        ...recognitionPrompt,
+        generatedAt: new Date().toISOString(),
+      });
+    }
+    const recognitionCacheMeta = getTaskCacheResponseMeta(extractedJson, recognitionTaskKey, {
+      textHash,
+      ...recognitionPrompt,
+    });
+    logTaskCacheDecision(
+      { source: "documents.recognize", documentId },
+      {
+        ...recognitionCacheMeta,
+        cacheUsed: recognitionCacheState.cacheUsed,
+        recomputeReason: recognitionCacheState.recomputeReason,
+      }
+    );
+
     if ((finalDocType === "insurance_letter" || finalDocType.startsWith("insurance_")) && !insuranceOn) finalDocType = "other";
     if ((finalDocType === "court_filing" || finalDocType.startsWith("court_")) && !courtOn) finalDocType = "other";
 
     const baseFields: Record<string, unknown> = {
       docType: finalDocType,
-      caseNumber: result.caseNumber,
-      clientName: result.clientName,
-      incidentDate: result.incidentDate,
-      excerptLength: (result.excerpt || "").length,
+      caseNumber,
+      clientName,
+      incidentDate,
+      excerptLength: excerpt.length,
     };
     const extractedFields = runExtractors(text, finalDocType, baseFields);
 
-    const { risks } = analyzeRisks(text);
-    const risksJson = risks.length > 0 ? JSON.stringify(risks) : null;
+    const risksResolution = await resolveTaskCache({
+      extractedJson,
+      taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.risks),
+      textHash,
+      existingValue: existingRec?.risks ?? null,
+      compute: () => {
+        const { risks } = analyzeRisks(text);
+        return risks.length > 0 ? risks : null;
+      },
+      logContext: { source: "documents.recognize", documentId },
+      ...DOCUMENT_RECOGNITION_PROMPTS.risks,
+    });
+    extractedJson = risksResolution.extractedJson;
 
-    const { insights } = analyzeDocumentInsights(text);
-    const insightsJson = insights.length > 0 ? JSON.stringify(insights) : null;
+    const insightsResolution = await resolveTaskCache({
+      extractedJson,
+      taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.insights),
+      textHash,
+      existingValue: existingRec?.insights ?? null,
+      compute: () => {
+        const { insights } = analyzeDocumentInsights(text);
+        return insights.length > 0 ? insights : null;
+      },
+      logContext: { source: "documents.recognize", documentId },
+      ...DOCUMENT_RECOGNITION_PROMPTS.insights,
+    });
+    extractedJson = insightsResolution.extractedJson;
 
-    const { summary: summaryText, keyFacts } = await summarizeDocument(text);
-    const summaryJson =
-      summaryText || keyFacts.length > 0 ? JSON.stringify({ summary: summaryText, keyFacts }) : null;
+    const summaryResolution = await resolveTaskCache({
+      extractedJson,
+      taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.summary),
+      textHash,
+      existingValue: existingRec?.summary ?? null,
+      compute: async () => {
+        const { summary: summaryText, keyFacts } = await summarizeDocument(text);
+        return summaryText || keyFacts.length > 0 ? { summary: summaryText, keyFacts } : null;
+      },
+      logContext: { source: "documents.recognize", documentId },
+      ...DOCUMENT_RECOGNITION_PROMPTS.summary,
+    });
+    extractedJson = summaryResolution.extractedJson;
 
-    const insuranceFieldsJson =
+    const insuranceResolution =
       insuranceOn && (finalDocType === "insurance_letter" || finalDocType.startsWith("insurance_"))
-        ? JSON.stringify(await extractInsuranceOfferFields({ text, fileName: key.split("/").pop() ?? undefined }))
-        : null;
+        ? await resolveTaskCache({
+            extractedJson,
+            taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.insurance),
+            textHash,
+            existingValue: existingRec?.insurance_fields ?? null,
+            compute: () => extractInsuranceOfferFields({ text, fileName: key.split("/").pop() ?? undefined }),
+            logContext: { source: "documents.recognize", documentId },
+            ...DOCUMENT_RECOGNITION_PROMPTS.insurance,
+          })
+        : { value: existingRec?.insurance_fields ?? null, reused: true, extractedJson };
+    extractedJson = insuranceResolution.extractedJson;
 
-    const courtFieldsJson =
+    const courtResolution =
       courtOn && (finalDocType === "court_filing" || finalDocType.startsWith("court_"))
-        ? JSON.stringify(await extractCourtFields({ text, fileName: key.split("/").pop() ?? undefined }))
-        : null;
+        ? await resolveTaskCache({
+            extractedJson,
+            taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.court),
+            textHash,
+            existingValue: existingRec?.court_fields ?? null,
+            compute: () => extractCourtFields({ text, fileName: key.split("/").pop() ?? undefined }),
+            logContext: { source: "documents.recognize", documentId },
+            ...DOCUMENT_RECOGNITION_PROMPTS.court,
+          })
+        : { value: existingRec?.court_fields ?? null, reused: true, extractedJson };
+    extractedJson = courtResolution.extractedJson;
+    const insuranceCacheMeta = insuranceOn
+      ? getTaskCacheResponseMeta(extractedJson, buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.insurance), {
+          textHash,
+          ...DOCUMENT_RECOGNITION_PROMPTS.insurance,
+        })
+      : null;
+    const courtCacheMeta = courtOn
+      ? getTaskCacheResponseMeta(extractedJson, buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.court), {
+          textHash,
+          ...DOCUMENT_RECOGNITION_PROMPTS.court,
+        })
+      : null;
 
     await pgPool.query(
       `
       insert into document_recognition
-      (document_id,text_excerpt,doc_type,client_name,case_number,incident_date,confidence,insurance_fields,court_fields,risks,insights,summary)
-      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      (document_id,text_excerpt,doc_type,client_name,case_number,incident_date,confidence,insurance_fields,court_fields,risks,insights,summary,normalized_text_hash,extraction_version,extracted_json)
+      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
       on conflict (document_id) do update
       set
         text_excerpt=excluded.text_excerpt,
@@ -3804,21 +3980,27 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
         risks=excluded.risks,
         insights=excluded.insights,
         summary=excluded.summary,
+        normalized_text_hash=excluded.normalized_text_hash,
+        extraction_version=excluded.extraction_version,
+        extracted_json=excluded.extracted_json,
         updated_at=now()
       `,
       [
         documentId,
-        result.excerpt,
+        excerpt,
         finalDocType,
-        result.clientName,
-        result.caseNumber,
-        result.incidentDate,
+        clientName,
+        caseNumber,
+        incidentDate,
         finalConfidence,
-        insuranceFieldsJson,
-        courtFieldsJson,
-        risksJson,
-        insightsJson,
-        summaryJson,
+        insuranceResolution.value,
+        courtResolution.value,
+        risksResolution.value,
+        insightsResolution.value,
+        summaryResolution.value,
+        textHash,
+        "document-extraction-cache-v1",
+        extractedJson,
       ]
     );
 
@@ -3842,9 +4024,9 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
       toCaseId: null,
       metaJson: {
         docType: finalDocType,
-        clientName: result.clientName,
-        caseNumber: result.caseNumber,
-        incidentDate: result.incidentDate,
+        clientName,
+        caseNumber,
+        incidentDate,
         confidence: finalConfidence,
       },
     });
@@ -3854,11 +4036,95 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
       documentId,
       docType: finalDocType,
       confidence: finalConfidence,
-      caseNumber: result.caseNumber,
-      clientName: result.clientName,
-      incidentDate: result.incidentDate,
-      excerptLength: (result.excerpt || "").length,
-      excerpt: result.excerpt,
+      caseNumber,
+      clientName,
+      incidentDate,
+      excerptLength: excerpt.length,
+      excerpt,
+      cacheUsed: [
+        recognitionCacheMeta,
+        risksResolution.meta,
+        insightsResolution.meta,
+        summaryResolution.meta,
+        insuranceCacheMeta,
+        courtCacheMeta,
+      ].filter((meta): meta is NonNullable<typeof meta> => meta != null).every((meta) => meta.cacheUsed),
+      cache: {
+        recognition: recognitionCacheMeta,
+        summary: summaryResolution.meta,
+        risks: risksResolution.meta,
+        insights: insightsResolution.meta,
+        ...(insuranceCacheMeta ? { insurance: insuranceCacheMeta } : {}),
+        ...(courtCacheMeta ? { court: courtCacheMeta } : {}),
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/documents/:id/cache/invalidate", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
+  try {
+    if (!isInternalCacheControlRequest(req)) {
+      return res.status(404).json({ ok: false, error: "Not found" });
+    }
+
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { taskType?: string | null };
+    const taskType =
+      typeof body.taskType === "string" && body.taskType.trim().length > 0 ? body.taskType.trim() : null;
+    const allowedTaskTypes = new Set(Object.values(DOCUMENT_RECOGNITION_TASKS));
+    if (taskType && !allowedTaskTypes.has(taskType as (typeof DOCUMENT_RECOGNITION_TASKS)[keyof typeof DOCUMENT_RECOGNITION_TASKS])) {
+      return res.status(400).json({
+        ok: false,
+        error: `taskType must be one of: ${Array.from(allowedTaskTypes).join(", ")}`,
+      });
+    }
+
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true },
+    });
+    if (!doc) {
+      return res.status(404).json({ ok: false, error: "document not found" });
+    }
+
+    const { rows } = await pgPool.query<{ extracted_json: unknown }>(
+      `select extracted_json from document_recognition where document_id = $1`,
+      [documentId]
+    );
+    const existing = rows[0];
+    if (!existing) {
+      return res.status(404).json({ ok: false, error: "document recognition not found" });
+    }
+
+    const invalidation = invalidateTaskCacheEntries(existing.extracted_json, taskType);
+    await pgPool.query(
+      `
+      update document_recognition
+      set extracted_json = $1,
+          updated_at = now()
+      where document_id = $2
+      `,
+      [invalidation.extractedJson, documentId]
+    );
+
+    logInfo("document_recognition_cache_invalidation", {
+      source: "documents.invalidate_cache",
+      documentId,
+      firmId,
+      taskType,
+      removedKeys: invalidation.removedKeys,
+      remainingKeys: invalidation.remainingKeys,
+    });
+
+    res.json({
+      ok: true,
+      documentId,
+      invalidated: taskType ?? "all",
+      removedKeys: invalidation.removedKeys,
+      remainingKeys: invalidation.remainingKeys,
     });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
@@ -5781,35 +6047,71 @@ app.post(
         return res.status(404).json({ ok: false, error: "document not found" });
       }
 
-      const { rows } = await pgPool.query<{ text_excerpt: string | null }>(
-        `select text_excerpt from document_recognition where document_id = $1`,
+      const { rows } = await pgPool.query<{
+        text_excerpt: string | null;
+        normalized_text_hash: string | null;
+        extracted_json: unknown;
+      }>(
+        `select text_excerpt, normalized_text_hash, extracted_json from document_recognition where document_id = $1`,
         [documentId]
       );
-      const ocrText = rows[0]?.text_excerpt ?? null;
-
-      const result = await explainDocument(
-        ocrText,
-        doc.extractedFields ?? null,
-        question
+      const rec = rows[0] ?? null;
+      const ocrText = rec?.text_excerpt ?? null;
+      const textHash = rec?.normalized_text_hash ?? getStoredTextHash(ocrText);
+      const explainTaskKey = buildTaskCacheKey(
+        DOCUMENT_RECOGNITION_TASKS.explain,
+        computeDocumentExplainVariant(question ?? "")
       );
 
-      const ym = `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, "0")}`;
-      await prisma.usageMonthly.upsert({
-        where: { firmId_yearMonth: { firmId, yearMonth: ym } },
-        create: {
-          firmId,
-          yearMonth: ym,
-          pagesProcessed: 0,
-          docsProcessed: 0,
-          insuranceDocsExtracted: 0,
-          courtDocsExtracted: 0,
-          narrativeGenerated: 1,
-          duplicateDetected: 0,
-        },
-        update: { narrativeGenerated: { increment: 1 } },
+      const explainResolution = await resolveTaskCache({
+        extractedJson: rec?.extracted_json ?? null,
+        taskKey: explainTaskKey,
+        textHash,
+        existingValue: { bullets: [] as string[] },
+        compute: () => explainDocument(ocrText, doc.extractedFields ?? null, question),
+        persistOutput: true,
+        logContext: { source: "documents.explain", documentId },
+        ...DOCUMENT_RECOGNITION_PROMPTS.explain,
       });
+      const result = explainResolution.value;
 
-      res.json({ ok: true, ...result });
+      if (!explainResolution.reused) {
+        await pgPool.query(
+          `
+          update document_recognition set
+            normalized_text_hash = $1,
+            extracted_json = $2,
+            updated_at = now()
+          where document_id = $3
+          `,
+          [textHash, explainResolution.extractedJson, documentId]
+        );
+      }
+
+      if (!explainResolution.reused) {
+        const ym = `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, "0")}`;
+        await prisma.usageMonthly.upsert({
+          where: { firmId_yearMonth: { firmId, yearMonth: ym } },
+          create: {
+            firmId,
+            yearMonth: ym,
+            pagesProcessed: 0,
+            docsProcessed: 0,
+            insuranceDocsExtracted: 0,
+            courtDocsExtracted: 0,
+            narrativeGenerated: 1,
+            duplicateDetected: 0,
+          },
+          update: { narrativeGenerated: { increment: 1 } },
+        });
+      }
+
+      res.json({
+        ok: true,
+        ...result,
+        cacheUsed: explainResolution.meta.cacheUsed,
+        cache: explainResolution.meta,
+      });
     } catch (e: any) {
       console.error("[documents/explain]", e);
       res.status(500).json({ ok: false, error: String(e?.message || e) });
