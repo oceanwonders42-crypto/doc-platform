@@ -10,6 +10,7 @@ import {
   inspectTaskCache,
   isTaskCacheValid,
   resolveTaskCache,
+  serializeJsonbParam,
 } from "./documentRecognitionCache";
 
 async function main() {
@@ -177,6 +178,23 @@ async function main() {
     "missing_cache",
     "Expected invalidated explain cache to report a missing-cache recompute reason."
   );
+
+  assert.equal(
+    serializeJsonbParam([{ type: "settlement_offer", severity: "high" }]),
+    '[{"type":"settlement_offer","severity":"high"}]',
+    "Expected array-backed cache results to serialize as JSON before raw pg writes."
+  );
+  assert.equal(
+    serializeJsonbParam({ summary: "Cached summary", keyFacts: ["fact-1"] }),
+    '{"summary":"Cached summary","keyFacts":["fact-1"]}',
+    "Expected object-backed cache results to serialize as JSON before raw pg writes."
+  );
+  assert.equal(
+    serializeJsonbParam("legacy string value"),
+    '"legacy string value"',
+    "Expected legacy string-backed JSON values to be preserved as valid JSON strings."
+  );
+  assert.equal(serializeJsonbParam(null), null, "Expected null JSON values to remain null.");
 
   console.log("documentRecognitionCache tests passed");
 }

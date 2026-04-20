@@ -47,6 +47,7 @@ import {
   inspectTaskCache,
   logTaskCacheDecision,
   resolveTaskCache,
+  serializeJsonbParam,
   upsertTaskCacheEntry,
 } from "../services/documentRecognitionCache";
 
@@ -766,14 +767,14 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
     where document_id = $9
     `,
     [
-      insuranceResolution.value,
-      courtResolution.value,
-      risksResolution.value,
-      insightsResolution.value,
-      summaryResolution.value,
+      serializeJsonbParam(insuranceResolution.value),
+      serializeJsonbParam(courtResolution.value),
+      serializeJsonbParam(risksResolution.value),
+      serializeJsonbParam(insightsResolution.value),
+      serializeJsonbParam(summaryResolution.value),
       textHash,
       "document-extraction-cache-v1",
-      extractedJson,
+      serializeJsonbParam(extractedJson),
       documentId,
     ]
   );

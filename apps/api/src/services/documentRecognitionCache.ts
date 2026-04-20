@@ -177,6 +177,15 @@ export function upsertTaskCacheEntry<T>(
   } as Prisma.InputJsonValue;
 }
 
+export function serializeJsonbParam(value: unknown): string | null {
+  if (value == null) {
+    return null;
+  }
+
+  const serialized = JSON.stringify(value);
+  return typeof serialized === "string" ? serialized : null;
+}
+
 export function getTaskCacheStats(extractedJson: unknown): {
   taskCachePresent: boolean;
   taskCount: number;
