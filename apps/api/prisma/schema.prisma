@@ -157,6 +157,68 @@ model JobEvent {
   @@index([jobId])
 }
 
+model AiTaskTelemetry {
+  id               String              @id @default(cuid())
+  firmId           String?
+  documentId       String?
+  caseId           String?
+  taskType         String
+  taskVariant      String?
+  source           String?
+  kind             String              @default("executed")
+  model            String?
+  promptVersion    String?
+  inputHash        String?
+  promptTokens     Int?
+  completionTokens Int?
+  totalTokens      Int?
+  estimatedCostUsd Float?
+  cacheUsed        Boolean             @default(false)
+  dedupeAvoided    Boolean             @default(false)
+  errorMessage     String?             @db.Text
+  meta             Json?
+  createdAt        DateTime            @default(now())
+
+  @@index([createdAt])
+  @@index([kind, createdAt])
+  @@index([taskType, createdAt])
+  @@index([taskType, kind, createdAt])
+  @@index([firmId, createdAt])
+  @@index([documentId, createdAt])
+  @@index([caseId, createdAt])
+  @@index([documentId, taskType, kind, createdAt])
+  @@index([documentId, taskType, inputHash, promptVersion, model, createdAt])
+}
+
+model DeferredJobTelemetry {
+  id           String   @id @default(cuid())
+  firmId       String?
+  documentId   String?
+  caseId       String?
+  jobType      String
+  action       String?
+  dedupeKey    String?
+  workerLabel  String?
+  queuedAt     DateTime
+  startedAt    DateTime
+  finishedAt   DateTime
+  waitMs       Int
+  runMs        Int
+  attempt      Int      @default(1)
+  success      Boolean
+  errorMessage String?  @db.Text
+  meta         Json?
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([jobType, createdAt])
+  @@index([jobType, success, createdAt])
+  @@index([firmId, createdAt])
+  @@index([documentId, createdAt])
+  @@index([caseId, createdAt])
+  @@index([jobType, queuedAt])
+}
+
 model User {
   id           String   @id @default(cuid())
   firmId       String

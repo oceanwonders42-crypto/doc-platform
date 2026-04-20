@@ -4,6 +4,11 @@
  */
 import OpenAI from "openai";
 import { prisma } from "../db/prisma";
+import {
+  computeAiInputHash,
+  OPENAI_TASK_TYPES,
+  runOpenAiChatCompletionWithTelemetry,
+} from "../services/aiTaskTelemetry";
 
 export type RecordsLetterInput = {
   caseId: string;
@@ -19,6 +24,9 @@ export type RecordsLetterResult = {
   text: string;
   error?: string;
 };
+
+export const RECORDS_REQUEST_LETTER_PROMPT_VERSION = "records-request-letter-v1";
+export const RECORDS_REQUEST_LETTER_MODEL = "gpt-4o-mini";
 
 function fmtDate(d: Date | null): string {
   if (!d) return "";
@@ -73,11 +81,23 @@ Requirements:
 - End with a thank-you and a signature block placeholder such as "Sincerely," and "[Law Firm]" or "Respectfully,".`;
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 800,
-      temperature: 0.3,
+    const completion = await runOpenAiChatCompletionWithTelemetry({
+      openai,
+      request: {
+        model: RECORDS_REQUEST_LETTER_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 800,
+        temperature: 0.3,
+      },
+      telemetry: {
+        firmId,
+        caseId,
+        source: "recordsRequestLetter",
+        taskType: OPENAI_TASK_TYPES.recordsRequestLetter,
+        model: RECORDS_REQUEST_LETTER_MODEL,
+        promptVersion: RECORDS_REQUEST_LETTER_PROMPT_VERSION,
+        inputHash: computeAiInputHash(prompt),
+      },
     });
 
     const text =

@@ -3,6 +3,7 @@ import crypto from "crypto";
 import type { Prisma } from "@prisma/client";
 
 import { computeNormalizedTextHash } from "./duplicateDetection";
+import { recordAiTaskCacheHit } from "./aiTaskTelemetry";
 import { logInfo } from "../lib/logger";
 
 export const DOCUMENT_RECOGNITION_TASKS = {
@@ -56,6 +57,13 @@ export type TaskCacheResponseMeta = {
 export type TaskCacheLogContext = {
   source: string;
   documentId?: string;
+};
+
+export type TaskCacheTelemetryContext = {
+  firmId?: string | null;
+  documentId?: string | null;
+  caseId?: string | null;
+  source?: string | null;
 };
 
 function isJsonRecord(value: unknown): value is JsonRecord {
@@ -233,6 +241,10 @@ export function logTaskCacheDecision(
   });
 }
 
+function shouldRecordAiCacheHit(model: string): boolean {
+  return model.startsWith("gpt-");
+}
+
 export async function resolveTaskCache<T>(params: {
   extractedJson: unknown;
   taskKey: string;
@@ -243,6 +255,7 @@ export async function resolveTaskCache<T>(params: {
   compute: () => Promise<T> | T;
   persistOutput?: boolean;
   logContext?: TaskCacheLogContext;
+  telemetryContext?: TaskCacheTelemetryContext;
 }): Promise<{
   value: T;
   reused: boolean;
@@ -259,6 +272,24 @@ export async function resolveTaskCache<T>(params: {
   if (cacheValid) {
     if (params.logContext) {
       logTaskCacheDecision(params.logContext, cacheState.meta);
+    }
+    if (params.telemetryContext && shouldRecordAiCacheHit(params.model)) {
+      const { taskType, variant } = parseTaskCacheKey(params.taskKey);
+      await recordAiTaskCacheHit({
+        firmId: params.telemetryContext.firmId ?? null,
+        documentId: params.telemetryContext.documentId ?? params.logContext?.documentId ?? null,
+        caseId: params.telemetryContext.caseId ?? null,
+        source: params.telemetryContext.source ?? params.logContext?.source ?? null,
+        taskType,
+        taskVariant: variant,
+        model: params.model,
+        promptVersion: params.promptVersion,
+        inputHash: params.textHash,
+        meta: {
+          cacheKey: cacheState.meta.cacheKey,
+          generatedAt: cacheState.meta.generatedAt,
+        } as Prisma.InputJsonValue,
+      });
     }
 
     if (params.persistOutput) {

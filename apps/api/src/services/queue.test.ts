@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 
-import { enqueueOcrJob, getRedisQueueStatus, popJob, redis } from "./queue";
+import {
+  enqueueOcrJob,
+  getRedisQueueStatus,
+  popJob,
+  redis,
+} from "./queue";
 
 async function main() {
   const originalConnect = redis.connect.bind(redis);
-  const originalWarn = console.warn;
   const originalInfo = console.info;
+  const originalWarn = console.warn;
 
   const warnings: unknown[][] = [];
 
@@ -16,11 +21,11 @@ async function main() {
     // suppress availability chatter during the test
   };
 
-  (redis as typeof redis & { connect: typeof redis.connect }).connect = async () => {
+  redis.connect = (async () => {
     const error = new Error("connect ECONNREFUSED 127.0.0.1:6379") as Error & { code: string };
     error.code = "ECONNREFUSED";
     throw error;
-  };
+  }) as typeof redis.connect;
 
   try {
     const popped = await popJob();
@@ -48,7 +53,7 @@ async function main() {
   } finally {
     console.warn = originalWarn;
     console.info = originalInfo;
-    (redis as typeof redis & { connect: typeof redis.connect }).connect = originalConnect;
+    redis.connect = originalConnect;
     redis.disconnect();
   }
 }

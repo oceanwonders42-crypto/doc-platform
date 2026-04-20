@@ -39,17 +39,25 @@ function plainError(error) {
   };
 }
 
+function shouldUseWindowsCommandShell(command) {
+  return process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
+}
+
 function runCommand(command, args, options = {}) {
   const cwd = options.cwd ?? repoRoot;
   const env = { ...process.env, ...(options.env ?? {}) };
   const timeoutMs = options.timeoutMs ?? 15_000;
-  const result = spawnSync(command, args, {
+  const spawnOptions = {
     cwd,
     env,
     encoding: "utf8",
     timeout: timeoutMs,
     windowsHide: true,
-  });
+  };
+
+  const result = shouldUseWindowsCommandShell(command)
+    ? spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", buildCommandString(command, args)], spawnOptions)
+    : spawnSync(command, args, spawnOptions);
 
   return {
     command: buildCommandString(command, args),

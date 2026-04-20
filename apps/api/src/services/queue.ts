@@ -1,10 +1,14 @@
 import Redis from "ioredis";
 
+import { OPENAI_TASK_TYPES, recordAiTaskDedupeAvoided } from "./aiTaskTelemetry";
+
 const url = process.env.REDIS_URL || "redis://localhost:6379";
 const QUEUE_KEY = "doc_jobs";
+const JOB_STATE_KEY_PREFIX = "doc_job_state:";
 const REDIS_LOG_THROTTLE_MS = 60_000;
 const REDIS_RETRY_COOLDOWN_MS = 15_000;
 const REDIS_UNAVAILABLE_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT"]);
+const JOB_STATE_TTL_MS = 30 * 60 * 1000;
 
 type RedisAvailability = "unknown" | "up" | "down";
 
@@ -195,18 +199,23 @@ async function runRedisCommand<T>(
   }
 }
 
-export type OcrJobPayload = { type: "ocr"; documentId: string; firmId: string };
-export type ClassificationJobPayload = { type: "classification"; documentId: string; firmId: string };
-export type ExtractionJobPayload = { type: "extraction"; documentId: string; firmId: string };
-export type CaseMatchJobPayload = { type: "case_match"; documentId: string; firmId: string };
-export type TimelineRebuildJobPayload = { type: "timeline_rebuild"; caseId: string; firmId: string };
+type JobMetadata = {
+  queuedAt?: string;
+  attempt?: number;
+};
+
+export type OcrJobPayload = JobMetadata & { type: "ocr"; documentId: string; firmId: string };
+export type ClassificationJobPayload = JobMetadata & { type: "classification"; documentId: string; firmId: string };
+export type ExtractionJobPayload = JobMetadata & { type: "extraction"; documentId: string; firmId: string };
+export type CaseMatchJobPayload = JobMetadata & { type: "case_match"; documentId: string; firmId: string };
+export type TimelineRebuildJobPayload = JobMetadata & { type: "timeline_rebuild"; caseId: string; firmId: string };
 export type PostRouteSyncJobPayload = {
   type: "post_route_sync";
   documentId: string;
   firmId: string;
   caseId: string;
   action: string;
-};
+} & JobMetadata;
 
 export type JobPayload =
   | OcrJobPayload
@@ -221,8 +230,299 @@ export type RedisQueueStatus = {
   queueDepth: number;
 };
 
+export type QueueTypeMetrics = {
+  queued: number;
+  oldestAgeMs: number | null;
+  retriedQueuedCount: number;
+  maxAttempt: number;
+};
+
+export type QueueSnapshot = {
+  available: boolean;
+  queueDepth: number;
+  byType: Record<JobPayload["type"], QueueTypeMetrics>;
+  oldestJobAgeMs: number | null;
+  retriedQueuedCount: number;
+  dedupeMarkers: Record<ManagedDedupeJobType, {
+    queued: number;
+    running: number;
+    rerunRequested: number;
+  }>;
+};
+
+type ManagedDedupeJobType = "timeline_rebuild" | "post_route_sync" | "case_match" | "extraction";
+type JobStateStatus = "queued" | "running";
+type JobStateMarker = {
+  type: ManagedDedupeJobType;
+  status: JobStateStatus;
+  rerunRequested: boolean;
+  updatedAt: string;
+};
+
+const DEFERRED_JOB_DEDUPE_TYPES = new Set<ManagedDedupeJobType>([
+  "timeline_rebuild",
+  "post_route_sync",
+  "case_match",
+  "extraction",
+]);
+
+const ALL_JOB_TYPES: JobPayload["type"][] = [
+  "ocr",
+  "classification",
+  "extraction",
+  "case_match",
+  "timeline_rebuild",
+  "post_route_sync",
+];
+
+function isDeferredDedupJob(payload: JobPayload): payload is
+  | TimelineRebuildJobPayload
+  | PostRouteSyncJobPayload
+  | CaseMatchJobPayload
+  | ExtractionJobPayload {
+  return DEFERRED_JOB_DEDUPE_TYPES.has(payload.type as ManagedDedupeJobType);
+}
+
+function supportsRunningRerun(payload: JobPayload): boolean {
+  return payload.type === "timeline_rebuild"
+    || payload.type === "case_match"
+    || payload.type === "extraction";
+}
+
+function shouldRecordDedupeTelemetry(payload: JobPayload): payload is
+  | CaseMatchJobPayload
+  | ExtractionJobPayload {
+  return payload.type === "case_match" || payload.type === "extraction";
+}
+
+async function recordDeferredDedupeAvoided(payload: JobPayload, reason: "queued_duplicate" | "running_duplicate") {
+  if (!shouldRecordDedupeTelemetry(payload)) {
+    return;
+  }
+
+  await recordAiTaskDedupeAvoided({
+    firmId: payload.firmId,
+    documentId: payload.documentId,
+    taskType: payload.type === "extraction" ? OPENAI_TASK_TYPES.extractionJob : OPENAI_TASK_TYPES.caseMatchJob,
+    source: "queue.enqueue",
+    meta: {
+      reason,
+      dedupeKey: buildJobDedupeKey(payload),
+      jobType: payload.type,
+    } as import("@prisma/client").Prisma.InputJsonValue,
+  });
+}
+
+export function buildJobDedupeKey(payload: JobPayload): string | null {
+  switch (payload.type) {
+    case "timeline_rebuild":
+      return `${payload.type}:${payload.firmId}:${payload.caseId}`;
+    case "post_route_sync":
+      return `${payload.type}:${payload.firmId}:${payload.caseId}:${payload.documentId}:${payload.action}`;
+    case "case_match":
+    case "extraction":
+      return `${payload.type}:${payload.firmId}:${payload.documentId}`;
+    default:
+      return null;
+  }
+}
+
+function getJobStateKey(payload: JobPayload): string | null {
+  const dedupeKey = buildJobDedupeKey(payload);
+  return dedupeKey ? `${JOB_STATE_KEY_PREFIX}${dedupeKey}` : null;
+}
+
+function encodeJobStateMarker(marker: JobStateMarker): string {
+  return JSON.stringify(marker);
+}
+
+function createQueueTypeMetrics(): QueueTypeMetrics {
+  return {
+    queued: 0,
+    oldestAgeMs: null,
+    retriedQueuedCount: 0,
+    maxAttempt: 0,
+  };
+}
+
+function createQueueSnapshotBase(available: boolean): QueueSnapshot {
+  return {
+    available,
+    queueDepth: 0,
+    byType: {
+      ocr: createQueueTypeMetrics(),
+      classification: createQueueTypeMetrics(),
+      extraction: createQueueTypeMetrics(),
+      case_match: createQueueTypeMetrics(),
+      timeline_rebuild: createQueueTypeMetrics(),
+      post_route_sync: createQueueTypeMetrics(),
+    },
+    oldestJobAgeMs: null,
+    retriedQueuedCount: 0,
+    dedupeMarkers: {
+      timeline_rebuild: { queued: 0, running: 0, rerunRequested: 0 },
+      post_route_sync: { queued: 0, running: 0, rerunRequested: 0 },
+      case_match: { queued: 0, running: 0, rerunRequested: 0 },
+      extraction: { queued: 0, running: 0, rerunRequested: 0 },
+    },
+  };
+}
+
+function normalizeJobAttempt(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 1;
+}
+
+function decorateQueuedPayload<T extends JobPayload>(payload: T, attempt = normalizeJobAttempt(payload.attempt)): T {
+  return {
+    ...payload,
+    queuedAt: new Date().toISOString(),
+    attempt,
+  } as T;
+}
+
+function parseQueuedPayload(raw: string): JobPayload | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<JobPayload>;
+    if (!parsed || typeof parsed !== "object" || typeof parsed.type !== "string" || !ALL_JOB_TYPES.includes(parsed.type as JobPayload["type"])) {
+      return null;
+    }
+    return parsed as JobPayload;
+  } catch {
+    return null;
+  }
+}
+
+function getQueuedAgeMs(payload: JobPayload): number | null {
+  if (!payload.queuedAt) {
+    return null;
+  }
+
+  const parsed = Date.parse(payload.queuedAt);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return Math.max(0, Date.now() - parsed);
+}
+
+function decodeJobStateMarker(raw: string | null): JobStateMarker | null {
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<JobStateMarker>;
+    if (
+      parsed == null
+      || typeof parsed !== "object"
+      || typeof parsed.type !== "string"
+      || typeof parsed.status !== "string"
+      || typeof parsed.rerunRequested !== "boolean"
+      || typeof parsed.updatedAt !== "string"
+    ) {
+      return null;
+    }
+
+    if (!DEFERRED_JOB_DEDUPE_TYPES.has(parsed.type as ManagedDedupeJobType)) {
+      return null;
+    }
+
+    if (parsed.status !== "queued" && parsed.status !== "running") {
+      return null;
+    }
+
+    return {
+      type: parsed.type as ManagedDedupeJobType,
+      status: parsed.status,
+      rerunRequested: parsed.rerunRequested,
+      updatedAt: parsed.updatedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeJobStateMarker(markerKey: string, marker: JobStateMarker, source: string) {
+  await runRedisCommand(source, () =>
+    redis.set(markerKey, encodeJobStateMarker(marker), "PX", JOB_STATE_TTL_MS)
+  );
+}
+
+async function queuePayload(payload: JobPayload, options?: { attempt?: number }) {
+  const queuedPayload = decorateQueuedPayload(payload, options?.attempt);
+  await runRedisCommand("enqueue", () => redis.lpush(QUEUE_KEY, JSON.stringify(queuedPayload)));
+  return queuedPayload;
+}
+
+async function pushManagedDedupedJob(payload: JobPayload) {
+  const markerKey = getJobStateKey(payload);
+  if (!markerKey || !isDeferredDedupJob(payload)) {
+    await queuePayload(payload);
+    return;
+  }
+
+  const acquired = await runRedisCommand("dedupe-acquire", () =>
+    redis.set(
+      markerKey,
+      encodeJobStateMarker({
+        type: payload.type as ManagedDedupeJobType,
+        status: "queued",
+        rerunRequested: false,
+        updatedAt: new Date().toISOString(),
+      }),
+      "PX",
+      JOB_STATE_TTL_MS,
+      "NX"
+    )
+  );
+
+  if (acquired === "OK") {
+    try {
+      await queuePayload(payload);
+      return;
+    } catch (error) {
+      await runRedisCommand("dedupe-acquire-rollback", () => redis.del(markerKey), {
+        fallbackOnUnavailable: true,
+        fallbackValue: 0,
+      });
+      throw error;
+    }
+  }
+
+  const existingRaw = await runRedisCommand("dedupe-read", () => redis.get(markerKey), {
+    fallbackOnUnavailable: true,
+    fallbackValue: null,
+  });
+  const existing = decodeJobStateMarker(existingRaw);
+
+  if (existing?.status === "running" && supportsRunningRerun(payload)) {
+    await writeJobStateMarker(
+      markerKey,
+      {
+        ...existing,
+        rerunRequested: true,
+        updatedAt: new Date().toISOString(),
+      },
+      "dedupe-rerun-request"
+    );
+    await recordDeferredDedupeAvoided(payload, "running_duplicate");
+    return;
+  }
+
+  await runRedisCommand("dedupe-refresh", () => redis.pexpire(markerKey, JOB_STATE_TTL_MS), {
+    fallbackOnUnavailable: true,
+    fallbackValue: 0,
+  });
+  await recordDeferredDedupeAvoided(payload, "queued_duplicate");
+}
+
 async function pushJob(payload: JobPayload) {
-  await runRedisCommand("enqueue", () => redis.lpush(QUEUE_KEY, JSON.stringify(payload)));
+  if (isDeferredDedupJob(payload)) {
+    await pushManagedDedupedJob(payload);
+    return;
+  }
+
+  await queuePayload(payload);
 }
 
 export async function enqueueOcrJob(payload: Omit<OcrJobPayload, "type">) {
@@ -259,12 +559,97 @@ export async function enqueuePostRouteSyncJob(
 /** Alias for migration/bulk ingest; uses same OCR queue. */
 export const enqueueMigrationOcrJob = enqueueOcrJob;
 
+async function markJobStarted(payload: JobPayload): Promise<void> {
+  const markerKey = getJobStateKey(payload);
+  if (!markerKey || !isDeferredDedupJob(payload)) {
+    return;
+  }
+
+  const existingRaw = await runRedisCommand("job-start-read", () => redis.get(markerKey), {
+    fallbackOnUnavailable: true,
+    fallbackValue: null,
+  });
+  const existing = decodeJobStateMarker(existingRaw);
+
+  await writeJobStateMarker(
+    markerKey,
+    {
+      type: payload.type,
+      status: "running",
+      rerunRequested: existing?.rerunRequested ?? false,
+      updatedAt: new Date().toISOString(),
+    },
+    "job-start-write"
+  );
+}
+
+export async function settleJobDeduplication(
+  payload: JobPayload,
+  outcome: "completed" | "failed"
+): Promise<void> {
+  const markerKey = getJobStateKey(payload);
+  if (!markerKey) {
+    return;
+  }
+
+  const existingRaw = await runRedisCommand("job-finish-read", () => redis.get(markerKey), {
+    fallbackOnUnavailable: true,
+    fallbackValue: null,
+  });
+  const existing = decodeJobStateMarker(existingRaw);
+
+  if (!existing) {
+    return;
+  }
+
+  if (outcome === "completed" && existing.rerunRequested && supportsRunningRerun(payload)) {
+    await writeJobStateMarker(
+      markerKey,
+      {
+        type: existing.type,
+        status: "queued",
+        rerunRequested: false,
+        updatedAt: new Date().toISOString(),
+      },
+      "job-finish-rerun-state"
+    );
+
+    try {
+      await queuePayload(payload, { attempt: normalizeJobAttempt(payload.attempt) + 1 });
+      return;
+    } catch (error) {
+      await runRedisCommand("job-finish-rerun-cleanup", () => redis.del(markerKey), {
+        fallbackOnUnavailable: true,
+        fallbackValue: 0,
+      });
+      throw error;
+    }
+  }
+
+  await runRedisCommand("job-finish-clear", () => redis.del(markerKey), {
+    fallbackOnUnavailable: true,
+    fallbackValue: 0,
+  });
+}
+
 export async function popJob(): Promise<JobPayload | null> {
   const raw = await runRedisCommand("dequeue", () => redis.rpop(QUEUE_KEY), {
     fallbackOnUnavailable: true,
     fallbackValue: null,
   });
-  return raw ? (JSON.parse(raw) as JobPayload) : null;
+  const job = raw ? (JSON.parse(raw) as JobPayload) : null;
+  if (job) {
+    await markJobStarted(job);
+  }
+  return job;
+}
+
+/**
+ * Requeue an existing payload without changing queuedAt/attempt metadata.
+ * Used when a worker temporarily yields a job due to local execution caps.
+ */
+export async function requeueJob(payload: JobPayload): Promise<void> {
+  await runRedisCommand("requeue", () => redis.lpush(QUEUE_KEY, JSON.stringify(payload)));
 }
 
 export async function getRedisQueueStatus(): Promise<RedisQueueStatus> {
@@ -277,6 +662,72 @@ export async function getRedisQueueStatus(): Promise<RedisQueueStatus> {
     available: redisAvailability === "up" && redis.status === "ready",
     queueDepth,
   };
+}
+
+export async function getRedisQueueSnapshot(): Promise<QueueSnapshot> {
+  const snapshot = createQueueSnapshotBase(false);
+
+  const rawQueue = await runRedisCommand("queue-snapshot-list", () => redis.lrange(QUEUE_KEY, 0, -1), {
+    fallbackOnUnavailable: true,
+    fallbackValue: [] as string[],
+  });
+
+  for (const raw of rawQueue) {
+    const job = parseQueuedPayload(raw);
+    if (!job) {
+      continue;
+    }
+
+    snapshot.queueDepth += 1;
+    const metrics = snapshot.byType[job.type];
+    metrics.queued += 1;
+    const attempt = normalizeJobAttempt(job.attempt);
+    metrics.maxAttempt = Math.max(metrics.maxAttempt, attempt);
+    if (attempt > 1) {
+      metrics.retriedQueuedCount += 1;
+      snapshot.retriedQueuedCount += 1;
+    }
+
+    const ageMs = getQueuedAgeMs(job);
+    if (ageMs != null) {
+      metrics.oldestAgeMs = metrics.oldestAgeMs == null ? ageMs : Math.max(metrics.oldestAgeMs, ageMs);
+      snapshot.oldestJobAgeMs = snapshot.oldestJobAgeMs == null ? ageMs : Math.max(snapshot.oldestJobAgeMs, ageMs);
+    }
+  }
+
+  let cursor = "0";
+  do {
+    const [nextCursor, keys] = await runRedisCommand(
+      "queue-snapshot-scan",
+      () => redis.scan(cursor, "MATCH", `${JOB_STATE_KEY_PREFIX}*`, "COUNT", 100),
+      {
+        fallbackOnUnavailable: true,
+        fallbackValue: ["0", [] as string[]] as [string, string[]],
+      }
+    );
+
+    cursor = nextCursor;
+    for (const key of keys) {
+      const marker = decodeJobStateMarker(
+        await runRedisCommand("queue-snapshot-marker-get", () => redis.get(key), {
+          fallbackOnUnavailable: true,
+          fallbackValue: null,
+        })
+      );
+      if (!marker) {
+        continue;
+      }
+
+      const metrics = snapshot.dedupeMarkers[marker.type];
+      metrics[marker.status] += 1;
+      if (marker.rerunRequested) {
+        metrics.rerunRequested += 1;
+      }
+    }
+  } while (cursor !== "0");
+
+  snapshot.available = redisAvailability === "up" && redis.status === "ready";
+  return snapshot;
 }
 
 /** @deprecated Use popJob */

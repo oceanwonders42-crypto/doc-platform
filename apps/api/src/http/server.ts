@@ -39,6 +39,7 @@ import {
   enqueueExtractionJob,
   enqueuePostRouteSyncJob,
   enqueueTimelineRebuildJob,
+  getRedisQueueSnapshot,
 } from "../services/queue";
 import { matchDocumentToCase } from "../services/caseMatching";
 import { getCaseInsights } from "../services/caseInsights";
@@ -91,6 +92,16 @@ import { ensureDemoSeedObjects } from "../dev/demoSeedObjects";
 import { getJobCounts } from "../services/jobQueue";
 import { getBuildInfo } from "../lib/buildInfo";
 import { logInfo } from "../lib/logger";
+import {
+  getAiCacheHitRates,
+  getAiCostLeaderboard,
+  getAiCostSummary,
+  getAiCostTimeseries,
+  getDocumentAiCostSummary,
+  getFirmAiCostSummary,
+} from "../services/aiTaskTelemetry";
+import { getDeferredJobTelemetryOverview } from "../services/deferredJobTelemetry";
+import { buildWeeklyOperatorReport } from "../services/operatorWeeklyReport";
 import {
   buildTaskCacheKey,
   computeDocumentExplainVariant,
@@ -195,6 +206,30 @@ function isInternalCacheControlRequest(req: express.Request): boolean {
   );
 
   return candidates.length > 0 && candidates.every((value) => isLoopbackAddress(value));
+}
+
+function parseMetricsLimit(value: unknown, fallback = 10, max = 50): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, max);
+}
+
+function parseMetricsRange(value: unknown): { from: Date; to: Date; days: number } {
+  const raw = String(value ?? "7d").trim().toLowerCase();
+  const match = raw.match(/^(\d{1,3})d$/);
+  const days = match ? Math.max(1, Math.min(90, Number.parseInt(match[1]!, 10))) : 7;
+  const to = new Date();
+  const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+  return { from, to, days };
+}
+
+function parseCostBucket(value: unknown): "day" | "week" {
+  return String(value ?? "day").trim().toLowerCase() === "week" ? "week" : "day";
+}
+
+function parseCostLeaderboardGroupBy(value: unknown): "task" | "document" | "case" | "firm" {
+  const normalized = String(value ?? "task").trim().toLowerCase();
+  return normalized === "document" || normalized === "case" || normalized === "firm" ? normalized : "task";
 }
 
 app.get("/health", (_req, res) => res.json({ ok: true, build: buildInfo }));
@@ -3747,7 +3782,7 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
     // Fetch document storage key from Document table (firm-scoped to prevent IDOR)
     const { rows } = await pgPool.query(
       `
-      select "spacesKey" as key, "mimeType" as mime_type
+      select "spacesKey" as key, "mimeType" as mime_type, "routedCaseId" as routed_case_id
       from "Document"
       where id = $1 and "firmId" = $2
       limit 1
@@ -3761,6 +3796,7 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
 
     const key = rows[0].key as string;
     const mimeType = (rows[0].mime_type as string) || "";
+    const routedCaseId = (rows[0].routed_case_id as string | null) ?? null;
 
     const isPdf =
       mimeType === "application/pdf" ||
@@ -3890,6 +3926,7 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
         return risks.length > 0 ? risks : null;
       },
       logContext: { source: "documents.recognize", documentId },
+      telemetryContext: { firmId, documentId, source: "documents.recognize" },
       ...DOCUMENT_RECOGNITION_PROMPTS.risks,
     });
     extractedJson = risksResolution.extractedJson;
@@ -3904,6 +3941,7 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
         return insights.length > 0 ? insights : null;
       },
       logContext: { source: "documents.recognize", documentId },
+      telemetryContext: { firmId, documentId, source: "documents.recognize" },
       ...DOCUMENT_RECOGNITION_PROMPTS.insights,
     });
     extractedJson = insightsResolution.extractedJson;
@@ -3914,10 +3952,16 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
       textHash,
       existingValue: existingRec?.summary ?? null,
       compute: async () => {
-        const { summary: summaryText, keyFacts } = await summarizeDocument(text);
+        const { summary: summaryText, keyFacts } = await summarizeDocument(text, {
+          firmId,
+          documentId,
+          caseId: routedCaseId,
+          source: "documents.recognize",
+        });
         return summaryText || keyFacts.length > 0 ? { summary: summaryText, keyFacts } : null;
       },
       logContext: { source: "documents.recognize", documentId },
+      telemetryContext: { firmId, documentId, caseId: routedCaseId, source: "documents.recognize" },
       ...DOCUMENT_RECOGNITION_PROMPTS.summary,
     });
     extractedJson = summaryResolution.extractedJson;
@@ -3929,8 +3973,19 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
             taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.insurance),
             textHash,
             existingValue: existingRec?.insurance_fields ?? null,
-            compute: () => extractInsuranceOfferFields({ text, fileName: key.split("/").pop() ?? undefined }),
+            compute: () =>
+              extractInsuranceOfferFields({
+                text,
+                fileName: key.split("/").pop() ?? undefined,
+                telemetryContext: {
+                  firmId,
+                  documentId,
+                  caseId: routedCaseId,
+                  source: "documents.recognize",
+                },
+              }),
             logContext: { source: "documents.recognize", documentId },
+            telemetryContext: { firmId, documentId, caseId: routedCaseId, source: "documents.recognize" },
             ...DOCUMENT_RECOGNITION_PROMPTS.insurance,
           })
         : { value: existingRec?.insurance_fields ?? null, reused: true, extractedJson };
@@ -3943,8 +3998,19 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
             taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.court),
             textHash,
             existingValue: existingRec?.court_fields ?? null,
-            compute: () => extractCourtFields({ text, fileName: key.split("/").pop() ?? undefined }),
+            compute: () =>
+              extractCourtFields({
+                text,
+                fileName: key.split("/").pop() ?? undefined,
+                telemetryContext: {
+                  firmId,
+                  documentId,
+                  caseId: routedCaseId,
+                  source: "documents.recognize",
+                },
+              }),
             logContext: { source: "documents.recognize", documentId },
+            telemetryContext: { firmId, documentId, caseId: routedCaseId, source: "documents.recognize" },
             ...DOCUMENT_RECOGNITION_PROMPTS.court,
           })
         : { value: existingRec?.court_fields ?? null, reused: true, extractedJson };
@@ -6039,10 +6105,10 @@ app.post(
       const body = (req.body ?? {}) as { firmId?: string; question?: string };
       const question = typeof body.question === "string" ? body.question.trim() : undefined;
 
-      const doc = await prisma.document.findFirst({
-        where: { id: documentId, firmId },
-        select: { id: true, firmId: true, extractedFields: true },
-      });
+        const doc = await prisma.document.findFirst({
+          where: { id: documentId, firmId },
+          select: { id: true, firmId: true, extractedFields: true, routedCaseId: true },
+        });
       if (!doc) {
         return res.status(404).json({ ok: false, error: "document not found" });
       }
@@ -6068,11 +6134,18 @@ app.post(
         taskKey: explainTaskKey,
         textHash,
         existingValue: { bullets: [] as string[] },
-        compute: () => explainDocument(ocrText, doc.extractedFields ?? null, question),
-        persistOutput: true,
-        logContext: { source: "documents.explain", documentId },
-        ...DOCUMENT_RECOGNITION_PROMPTS.explain,
-      });
+          compute: () =>
+            explainDocument(ocrText, doc.extractedFields ?? null, question, {
+              firmId,
+              documentId,
+              caseId: doc.routedCaseId ?? null,
+              source: "documents.explain",
+            }),
+          persistOutput: true,
+          logContext: { source: "documents.explain", documentId },
+          telemetryContext: { firmId, documentId, caseId: doc.routedCaseId ?? null, source: "documents.explain" },
+          ...DOCUMENT_RECOGNITION_PROMPTS.explain,
+        });
       const result = explainResolution.value;
 
       if (!explainResolution.reused) {
@@ -6384,6 +6457,187 @@ app.get("/mailboxes", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
+
+app.get("/metrics/cost/leaderboard", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const scopeGlobal = String(req.query.scope ?? "").trim().toLowerCase() === "global" && isInternalCacheControlRequest(req);
+    const groupBy = parseCostLeaderboardGroupBy(req.query.groupBy);
+    const bucket = parseCostBucket(req.query.bucket);
+    const limit = parseMetricsLimit(req.query.limit, 10, 50);
+    const { from, to, days } = parseMetricsRange(req.query.range);
+    const scopedFirmId = scopeGlobal ? null : firmId;
+
+    const [leaderboard, summary, timeseries] = await Promise.all([
+      getAiCostLeaderboard({
+        groupBy,
+        from,
+        to,
+        firmId: scopedFirmId,
+        limit,
+      }),
+      getAiCostSummary({
+        from,
+        to,
+        firmId: scopedFirmId,
+      }),
+      groupBy === "task"
+        ? getAiCostTimeseries({
+            bucket,
+            from,
+            to,
+            firmId: scopedFirmId,
+          })
+        : Promise.resolve([]),
+    ]);
+
+    res.json({
+      ok: true,
+      scope: scopeGlobal ? "global" : "firm",
+      filters: {
+        groupBy,
+        bucket,
+        range: `${days}d`,
+        limit,
+      },
+      summary: summary.totals,
+      leaderboard,
+      topCostDrivers: leaderboard.slice(0, 3),
+      timeseries,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/metrics/cost/document/:id", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    const document = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: { id: true, originalName: true, routedCaseId: true },
+    });
+
+    if (!document) {
+      return res.status(404).json({ ok: false, error: "Document not found" });
+    }
+
+    const summary = await getDocumentAiCostSummary(documentId);
+    res.json({
+      ok: true,
+      documentId,
+      document: {
+        id: document.id,
+        originalName: document.originalName,
+        routedCaseId: document.routedCaseId,
+      },
+      summary: summary.totals,
+      byTask: summary.byTask,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/metrics/cost/firm/:id", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
+  try {
+    const authFirmId = (req as any).firmId as string;
+    const requestedFirmId = String(req.params.id ?? "");
+    const isInternal = isInternalCacheControlRequest(req);
+    if (requestedFirmId !== authFirmId && !isInternal) {
+      return res.status(403).json({ ok: false, error: "firmId mismatch" });
+    }
+
+    const { from, to, days } = parseMetricsRange(req.query.range);
+    const bucket = parseCostBucket(req.query.bucket);
+    const [summary, daily, leaderboard] = await Promise.all([
+      getFirmAiCostSummary(requestedFirmId, { from, to }),
+      getAiCostTimeseries({ bucket, from, to, firmId: requestedFirmId }),
+      getAiCostLeaderboard({ groupBy: "task", from, to, firmId: requestedFirmId, limit: 10 }),
+    ]);
+
+    res.json({
+      ok: true,
+      firmId: requestedFirmId,
+      filters: {
+        bucket,
+        range: `${days}d`,
+      },
+      summary: summary.totals,
+      byTask: summary.byTask,
+      daily,
+      topCostDrivers: leaderboard.slice(0, 3),
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/metrics/ops/overview", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
+  try {
+    if (!isInternalCacheControlRequest(req)) {
+      return res.status(404).json({ ok: false, error: "Not found" });
+    }
+
+    const firmId = (req as any).firmId as string;
+    const scopeGlobal = String(req.query.scope ?? "").trim().toLowerCase() === "global";
+    const scopedFirmId = scopeGlobal ? null : firmId;
+    const { from, to, days } = parseMetricsRange(req.query.range);
+
+    const [queue, deferredJobs, cacheHitRates, costSummary, costDaily] = await Promise.all([
+      getRedisQueueSnapshot(),
+      getDeferredJobTelemetryOverview({ from, to, firmId: scopedFirmId }),
+      getAiCacheHitRates({ from, to, firmId: scopedFirmId }),
+      getAiCostSummary({ from, to, firmId: scopedFirmId }),
+      getAiCostTimeseries({ bucket: "day", from, to, firmId: scopedFirmId }),
+    ]);
+
+    res.json({
+      ok: true,
+      scope: scopeGlobal ? "global" : "firm",
+      filters: {
+        range: `${days}d`,
+      },
+      queue,
+      deferredJobs,
+      cache: {
+        hitRates: cacheHitRates,
+      },
+      aiCost: {
+        summary: costSummary.totals,
+        daily: costDaily,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/metrics/ops/weekly-report", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
+  try {
+    if (!isInternalCacheControlRequest(req)) {
+      return res.status(404).json({ ok: false, error: "Not found" });
+    }
+
+    const firmId = (req as any).firmId as string;
+    const scope = String(req.query.scope ?? "global").trim().toLowerCase() === "firm" ? "firm" : "global";
+    const { days } = parseMetricsRange(req.query.range);
+    const report = await buildWeeklyOperatorReport({
+      scope,
+      firmId,
+      days,
+    });
+
+    res.json({
+      ok: true,
+      report,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.use(errorLogMiddleware);
 
 export function startServer(listenPort: number = port) {

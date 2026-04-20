@@ -4,6 +4,12 @@
  */
 import OpenAI from "openai";
 
+import {
+  OPENAI_TASK_TYPES,
+  runOpenAiChatCompletionWithTelemetry,
+} from "../services/aiTaskTelemetry";
+import { computeDocumentExplainVariant, getStoredTextHash } from "../services/documentRecognitionCache";
+
 export type DocumentExplainResult = {
   bullets: string[];
   citations?: { bulletIndex: number; page?: number }[];
@@ -11,6 +17,15 @@ export type DocumentExplainResult = {
 
 const MAX_TEXT_LENGTH = 14000;
 const DEFAULT_QUESTION = "What are the key points, dates, parties, and any monetary amounts in this document?";
+export const DOCUMENT_EXPLAIN_PROMPT_VERSION = "document-explain-v1";
+export const DOCUMENT_EXPLAIN_MODEL = "gpt-4o-mini";
+
+type DocumentExplainTelemetryContext = {
+  firmId?: string | null;
+  documentId?: string | null;
+  caseId?: string | null;
+  source?: string | null;
+};
 
 /**
  * Answers a question about document content using extractedFields + OCR text.
@@ -19,7 +34,8 @@ const DEFAULT_QUESTION = "What are the key points, dates, parties, and any monet
 export async function explainDocument(
   ocrText: string | null,
   extractedFields: unknown,
-  question?: string | null
+  question?: string | null,
+  telemetryContext?: DocumentExplainTelemetryContext
 ): Promise<DocumentExplainResult> {
   const q = (question ?? DEFAULT_QUESTION).trim() || DEFAULT_QUESTION;
 
@@ -50,38 +66,52 @@ export async function explainDocument(
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return fallbackExplain(extractedStr, textBlock, q);
+    return fallbackExplain(extractedStr, textBlock);
   }
 
   try {
     const openai = new OpenAI({ apiKey });
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `You are a legal document assistant. Answer questions about documents concisely.
+    const completion = await runOpenAiChatCompletionWithTelemetry({
+      openai,
+      request: {
+        model: DOCUMENT_EXPLAIN_MODEL,
+        messages: [
+          {
+            role: "system",
+            content: `You are a legal document assistant. Answer questions about documents concisely.
 - Respond with bullet points (3-8 bullets).
 - Cite page numbers when the source text indicates a page (e.g. "Page 2", "--- Page 3 ---").
-- Format: "• [bullet text]" and add "(p. X)" at the end when you can identify the page.
+- Format: "- [bullet text]" and add "(p. X)" at the end when you can identify the page.
 - If no page markers exist, omit page citations.`,
-        },
-        {
-          role: "user",
-          content: `Document context:\n\n${context}\n\nQuestion: ${q}\n\nAnswer with concise bullet points. Include page citations (p. N) when possible.`,
-        },
-      ],
-      max_tokens: 800,
-      temperature: 0.2,
+          },
+          {
+            role: "user",
+            content: `Document context:\n\n${context}\n\nQuestion: ${q}\n\nAnswer with concise bullet points. Include page citations (p. N) when possible.`,
+          },
+        ],
+        max_tokens: 800,
+        temperature: 0.2,
+      },
+      telemetry: {
+        firmId: telemetryContext?.firmId ?? null,
+        documentId: telemetryContext?.documentId ?? null,
+        caseId: telemetryContext?.caseId ?? null,
+        source: telemetryContext?.source ?? "documentExplain",
+        taskType: OPENAI_TASK_TYPES.explain,
+        taskVariant: computeDocumentExplainVariant(q),
+        model: DOCUMENT_EXPLAIN_MODEL,
+        promptVersion: DOCUMENT_EXPLAIN_PROMPT_VERSION,
+        inputHash: getStoredTextHash(textBlock),
+      },
     });
 
     const raw = completion.choices?.[0]?.message?.content?.trim();
-    if (!raw) return fallbackExplain(extractedStr, textBlock, q);
+    if (!raw) return fallbackExplain(extractedStr, textBlock);
 
     const bullets = parseBullets(raw);
     return { bullets };
   } catch {
-    return fallbackExplain(extractedStr, textBlock, q);
+    return fallbackExplain(extractedStr, textBlock);
   }
 }
 
@@ -97,8 +127,7 @@ function parseBullets(raw: string): string[] {
 
 function fallbackExplain(
   extractedStr: string,
-  textBlock: string,
-  _q: string
+  textBlock: string
 ): DocumentExplainResult {
   if (extractedStr) {
     try {
@@ -117,7 +146,7 @@ function fallbackExplain(
   if (textBlock) {
     const excerpt = textBlock.slice(0, 500).trim();
     return {
-      bullets: [excerpt ? `${excerpt}…` : "No content available."],
+      bullets: [excerpt ? `${excerpt}...` : "No content available."],
     };
   }
   return { bullets: ["No document content available."] };

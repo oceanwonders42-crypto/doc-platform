@@ -9,6 +9,11 @@
  */
 import OpenAI from "openai";
 import { prisma } from "../db/prisma";
+import {
+  computeAiInputHash,
+  OPENAI_TASK_TYPES,
+  runOpenAiChatCompletionWithTelemetry,
+} from "../services/aiTaskTelemetry";
 
 export type NarrativeType =
   | "treatment_summary"
@@ -49,6 +54,9 @@ export interface NarrativeResult {
   usedEvents: UsedEvent[];
   warnings?: string[];
 }
+
+export const NARRATIVE_PROMPT_VERSION = "case-narrative-v1";
+export const NARRATIVE_MODEL = "gpt-4o-mini";
 
 const TYPE_LABELS: Record<NarrativeType, string> = {
   treatment_summary: "Treatment summary",
@@ -206,11 +214,24 @@ export async function generateNarrative(input: NarrativeInput): Promise<Narrativ
     "Output only the draft narrative text, no preamble or labels. Use [BRACKETS] for any missing specific facts.";
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 1500,
-      temperature: 0.4,
+    const completion = await runOpenAiChatCompletionWithTelemetry({
+      openai,
+      request: {
+        model: NARRATIVE_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 1500,
+        temperature: 0.4,
+      },
+      telemetry: {
+        firmId,
+        caseId,
+        source: "cases.narrative",
+        taskType: OPENAI_TASK_TYPES.narrativeGeneration,
+        taskVariant: `${type}:${tone}`,
+        model: NARRATIVE_MODEL,
+        promptVersion: NARRATIVE_PROMPT_VERSION,
+        inputHash: computeAiInputHash(prompt),
+      },
     });
 
     const text =

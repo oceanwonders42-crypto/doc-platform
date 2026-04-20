@@ -938,6 +938,67 @@ async function probeRecognition(authToken, reviewQueueResult) {
   }
 }
 
+async function probeQueueOverview(authToken) {
+  if (!authToken) {
+    return {
+      status: "skip",
+      evidence: { reason: "No PRODUCTION_GUARD_AUTH_TOKEN provided." },
+      remediationAttempted: false,
+      remediationAction: null,
+      remediationResult: null,
+      after: null,
+      manualActionRequired: false,
+      manualAction: null,
+    };
+  }
+
+  try {
+    const response = await fetchText("http://127.0.0.1:4000/metrics/ops/overview?scope=global&range=7d", {
+      headers: { authorization: `Bearer ${authToken}` },
+    });
+    if (!response.ok) {
+      return {
+        status: "fail",
+        evidence: response,
+        manualActionRequired: true,
+        manualAction: "Internal queue overview metrics route did not return a successful response.",
+      };
+    }
+
+    const queue = response.json?.queue ?? null;
+    const deferredJobs = response.json?.deferredJobs ?? null;
+    const queueHealthy = queue?.available === true;
+    return {
+      status: queueHealthy ? "pass" : "fail",
+      evidence: {
+        response,
+        queueSummary: queue == null
+          ? null
+          : {
+              queueDepth: queue.queueDepth ?? null,
+              oldestJobAgeMs: queue.oldestJobAgeMs ?? null,
+              retriedQueuedCount: queue.retriedQueuedCount ?? null,
+              byType: queue.byType ?? null,
+              dedupeMarkers: queue.dedupeMarkers ?? null,
+            },
+        deferredTimingSummary: deferredJobs?.summary ?? null,
+        deferredTimingByType: Array.isArray(deferredJobs?.byType) ? deferredJobs.byType : null,
+        cacheHitRates: response.json?.cache?.hitRates ?? null,
+        aiCostSummary: response.json?.aiCost?.summary ?? null,
+      },
+      manualActionRequired: !queueHealthy,
+      manualAction: queueHealthy ? null : "Queue overview reported the deferred queue as unavailable.",
+    };
+  } catch (error) {
+    return {
+      status: "fail",
+      evidence: { error: plainError(error) },
+      manualActionRequired: true,
+      manualAction: "Investigate the internal queue overview route and deferred worker visibility.",
+    };
+  }
+}
+
 function evaluateVersionParity(localGit, apiVersion, webVersion) {
   const failures = [];
   const evidence = {
@@ -1137,6 +1198,7 @@ async function main() {
     checks: [],
     storage: null,
     cache: null,
+    queue: null,
     remediation: {
       attempted: false,
       actions: [],
@@ -1167,13 +1229,19 @@ async function main() {
         severity: "high",
         action: "Investigate object retention/backups and identify the affected upload date range.",
       },
-      {
-        name: "document-recognition-cache-unhealthy",
-        trigger: "document_recognition.taskCache is missing on active rows or per-row cache entry counts exceed the bounded threshold.",
-        severity: "high",
-        action: "Inspect cache metadata rollout and clear malformed taskCache entries before they cause repeated recompute or row bloat.",
-      },
-    ],
+        {
+          name: "document-recognition-cache-unhealthy",
+          trigger: "document_recognition.taskCache is missing on active rows or per-row cache entry counts exceed the bounded threshold.",
+          severity: "high",
+          action: "Inspect cache metadata rollout and clear malformed taskCache entries before they cause repeated recompute or row bloat.",
+        },
+        {
+          name: "queue-backlog-health",
+          trigger: "The internal queue overview route reports the deferred queue as unavailable or the oldest queued job age keeps rising.",
+          severity: "high",
+          action: "Inspect Redis connectivity, worker saturation, and whether slow extraction/OCR jobs are backing up lightweight follow-up work.",
+        },
+      ],
     summary: {
       healthy: false,
       autoFixedIssues: [],
@@ -1203,6 +1271,7 @@ async function main() {
     dirtyFlag: null,
     storage: null,
     cache: null,
+    queueOverview: null,
   };
 
   baseline.apiHealth = await probeApiHealth();
@@ -1218,6 +1287,7 @@ async function main() {
     process.env.PRODUCTION_GUARD_AUTH_TOKEN ?? null,
     baseline.reviewQueue.status === "pass" ? baseline.reviewQueue : null
   );
+  baseline.queueOverview = await probeQueueOverview(process.env.PRODUCTION_GUARD_AUTH_TOKEN ?? null);
   baseline.deployVerify = await runDeployCheckScript("check-running-version.mjs", [
     "--require-services",
     "api,web",
@@ -1273,6 +1343,7 @@ async function main() {
           process.env.PRODUCTION_GUARD_AUTH_TOKEN ?? null,
           baseline.reviewQueue.status === "pass" ? baseline.reviewQueue : null
         );
+        baseline.queueOverview = await probeQueueOverview(process.env.PRODUCTION_GUARD_AUTH_TOKEN ?? null);
         baseline.storage = await collectStorageChecks(apiRuntimeEnv);
         baseline.cache = await collectRecognitionCacheHealth(apiRuntimeEnv);
       }
@@ -1301,6 +1372,7 @@ async function main() {
   baseline.dirtyFlag = evaluateDirtyFlag(baseline.apiVersion.evidence, baseline.webVersion.evidence);
   baseline.storage = await collectStorageChecks(apiRuntimeEnv);
   baseline.cache = await collectRecognitionCacheHealth(apiRuntimeEnv);
+  baseline.queueOverview = await probeQueueOverview(process.env.PRODUCTION_GUARD_AUTH_TOKEN ?? null);
 
   const apiRemediationAttempted = report.remediation.actions.some(
     (item) => item.appName === "doc-platform-api" && item.attempted && !item.skipped
@@ -1439,6 +1511,22 @@ async function main() {
       remediationResult: null,
       manualActionRequired: baseline.cache.manualActionRequired,
       manualAction: baseline.cache.manualAction ?? null,
+    },
+    {
+      name: "queue-overview",
+      status: baseline.queueOverview.status,
+      evidence: { before: initial.queueOverview?.evidence ?? null, after: baseline.queueOverview.evidence },
+      remediationAttempted: apiRemediationAttempted || workerRemediationAttempted,
+      remediationAction: [
+        report.remediation.actions.find((item) => item.appName === "doc-platform-api"),
+        report.remediation.actions.find((item) => item.appName === "doc-platform-worker"),
+      ].filter(Boolean),
+      remediationResult: [
+        report.remediation.results.find((item) => item.appName === "doc-platform-api"),
+        report.remediation.results.find((item) => item.appName === "doc-platform-worker"),
+      ].filter(Boolean),
+      manualActionRequired: baseline.queueOverview.manualActionRequired,
+      manualAction: baseline.queueOverview.manualAction ?? null,
     },
     {
       name: "demo-login-blocked",
@@ -1582,6 +1670,7 @@ async function main() {
           }
         : null,
   };
+  report.queue = baseline.queueOverview.evidence ?? null;
   report.summary.skippedChecks = checks.filter((check) => check.status === "skip").map((check) => check.name);
   report.summary.autoFixedIssues = checks
     .filter((check) => check.remediationAttempted && check.status === "pass")
@@ -1617,6 +1706,19 @@ async function main() {
     `- read-only checks: service=${report.storage.readOnly.service.status}, listener=${report.storage.readOnly.listener.status}, bucket=${report.storage.readOnly.bucket.status}`
   );
   markdownLines.push(`- active write probe: ${report.storage.writeProbe.status}`);
+  markdownLines.push("");
+  markdownLines.push(`## Queue Health`);
+  markdownLines.push("");
+  markdownLines.push(`- status: ${baseline.queueOverview.status}`);
+  markdownLines.push(`- queue depth: ${report.queue?.queueSummary?.queueDepth ?? "n/a"}`);
+  markdownLines.push(`- oldest queued job age ms: ${report.queue?.queueSummary?.oldestJobAgeMs ?? "n/a"}`);
+  markdownLines.push(`- retried queued jobs: ${report.queue?.queueSummary?.retriedQueuedCount ?? "n/a"}`);
+  markdownLines.push(`- avg deferred wait ms: ${report.queue?.deferredTimingSummary?.avgWaitMs ?? "n/a"}`);
+  markdownLines.push(`- p95 deferred wait ms: ${report.queue?.deferredTimingSummary?.p95WaitMs ?? "n/a"}`);
+  markdownLines.push(`- avg deferred runtime ms: ${report.queue?.deferredTimingSummary?.avgRunMs ?? "n/a"}`);
+  markdownLines.push(`- p95 deferred runtime ms: ${report.queue?.deferredTimingSummary?.p95RunMs ?? "n/a"}`);
+  markdownLines.push(`- cache hit rates visible: ${Array.isArray(report.queue?.cacheHitRates) ? "yes" : "no"}`);
+  markdownLines.push(`- ai cost summary visible: ${report.queue?.aiCostSummary ? "yes" : "no"}`);
   markdownLines.push("");
   markdownLines.push(`## Recognition Cache`);
   markdownLines.push("");

@@ -7,6 +7,9 @@
  */
 import OpenAI from "openai";
 
+import { OPENAI_TASK_TYPES, runOpenAiChatCompletionWithTelemetry } from "../../services/aiTaskTelemetry";
+import { getStoredTextHash } from "../../services/documentRecognitionCache";
+
 export type CourtFields = {
   courtName: string | null;
   caseNumber: string | null;
@@ -27,11 +30,22 @@ const SYSTEM_PROMPT = `You extract structured fields from court documents (filin
 
 Return valid JSON only, with keys: courtName, caseNumber, judge, filingDate, parties.`;
 
+export const COURT_EXTRACTOR_PROMPT_VERSION = "court-extractor-v1";
+export const COURT_EXTRACTOR_MODEL = "gpt-4o-mini";
+
+type CourtTelemetryContext = {
+  firmId?: string | null;
+  documentId?: string | null;
+  caseId?: string | null;
+  source?: string | null;
+};
+
 export async function extractCourtFields(args: {
   text: string;
   fileName?: string;
+  telemetryContext?: CourtTelemetryContext;
 }): Promise<CourtFields> {
-  const { text, fileName } = args;
+  const { text, fileName, telemetryContext } = args;
   const apiKey = process.env.OPENAI_API_KEY;
 
   const result: CourtFields = {
@@ -55,14 +69,27 @@ Document text:\n${truncated}`;
   const openai = new OpenAI({ apiKey });
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userContent },
-      ],
-      max_tokens: 600,
-      temperature: 0.1,
+    const completion = await runOpenAiChatCompletionWithTelemetry({
+      openai,
+      request: {
+        model: COURT_EXTRACTOR_MODEL,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userContent },
+        ],
+        max_tokens: 600,
+        temperature: 0.1,
+      },
+      telemetry: {
+        firmId: telemetryContext?.firmId ?? null,
+        documentId: telemetryContext?.documentId ?? null,
+        caseId: telemetryContext?.caseId ?? null,
+        source: telemetryContext?.source ?? "courtExtractor",
+        taskType: OPENAI_TASK_TYPES.courtExtraction,
+        model: COURT_EXTRACTOR_MODEL,
+        promptVersion: COURT_EXTRACTOR_PROMPT_VERSION,
+        inputHash: getStoredTextHash(text),
+      },
     });
 
     const raw = completion.choices?.[0]?.message?.content?.trim();

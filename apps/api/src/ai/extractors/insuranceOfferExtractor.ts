@@ -6,6 +6,9 @@
  */
 import OpenAI from "openai";
 
+import { OPENAI_TASK_TYPES, runOpenAiChatCompletionWithTelemetry } from "../../services/aiTaskTelemetry";
+import { getStoredTextHash } from "../../services/documentRecognitionCache";
+
 export type InsuranceOfferFields = {
   insuranceCompany: string | null;
   adjusterName: string | null;
@@ -40,11 +43,22 @@ const SYSTEM_PROMPT = `You extract structured fields from insurance or adjuster 
   * "Multiple possible offer amounts ($X, $Y); used $X based on context."
   Do not add warnings for simple missing optional fields.`;
 
+export const INSURANCE_OFFER_PROMPT_VERSION = "insurance-offer-extractor-v1";
+export const INSURANCE_OFFER_MODEL = "gpt-4o-mini";
+
+type InsuranceOfferTelemetryContext = {
+  firmId?: string | null;
+  documentId?: string | null;
+  caseId?: string | null;
+  source?: string | null;
+};
+
 export async function extractInsuranceOfferFields(args: {
   text: string;
   fileName?: string;
+  telemetryContext?: InsuranceOfferTelemetryContext;
 }): Promise<InsuranceOfferFields> {
-  const { text, fileName } = args;
+  const { text, fileName, telemetryContext } = args;
   const apiKey = process.env.OPENAI_API_KEY;
   const warnings: string[] = [];
 
@@ -70,14 +84,27 @@ Document text:\n${truncated}`;
   const openai = new OpenAI({ apiKey });
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userContent },
-      ],
-      max_tokens: 1000,
-      temperature: 0.1,
+    const completion = await runOpenAiChatCompletionWithTelemetry({
+      openai,
+      request: {
+        model: INSURANCE_OFFER_MODEL,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userContent },
+        ],
+        max_tokens: 1000,
+        temperature: 0.1,
+      },
+      telemetry: {
+        firmId: telemetryContext?.firmId ?? null,
+        documentId: telemetryContext?.documentId ?? null,
+        caseId: telemetryContext?.caseId ?? null,
+        source: telemetryContext?.source ?? "insuranceOfferExtractor",
+        taskType: OPENAI_TASK_TYPES.insuranceExtraction,
+        model: INSURANCE_OFFER_MODEL,
+        promptVersion: INSURANCE_OFFER_PROMPT_VERSION,
+        inputHash: getStoredTextHash(text),
+      },
     });
 
     const raw = completion.choices?.[0]?.message?.content?.trim();

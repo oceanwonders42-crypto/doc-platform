@@ -2,12 +2,17 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { pgPool } from "../db/pg";
 import {
+  buildJobDedupeKey,
   popJob,
+  requeueJob,
   enqueueClassificationJob,
   enqueueExtractionJob,
   enqueueCaseMatchJob,
+  settleJobDeduplication,
+  type JobPayload,
   type PostRouteSyncJobPayload,
 } from "../services/queue";
+import { recordDeferredJobAttempt, type DeferredJobType } from "../services/deferredJobTelemetry";
 import { getObjectBuffer } from "../services/storage";
 import { countPagesFromBuffer } from "../services/pageCount";
 import { classifyAndExtract } from "../ai/docRecognition";
@@ -47,6 +52,34 @@ import {
 
 async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+const OCR_REQUEUE_DELAY_MS = 50;
+let activeOcrJobCount = 0;
+let currentDocumentWorkerOcrConcurrency = 1;
+
+function normalizeDeferredJobAttempt(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 1;
+}
+
+function parseQueuedAt(value: string | undefined): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function resolveDeferredJobType(job: { type?: string }): DeferredJobType | null {
+  switch (job.type) {
+    case "ocr":
+    case "classification":
+    case "extraction":
+    case "case_match":
+    case "timeline_rebuild":
+    case "post_route_sync":
+      return job.type;
+    default:
+      return null;
+  }
 }
 
 function yearMonth(d = new Date()) {
@@ -626,6 +659,7 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
       return risks.length > 0 ? risks : null;
     },
     logContext: { source: "worker.extraction", documentId },
+    telemetryContext: { firmId, documentId, caseId: doc.routedCaseId ?? null, source: "worker.extraction" },
     ...DOCUMENT_RECOGNITION_PROMPTS.risks,
   });
   extractedJson = risksResolution.extractedJson;
@@ -640,6 +674,7 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
       return insights.length > 0 ? insights : null;
     },
     logContext: { source: "worker.extraction", documentId },
+    telemetryContext: { firmId, documentId, caseId: doc.routedCaseId ?? null, source: "worker.extraction" },
     ...DOCUMENT_RECOGNITION_PROMPTS.insights,
   });
   extractedJson = insightsResolution.extractedJson;
@@ -650,10 +685,16 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
     textHash,
     existingValue: rec.summary ?? null,
     compute: async () => {
-      const { summary: summaryText, keyFacts } = await summarizeDocument(text);
+      const { summary: summaryText, keyFacts } = await summarizeDocument(text, {
+        firmId,
+        documentId,
+        caseId: doc.routedCaseId ?? null,
+        source: "worker.extraction",
+      });
       return summaryText || keyFacts.length > 0 ? { summary: summaryText, keyFacts } : null;
     },
     logContext: { source: "worker.extraction", documentId },
+    telemetryContext: { firmId, documentId, caseId: doc.routedCaseId ?? null, source: "worker.extraction" },
     ...DOCUMENT_RECOGNITION_PROMPTS.summary,
   });
   extractedJson = summaryResolution.extractedJson;
@@ -666,10 +707,20 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
           textHash,
           existingValue: rec.insurance_fields ?? null,
           compute: async () => {
-            const raw = await extractInsuranceOfferFields({ text, fileName: doc.originalName ?? undefined });
+            const raw = await extractInsuranceOfferFields({
+              text,
+              fileName: doc.originalName ?? undefined,
+              telemetryContext: {
+                firmId,
+                documentId,
+                caseId: doc.routedCaseId ?? null,
+                source: "worker.extraction",
+              },
+            });
             return raw ? { settlementOffer: raw.settlementOffer ?? undefined } : null;
           },
           logContext: { source: "worker.extraction", documentId },
+          telemetryContext: { firmId, documentId, caseId: doc.routedCaseId ?? null, source: "worker.extraction" },
           ...DOCUMENT_RECOGNITION_PROMPTS.insurance,
         })
       : { value: rec.insurance_fields ?? null, reused: true, extractedJson };
@@ -682,8 +733,19 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
           taskKey: buildTaskCacheKey(DOCUMENT_RECOGNITION_TASKS.court),
           textHash,
           existingValue: rec.court_fields ?? null,
-          compute: () => extractCourtFields({ text, fileName: doc.originalName ?? undefined }),
+          compute: () =>
+            extractCourtFields({
+              text,
+              fileName: doc.originalName ?? undefined,
+              telemetryContext: {
+                firmId,
+                documentId,
+                caseId: doc.routedCaseId ?? null,
+                source: "worker.extraction",
+              },
+            }),
           logContext: { source: "worker.extraction", documentId },
+          telemetryContext: { firmId, documentId, caseId: doc.routedCaseId ?? null, source: "worker.extraction" },
           ...DOCUMENT_RECOGNITION_PROMPTS.court,
         })
       : { value: rec.court_fields ?? null, reused: true, extractedJson };
@@ -1112,12 +1174,36 @@ async function runDocumentWorkerLoop(loopLabel: string): Promise<void> {
       continue;
     }
 
+    if (shouldDeferJobForOcrCap(job.type, activeOcrJobCount, currentDocumentWorkerOcrConcurrency)) {
+      try {
+        await requeueJob(job);
+        await sleep(OCR_REQUEUE_DELAY_MS);
+        continue;
+      } catch (error) {
+        console.warn(`[${loopLabel}] failed to defer OCR job under concurrency cap; processing inline`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    let outcome: "completed" | "failed" = "completed";
+    let errorMessage: string | null = null;
+    const holdsOcrSlot = job.type === "ocr";
+    if (holdsOcrSlot) {
+      activeOcrJobCount += 1;
+    }
+    const startedAt = new Date();
+    const resolvedJobType = resolveDeferredJobType(job);
+    const queuedAt = parseQueuedAt(job.queuedAt) ?? startedAt;
+    const attempt = normalizeDeferredJobAttempt(job.attempt);
+    const firmId = (job as { firmId?: string }).firmId ?? null;
+    const documentId = "documentId" in job ? (job as { documentId?: string }).documentId ?? null : null;
+    const caseId = "caseId" in job ? (job as { caseId?: string }).caseId ?? null : null;
+
     try {
       if (job.type === "timeline_rebuild") {
         await handleTimelineRebuild(job.caseId, job.firmId);
-        continue;
-      }
-      if (job.type === "post_route_sync") {
+      } else if (job.type === "post_route_sync") {
         const syncJob = job as PostRouteSyncJobPayload;
         await handlePostRouteSyncJob(
           syncJob.documentId,
@@ -1125,38 +1211,40 @@ async function runDocumentWorkerLoop(loopLabel: string): Promise<void> {
           syncJob.caseId,
           syncJob.action
         );
-        continue;
-      }
+      } else {
+        const jobType = job.type ?? (documentId ? "ocr" : null);
+        if (!documentId || !jobType || !firmId) {
+          outcome = "failed";
+          errorMessage = "Invalid job payload: missing type, documentId, or firmId";
+          console.warn(`${loopLabel} invalid job payload (missing type, documentId, or firmId):`, job);
+          continue;
+        }
 
-      const documentId = "documentId" in job ? (job as { documentId: string }).documentId : null;
-      const firmId = (job as { firmId: string }).firmId;
-      const jobType = job.type ?? (documentId ? "ocr" : null);
-      if (!documentId || !jobType) {
-        console.warn(`${loopLabel} invalid job payload (missing type or documentId):`, job);
-        continue;
-      }
-
-      switch (jobType) {
-        case "ocr":
-          await handleOcrJob(documentId, firmId);
-          break;
-        case "classification":
-          await handleClassificationJob(documentId, firmId);
-          break;
-        case "extraction":
-          await handleExtractionJob(documentId, firmId);
-          break;
-        case "case_match":
-          await handleCaseMatchJob(documentId, firmId);
-          break;
-        default:
-          console.warn(`${loopLabel} unknown job type:`, jobType);
+        switch (jobType) {
+          case "ocr":
+            await handleOcrJob(documentId, firmId);
+            break;
+          case "classification":
+            await handleClassificationJob(documentId, firmId);
+            break;
+          case "extraction":
+            await handleExtractionJob(documentId, firmId);
+            break;
+          case "case_match":
+            await handleCaseMatchJob(documentId, firmId);
+            break;
+          default:
+            outcome = "failed";
+            errorMessage = `Unknown job type: ${jobType}`;
+            console.warn(`${loopLabel} unknown job type:`, jobType);
+        }
       }
     } catch (err) {
-      const documentId = "documentId" in job ? (job as { documentId: string }).documentId : null;
+      outcome = "failed";
       const errMsg = err instanceof Error ? err.message : String(err);
       const errStack = err instanceof Error ? err.stack : undefined;
-      console.error(`[${loopLabel}] error`, { documentId, firmId: (job as { firmId: string }).firmId, error: errMsg, stack: errStack });
+      errorMessage = errMsg;
+      console.error(`[${loopLabel}] error`, { documentId, firmId, error: errMsg, stack: errStack });
       if (documentId) {
         try {
           await prisma.document.update({
@@ -1168,15 +1256,150 @@ async function runDocumentWorkerLoop(loopLabel: string): Promise<void> {
         }
       }
       await sleep(1000);
+    } finally {
+      if (holdsOcrSlot) {
+        activeOcrJobCount = Math.max(0, activeOcrJobCount - 1);
+      }
+
+      if (resolvedJobType) {
+        const finishedAt = new Date();
+        await recordDeferredJobAttempt({
+          firmId,
+          documentId,
+          caseId,
+          jobType: resolvedJobType,
+          action: "action" in job ? (job as { action?: string }).action ?? null : null,
+          dedupeKey: buildJobDedupeKey(job),
+          workerLabel: loopLabel,
+          queuedAt,
+          startedAt,
+          finishedAt,
+          attempt,
+          outcome: outcome === "completed" ? "success" : "failed",
+          errorMessage,
+        });
+      }
+
+      try {
+        await settleJobDeduplication(job, outcome);
+      } catch (settleError) {
+        console.warn(`[${loopLabel}] failed to settle deferred job dedupe`, {
+          jobType: job.type,
+          error: settleError,
+        });
+      }
     }
   }
 }
 
+const DEFAULT_PRODUCTION_WORKER_CONCURRENCY = 3;
+const DEFAULT_NON_PRODUCTION_WORKER_CONCURRENCY = 1;
+const MAX_DOCUMENT_WORKER_CONCURRENCY = 6;
+
+type WorkerLoopRunner = (label: string) => Promise<void>;
+
+function normalizeWorkerConcurrency(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const normalized = Math.trunc(value);
+  if (normalized < 1) {
+    return fallback;
+  }
+
+  return Math.min(normalized, MAX_DOCUMENT_WORKER_CONCURRENCY);
+}
+
+export function getDocumentWorkerConcurrency(
+  rawValue: string | null | undefined = process.env.DOCUMENT_WORKER_CONCURRENCY,
+  nodeEnv: string | undefined = process.env.NODE_ENV
+): number {
+  const fallback = nodeEnv === "production"
+    ? DEFAULT_PRODUCTION_WORKER_CONCURRENCY
+    : DEFAULT_NON_PRODUCTION_WORKER_CONCURRENCY;
+
+  if (rawValue == null || rawValue.trim().length === 0) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  return normalizeWorkerConcurrency(parsed, fallback);
+}
+
+export function getDocumentWorkerOcrConcurrency(
+  rawValue: string | null | undefined = process.env.DOCUMENT_WORKER_OCR_CONCURRENCY,
+  workerConcurrency = getDocumentWorkerConcurrency()
+): number {
+  if (rawValue == null || rawValue.trim().length === 0) {
+    return workerConcurrency;
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  return Math.min(normalizeWorkerConcurrency(parsed, workerConcurrency), workerConcurrency);
+}
+
+export function shouldDeferJobForOcrCap(
+  jobType: JobPayload["type"] | undefined,
+  activeOcrJobs: number,
+  ocrConcurrency: number
+): boolean {
+  return jobType === "ocr" && activeOcrJobs >= Math.max(1, ocrConcurrency);
+}
+
+export function getDocumentWorkerLabels(baseLabel: string, concurrency: number): string[] {
+  const normalizedConcurrency = normalizeWorkerConcurrency(concurrency, 1);
+  if (normalizedConcurrency === 1) {
+    return [baseLabel];
+  }
+
+  return Array.from({ length: normalizedConcurrency }, (_value, index) => `${baseLabel}-${index + 1}`);
+}
+
+export async function runDocumentWorkerPool(options: {
+  label: string;
+  concurrency: number;
+  runLoop?: WorkerLoopRunner;
+}): Promise<void> {
+  const runLoop = options.runLoop ?? runDocumentWorkerLoop;
+  const labels = getDocumentWorkerLabels(options.label, options.concurrency);
+  await Promise.all(labels.map((label) => runLoop(label)));
+}
+
 let workerLoopPromise: Promise<void> | null = null;
 
-export function startDocumentWorkerLoop(options?: { label?: string }): Promise<void> {
+export function startDocumentWorkerLoop(options?: {
+  label?: string;
+  concurrency?: number;
+  ocrConcurrency?: number;
+  runLoop?: WorkerLoopRunner;
+}): Promise<void> {
   if (!workerLoopPromise) {
-    workerLoopPromise = runDocumentWorkerLoop(options?.label ?? "worker");
+    const label = options?.label ?? "worker";
+    const concurrency = normalizeWorkerConcurrency(
+      options?.concurrency ?? getDocumentWorkerConcurrency(),
+      1
+    );
+    const ocrConcurrency = getDocumentWorkerOcrConcurrency(
+      options?.ocrConcurrency == null ? undefined : String(options.ocrConcurrency),
+      concurrency
+    );
+
+    activeOcrJobCount = 0;
+    currentDocumentWorkerOcrConcurrency = ocrConcurrency;
+
+    console.log(`[${label}] starting document worker pool`, { concurrency, ocrConcurrency });
+    workerLoopPromise = runDocumentWorkerPool({
+      label,
+      concurrency,
+      runLoop: options?.runLoop,
+    });
   }
   return workerLoopPromise;
+}
+
+export function resetDocumentWorkerLoopForTest(): void {
+  workerLoopPromise = null;
+  activeOcrJobCount = 0;
+  currentDocumentWorkerOcrConcurrency = 1;
 }
