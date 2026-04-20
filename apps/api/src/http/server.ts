@@ -604,9 +604,16 @@ app.post("/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
 app.post("/firms/:id/users", auth, requireAdminOrFirmAdminForFirm, async (req, res) => {
   try {
     const firmId = String(req.params.id ?? "");
-    const { email, role } = (req.body ?? {}) as { email?: string; role?: string };
+    const { email, role, password } = (req.body ?? {}) as {
+      email?: string;
+      role?: string;
+      password?: string;
+    };
     if (!email || typeof email !== "string" || !email.trim()) {
       return res.status(400).json({ ok: false, error: "email is required" });
+    }
+    if (password != null && (typeof password !== "string" || password.length < 8)) {
+      return res.status(400).json({ ok: false, error: "password must be at least 8 characters" });
     }
     const roleEnum = role === "STAFF" ? "STAFF" : "FIRM_ADMIN";
     const user = await prisma.user.create({
@@ -614,6 +621,7 @@ app.post("/firms/:id/users", auth, requireAdminOrFirmAdminForFirm, async (req, r
         firmId,
         email: email.trim().toLowerCase(),
         role: roleEnum as "STAFF" | "FIRM_ADMIN",
+        passwordHash: typeof password === "string" && password.length >= 8 ? await bcrypt.hash(password, 10) : null,
       },
       select: { id: true, email: true, role: true, firmId: true },
     });

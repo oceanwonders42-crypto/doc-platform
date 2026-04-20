@@ -38,6 +38,47 @@ async function main() {
     assert(createFirmJson.ok === true && typeof createFirmJson.firm?.id === "string", "Expected firm creation to succeed.");
     firmId = createFirmJson.firm!.id!;
 
+    const onboardingEmail = `onboarding-proof-${suffix}@example.com`;
+    const onboardingPassword = `ProofPass!${suffix}`;
+    const createUser = await postJson(
+      `${baseUrl}/firms/${firmId}/users`,
+      {
+        email: onboardingEmail,
+        password: onboardingPassword,
+        role: "FIRM_ADMIN",
+      },
+      platformAdminToken
+    );
+    assert(createUser.status === 200, `Expected platform admin user creation to return 200, got ${createUser.status}`);
+    const createUserJson = (await createUser.json()) as {
+      ok?: boolean;
+      user?: { id?: string; email?: string; role?: string; firmId?: string };
+    };
+    assert(createUserJson.ok === true && createUserJson.user?.email === onboardingEmail, "Expected onboarding user to be created.");
+
+    const login = await postJson(`${baseUrl}/auth/login`, {
+      email: onboardingEmail,
+      password: onboardingPassword,
+    });
+    assert(login.status === 200, `Expected onboarding user login to return 200, got ${login.status}`);
+    const loginJson = (await login.json()) as { ok?: boolean; token?: string };
+    assert(loginJson.ok === true && typeof loginJson.token === "string", "Expected onboarding login to return a JWT.");
+
+    const authMe = await fetch(`${baseUrl}/auth/me`, {
+      headers: { Authorization: `Bearer ${loginJson.token}` },
+    });
+    assert(authMe.status === 200, `Expected /auth/me with onboarding JWT to return 200, got ${authMe.status}`);
+    const authMeJson = (await authMe.json()) as {
+      ok?: boolean;
+      role?: string;
+      firm?: { id?: string };
+      user?: { email?: string };
+    };
+    assert(authMeJson.ok === true, "Expected /auth/me onboarding payload to be ok.");
+    assert(authMeJson.role === "FIRM_ADMIN", `Expected onboarding JWT role FIRM_ADMIN, got ${authMeJson.role}`);
+    assert(authMeJson.firm?.id === firmId, `Expected onboarding JWT firmId ${firmId}, got ${authMeJson.firm?.id}`);
+    assert(authMeJson.user?.email === onboardingEmail, `Expected onboarding JWT email ${onboardingEmail}, got ${authMeJson.user?.email}`);
+
     const createStaffApiKey = await postJson(
       `${baseUrl}/firms/${firmId}/api-keys`,
       { name: "Staff verification key" },
@@ -133,6 +174,7 @@ async function main() {
     console.log("Firm onboarding security proof passed", {
       firmId,
       staffApiKeyId,
+      onboardingUserEmail: onboardingEmail,
       unauthenticatedStatus: unauthenticatedDevFirm.status,
       staffCreateFirmStatus: staffDevFirm.status,
       staffCreateApiKeyStatus: staffDevKey.status,
