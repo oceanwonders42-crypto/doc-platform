@@ -259,30 +259,37 @@ function collectPm2RuntimeFailures(parsedApps, expectedApps, options = {}) {
     }
 
     const env = app.pm2_env ?? {};
-    const actualArgs = Array.isArray(env.args) ? env.args : [];
+    const nestedEnv = env.env ?? {};
+    const actualStatus = app.status ?? env.status;
+    const actualCwd = app.pm_cwd ?? app.cwd ?? env.pm_cwd ?? env.cwd;
+    const actualScript = app.pm_exec_path ?? env.pm_exec_path;
+    const actualArgs = Array.isArray(app.args) ? app.args : Array.isArray(env.args) ? env.args : [];
+    const actualOutLog = app.pm_out_log_path ?? env.pm_out_log_path;
+    const actualErrorLog = app.pm_err_log_path ?? env.pm_err_log_path;
+    const actualPwd = app.PWD ?? app.cwd ?? nestedEnv.PWD;
 
-    if (requireOnlineStatus && env.status !== "online") {
-      failures.push(`PM2 app ${expectedApp.name} status is ${env.status ?? "missing"} after deploy`);
+    if (requireOnlineStatus && actualStatus !== "online") {
+      failures.push(`PM2 app ${expectedApp.name} status is ${actualStatus ?? "missing"} after deploy`);
     }
-    if (!samePath(env.pm_cwd ?? env.cwd, expectedApp.cwd)) {
-      failures.push(`PM2 app ${expectedApp.name} cwd is ${env.pm_cwd ?? env.cwd}; expected ${expectedApp.cwd}`);
+    if (!samePath(actualCwd, expectedApp.cwd)) {
+      failures.push(`PM2 app ${expectedApp.name} cwd is ${actualCwd}; expected ${expectedApp.cwd}`);
     }
-    if (!samePath(env.pm_exec_path, expectedApp.script)) {
-      failures.push(`PM2 app ${expectedApp.name} script is ${env.pm_exec_path}; expected ${expectedApp.script}`);
+    if (!samePath(actualScript, expectedApp.script)) {
+      failures.push(`PM2 app ${expectedApp.name} script is ${actualScript}; expected ${expectedApp.script}`);
     }
     if (JSON.stringify(actualArgs) !== JSON.stringify(expectedApp.args)) {
       failures.push(
         `PM2 app ${expectedApp.name} args are ${JSON.stringify(actualArgs)}; expected ${JSON.stringify(expectedApp.args)}`
       );
     }
-    if (!samePath(env.pm_out_log_path, expectedApp.outFile)) {
-      failures.push(`PM2 app ${expectedApp.name} out log is ${env.pm_out_log_path}; expected ${expectedApp.outFile}`);
+    if (!samePath(actualOutLog, expectedApp.outFile)) {
+      failures.push(`PM2 app ${expectedApp.name} out log is ${actualOutLog}; expected ${expectedApp.outFile}`);
     }
-    if (!samePath(env.pm_err_log_path, expectedApp.errorFile)) {
-      failures.push(`PM2 app ${expectedApp.name} error log is ${env.pm_err_log_path}; expected ${expectedApp.errorFile}`);
+    if (!samePath(actualErrorLog, expectedApp.errorFile)) {
+      failures.push(`PM2 app ${expectedApp.name} error log is ${actualErrorLog}; expected ${expectedApp.errorFile}`);
     }
-    if (env.env?.PWD && !samePath(env.env.PWD, expectedApp.cwd)) {
-      failures.push(`PM2 app ${expectedApp.name} env.PWD is ${env.env.PWD}; expected ${expectedApp.cwd}`);
+    if (actualPwd && !samePath(actualPwd, expectedApp.cwd)) {
+      failures.push(`PM2 app ${expectedApp.name} env.PWD is ${actualPwd}; expected ${expectedApp.cwd}`);
     }
   }
 
