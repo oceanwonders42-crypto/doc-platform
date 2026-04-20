@@ -1,14 +1,21 @@
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { pgPool } from "../db/pg";
 import {
   buildJobDedupeKey,
+  getFirmConcurrencyActiveCount,
+  heartbeatFirmConcurrencyLease,
   popJob,
   requeueJob,
+  releaseFirmConcurrencyLease,
+  getRedisQueueSnapshot,
   enqueueClassificationJob,
   enqueueExtractionJob,
   enqueueCaseMatchJob,
   settleJobDeduplication,
+  tryAcquireFirmConcurrencyLease,
+  type FirmConcurrencyLease,
   type JobPayload,
   type PostRouteSyncJobPayload,
 } from "../services/queue";
@@ -57,7 +64,51 @@ async function sleep(ms: number) {
 
 const OCR_REQUEUE_DELAY_MS = 50;
 let activeOcrJobCount = 0;
+const DEFAULT_MAX_QUEUED_JOBS_PER_FIRM = 20;
+const DEFAULT_MAX_CONCURRENT_JOBS_PER_FIRM = 2;
+let currentDocumentWorkerPerFirmConcurrency = DEFAULT_MAX_CONCURRENT_JOBS_PER_FIRM;
+let currentDocumentWorkerFirmQueuedCap = DEFAULT_MAX_QUEUED_JOBS_PER_FIRM;
 let currentDocumentWorkerOcrConcurrency = 1;
+
+function getPerFirmQueuedLimit(): number {
+  return Math.max(1, currentDocumentWorkerFirmQueuedCap);
+}
+
+function getPerFirmConcurrentLimit(): number {
+  return Math.max(1, currentDocumentWorkerPerFirmConcurrency);
+}
+
+async function shouldDeferJobForFirmCap(
+  firmId: string | null,
+  queuedLimit = getPerFirmQueuedLimit(),
+  concurrentLimit = getPerFirmConcurrentLimit()
+): Promise<{
+  defer: boolean;
+  activeForFirm: number;
+  queuedForFirm: number;
+}> {
+  if (!firmId) {
+    return { defer: false, activeForFirm: 0, queuedForFirm: 0 };
+  }
+
+  try {
+    const snapshot = await getRedisQueueSnapshot();
+    const activeForFirm = snapshot.byFirm[firmId]?.running ?? 0;
+    const firmQueued = snapshot.byFirm[firmId]?.queued ?? 0;
+    return {
+      defer: shouldDeferJobForFirmLimits(activeForFirm, firmQueued, queuedLimit, concurrentLimit),
+      activeForFirm,
+      queuedForFirm: firmQueued,
+    };
+  } catch {
+    const activeForFirm = await getFirmConcurrencyActiveCount(firmId, concurrentLimit).catch(() => 0);
+    return {
+      defer: activeForFirm >= Math.max(1, concurrentLimit),
+      activeForFirm,
+      queuedForFirm: 0,
+    };
+  }
+}
 
 function normalizeDeferredJobAttempt(value: number | undefined): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 1;
@@ -67,6 +118,60 @@ function parseQueuedAt(value: string | undefined): Date | null {
   if (!value) return null;
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function buildFirmConcurrencyToken(
+  loopLabel: string,
+  job: JobPayload,
+  attempt: number,
+  documentId: string | null,
+  caseId: string | null
+): string {
+  return [
+    loopLabel,
+    job.type,
+    job.firmId,
+    documentId ?? caseId ?? "job",
+    String(attempt),
+    randomUUID(),
+  ].join(":");
+}
+
+function startFirmConcurrencyLeaseHeartbeat(
+  lease: FirmConcurrencyLease,
+  context: {
+    loopLabel: string;
+    jobType: JobPayload["type"];
+    firmId: string;
+    documentId: string | null;
+    caseId: string | null;
+  }
+): NodeJS.Timeout {
+  const heartbeatIntervalMs = Math.max(5_000, Math.trunc(lease.ttlMs / 3));
+  const timer = setInterval(() => {
+    heartbeatFirmConcurrencyLease(lease)
+      .then((refreshed) => {
+        if (!refreshed) {
+          console.warn(`[${context.loopLabel}] lost shared firm concurrency lease heartbeat`, {
+            firmId: context.firmId,
+            jobType: context.jobType,
+            documentId: context.documentId,
+            caseId: context.caseId,
+          });
+        }
+      })
+      .catch((error) => {
+        console.warn(`[${context.loopLabel}] failed to refresh shared firm concurrency lease`, {
+          firmId: context.firmId,
+          jobType: context.jobType,
+          documentId: context.documentId,
+          caseId: context.caseId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, heartbeatIntervalMs);
+  timer.unref?.();
+  return timer;
 }
 
 function resolveDeferredJobType(job: { type?: string }): DeferredJobType | null {
@@ -1189,10 +1294,10 @@ async function runDocumentWorkerLoop(loopLabel: string): Promise<void> {
 
     let outcome: "completed" | "failed" = "completed";
     let errorMessage: string | null = null;
+    let holdsFirmSlot = false;
+    let firmConcurrencyLease: FirmConcurrencyLease | null = null;
+    let firmConcurrencyHeartbeat: NodeJS.Timeout | null = null;
     const holdsOcrSlot = job.type === "ocr";
-    if (holdsOcrSlot) {
-      activeOcrJobCount += 1;
-    }
     const startedAt = new Date();
     const resolvedJobType = resolveDeferredJobType(job);
     const queuedAt = parseQueuedAt(job.queuedAt) ?? startedAt;
@@ -1202,6 +1307,94 @@ async function runDocumentWorkerLoop(loopLabel: string): Promise<void> {
     const caseId = "caseId" in job ? (job as { caseId?: string }).caseId ?? null : null;
 
     try {
+      if (!firmId) {
+        outcome = "failed";
+        errorMessage = "Invalid job payload: missing firmId";
+        console.warn(`${loopLabel} invalid job payload (missing firmId):`, job);
+        continue;
+      }
+
+      const firmCapState = await shouldDeferJobForFirmCap(firmId);
+      if (firmCapState.defer) {
+        try {
+          await requeueJob(job);
+          logInfo("document_worker_fairness", {
+            stage: "firm_cap_defer",
+            workerLabel: loopLabel,
+            firmId,
+            jobType: job.type,
+            documentId,
+            caseId,
+            activeJobsForFirm: firmCapState.activeForFirm,
+            queuedJobsForFirm: firmCapState.queuedForFirm,
+            perFirmConcurrency: getPerFirmConcurrentLimit(),
+            perFirmQueuedCap: getPerFirmQueuedLimit(),
+          });
+          await sleep(OCR_REQUEUE_DELAY_MS);
+          continue;
+        } catch (error) {
+          console.warn(`[${loopLabel}] failed to defer firm-scoped job under fairness cap; processing inline`, {
+            error: error instanceof Error ? error.message : String(error),
+            firmId,
+            jobType: job.type,
+          });
+        }
+      }
+
+      const acquiredFirmLease = await tryAcquireFirmConcurrencyLease({
+        firmId,
+        limit: getPerFirmConcurrentLimit(),
+        token: buildFirmConcurrencyToken(loopLabel, job, attempt, documentId, caseId),
+      });
+      if (!acquiredFirmLease) {
+        try {
+          await requeueJob(job);
+          logInfo("document_worker_fairness", {
+            stage: "firm_cap_reservation_defer",
+            workerLabel: loopLabel,
+            firmId,
+            jobType: job.type,
+            documentId,
+            caseId,
+            activeJobsForFirm: await getFirmConcurrencyActiveCount(firmId, getPerFirmConcurrentLimit()).catch(() => null),
+            perFirmConcurrency: getPerFirmConcurrentLimit(),
+            perFirmQueuedCap: getPerFirmQueuedLimit(),
+          });
+          await sleep(OCR_REQUEUE_DELAY_MS);
+          continue;
+        } catch (error) {
+          console.warn(`[${loopLabel}] failed to defer firm-scoped job after shared cap denial; processing inline`, {
+            error: error instanceof Error ? error.message : String(error),
+            firmId,
+            jobType: job.type,
+          });
+        }
+      } else {
+        firmConcurrencyLease = acquiredFirmLease.lease;
+        firmConcurrencyHeartbeat = startFirmConcurrencyLeaseHeartbeat(firmConcurrencyLease, {
+          loopLabel,
+          jobType: job.type,
+          firmId,
+          documentId,
+          caseId,
+        });
+      }
+
+      holdsFirmSlot = true;
+      logInfo("document_worker_fairness", {
+        stage: "job_start",
+        workerLabel: loopLabel,
+        firmId,
+        jobType: job.type,
+        documentId,
+        caseId,
+        activeJobsForFirm: acquiredFirmLease?.activeJobsForFirm ?? null,
+      });
+
+      if (holdsOcrSlot) {
+        activeOcrJobCount += 1;
+      }
+
       if (job.type === "timeline_rebuild") {
         await handleTimelineRebuild(job.caseId, job.firmId);
       } else if (job.type === "post_route_sync") {
@@ -1258,6 +1451,25 @@ async function runDocumentWorkerLoop(loopLabel: string): Promise<void> {
       }
       await sleep(1000);
     } finally {
+      if (holdsFirmSlot && firmId) {
+        if (firmConcurrencyHeartbeat) {
+          clearInterval(firmConcurrencyHeartbeat);
+        }
+        const remainingFirmJobs = firmConcurrencyLease
+          ? (await releaseFirmConcurrencyLease(firmConcurrencyLease)).activeJobsForFirm
+          : null;
+        logInfo("document_worker_fairness", {
+          stage: "job_finish",
+          workerLabel: loopLabel,
+          firmId,
+          jobType: job.type,
+          documentId,
+          caseId,
+          activeJobsForFirm: remainingFirmJobs,
+          outcome,
+        });
+      }
+
       if (holdsOcrSlot) {
         activeOcrJobCount = Math.max(0, activeOcrJobCount - 1);
       }
@@ -1340,12 +1552,67 @@ export function getDocumentWorkerOcrConcurrency(
   return Math.min(normalizeWorkerConcurrency(parsed, workerConcurrency), workerConcurrency);
 }
 
+function normalizePositiveLimit(value: number, fallback: number, max = 1000): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const normalized = Math.trunc(value);
+  if (normalized < 1) {
+    return fallback;
+  }
+
+  return Math.min(normalized, max);
+}
+
+export function getDocumentWorkerPerFirmConcurrency(
+  rawValue: string | null | undefined = process.env.DOCUMENT_WORKER_FIRM_CONCURRENCY ?? process.env.DOCUMENT_WORKER_PER_FIRM_CONCURRENCY,
+  workerConcurrency = getDocumentWorkerConcurrency()
+): number {
+  const fallback = Math.min(DEFAULT_MAX_CONCURRENT_JOBS_PER_FIRM, Math.max(1, workerConcurrency));
+  if (rawValue == null || rawValue.trim().length === 0) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  return Math.min(normalizeWorkerConcurrency(parsed, fallback), Math.max(1, workerConcurrency));
+}
+
+export function getDocumentWorkerFirmQueuedCap(
+  rawValue: string | null | undefined = process.env.DOCUMENT_WORKER_FIRM_QUEUE_CAP ?? process.env.DOCUMENT_WORKER_FIRM_QUEUED_CAP
+): number {
+  if (rawValue == null || rawValue.trim().length === 0) {
+    return DEFAULT_MAX_QUEUED_JOBS_PER_FIRM;
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  return normalizePositiveLimit(parsed, DEFAULT_MAX_QUEUED_JOBS_PER_FIRM);
+}
+
 export function shouldDeferJobForOcrCap(
   jobType: JobPayload["type"] | undefined,
   activeOcrJobs: number,
   ocrConcurrency: number
 ): boolean {
   return jobType === "ocr" && activeOcrJobs >= Math.max(1, ocrConcurrency);
+}
+
+export function shouldDeferJobForFirmLimits(
+  activeForFirm: number,
+  queuedForFirm: number,
+  queuedLimit: number,
+  concurrentLimit: number
+): boolean {
+  const normalizedConcurrentLimit = Math.max(1, concurrentLimit);
+  if (activeForFirm >= normalizedConcurrentLimit) {
+    return true;
+  }
+
+  if (queuedLimit <= 0 || activeForFirm <= 0) {
+    return false;
+  }
+
+  return queuedForFirm >= queuedLimit;
 }
 
 export function getDocumentWorkerLabels(baseLabel: string, concurrency: number): string[] {
@@ -1373,6 +1640,8 @@ export function startDocumentWorkerLoop(options?: {
   label?: string;
   concurrency?: number;
   ocrConcurrency?: number;
+  perFirmConcurrency?: number;
+  perFirmQueuedCap?: number;
   runLoop?: WorkerLoopRunner;
 }): Promise<void> {
   if (!workerLoopPromise) {
@@ -1385,11 +1654,24 @@ export function startDocumentWorkerLoop(options?: {
       options?.ocrConcurrency == null ? undefined : String(options.ocrConcurrency),
       concurrency
     );
+    const perFirmConcurrency = options?.perFirmConcurrency == null
+      ? getDocumentWorkerPerFirmConcurrency(undefined, concurrency)
+      : Math.min(normalizeWorkerConcurrency(options.perFirmConcurrency, 1), concurrency);
+    const perFirmQueuedCap = options?.perFirmQueuedCap == null
+      ? getDocumentWorkerFirmQueuedCap()
+      : normalizePositiveLimit(options.perFirmQueuedCap, DEFAULT_MAX_QUEUED_JOBS_PER_FIRM);
 
     activeOcrJobCount = 0;
     currentDocumentWorkerOcrConcurrency = ocrConcurrency;
+    currentDocumentWorkerPerFirmConcurrency = perFirmConcurrency;
+    currentDocumentWorkerFirmQueuedCap = perFirmQueuedCap;
 
-    console.log(`[${label}] starting document worker pool`, { concurrency, ocrConcurrency });
+    console.log(`[${label}] starting document worker pool`, {
+      concurrency,
+      ocrConcurrency,
+      perFirmConcurrency,
+      perFirmQueuedCap,
+    });
     workerLoopPromise = runDocumentWorkerPool({
       label,
       concurrency,
@@ -1403,4 +1685,6 @@ export function resetDocumentWorkerLoopForTest(): void {
   workerLoopPromise = null;
   activeOcrJobCount = 0;
   currentDocumentWorkerOcrConcurrency = 1;
+  currentDocumentWorkerPerFirmConcurrency = DEFAULT_MAX_CONCURRENT_JOBS_PER_FIRM;
+  currentDocumentWorkerFirmQueuedCap = DEFAULT_MAX_QUEUED_JOBS_PER_FIRM;
 }
