@@ -448,7 +448,7 @@ async function main() {
 
   const checklistArgs = [];
   if (allowDirty) checklistArgs.push("--allow-dirty");
-  if (allowStaleMeta) checklistArgs.push("--allow-stale-meta");
+  checklistArgs.push("--allow-stale-meta");
   await runChecklist(checklistArgs);
 
   await mkdir(path.join(repoRoot, "logs", "pm2"), { recursive: true });
