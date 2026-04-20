@@ -4,7 +4,9 @@ import {
   listClioContactRows,
   listClioMatterRows,
   renderClioContactsCsv,
+  renderClioContactsXlsx,
   renderClioMattersCsv,
+  renderClioMattersXlsx,
 } from "../exports/clioExport";
 import { getClioHandoffSummaryByCaseIds } from "./clioHandoffTracking";
 import { buildExportBundle } from "./export/contract";
@@ -44,9 +46,13 @@ export type BatchClioHandoffExportResult = {
   fileName: string;
   contactsFileName: string;
   mattersFileName: string;
+  contactsWorkbookFileName: string;
+  mattersWorkbookFileName: string;
   manifestFileName: string;
   contactsCsv: string;
   mattersCsv: string;
+  contactsXlsx: Buffer;
+  mattersXlsx: Buffer;
   manifest: BatchClioHandoffManifest;
 };
 
@@ -236,6 +242,10 @@ export async function buildBatchClioHandoffExport(
 
   const contactsCsv = renderClioContactsCsv(contactRows);
   const mattersCsv = renderClioMattersCsv(matterRows);
+  const [contactsXlsx, mattersXlsx] = await Promise.all([
+    renderClioContactsXlsx(contactRows),
+    renderClioMattersXlsx(matterRows),
+  ]);
   const manifest: BatchClioHandoffManifest = {
     exportTimestamp: exportedAt.toISOString(),
     includedCaseIds,
@@ -252,12 +262,16 @@ export async function buildBatchClioHandoffExport(
 
   const contactsFileName = `clio-contacts-batch-${datePart}.csv`;
   const mattersFileName = `clio-matters-batch-${datePart}.csv`;
+  const contactsWorkbookFileName = `clio-contacts-batch-${datePart}.xlsx`;
+  const mattersWorkbookFileName = `clio-matters-batch-${datePart}.xlsx`;
   const manifestFileName = "manifest.json";
   const fileName = `clio-handoff-batch-${datePart}.zip`;
   const zip = new JSZip();
 
   zip.file(contactsFileName, contactsCsv, { date: exportedAt });
   zip.file(mattersFileName, mattersCsv, { date: exportedAt });
+  zip.file(contactsWorkbookFileName, contactsXlsx, { date: exportedAt });
+  zip.file(mattersWorkbookFileName, mattersXlsx, { date: exportedAt });
   zip.file(manifestFileName, JSON.stringify(manifest, null, 2) + "\n", { date: exportedAt });
 
   const zipBuffer = await zip.generateAsync({
@@ -271,9 +285,13 @@ export async function buildBatchClioHandoffExport(
     fileName,
     contactsFileName,
     mattersFileName,
+    contactsWorkbookFileName,
+    mattersWorkbookFileName,
     manifestFileName,
     contactsCsv,
     mattersCsv,
+    contactsXlsx,
+    mattersXlsx,
     manifest,
   };
 }

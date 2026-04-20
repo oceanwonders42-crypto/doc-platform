@@ -1,8 +1,10 @@
+import { requirePlatformAdmin } from "../_lib/requirePlatformAdmin";
+
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  const base = process.env.DOC_API_URL;
-  if (!base) return new Response("Missing DOC_API_URL", { status: 500 });
+  const auth = await requirePlatformAdmin(req);
+  if (auth instanceof Response) return auth;
 
   const incoming = await req.formData();
   const apiKey = incoming.get("apiKey");
@@ -16,7 +18,7 @@ export async function POST(req: Request) {
 
   if (!incoming.get("source")) incoming.set("source", "web");
 
-  const upstream = await fetch(`${base}/ingest`, {
+  const upstream = await fetch(`${auth.base}/ingest`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,

@@ -262,6 +262,7 @@ model ClioHandoffExport {
   actorLabel       String?
   actorRole        String?
   archiveFileName  String?
+  archiveStorageKey String?
   contactsFileName String?
   mattersFileName  String?
   manifestFileName String?

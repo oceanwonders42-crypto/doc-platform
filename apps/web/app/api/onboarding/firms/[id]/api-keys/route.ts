@@ -1,22 +1,18 @@
 import { NextResponse } from "next/server";
+import { requirePlatformAdmin } from "../../../_lib/requirePlatformAdmin";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const base = process.env.DOC_API_URL;
-  const key = process.env.PLATFORM_ADMIN_API_KEY;
-  if (!base || !key) {
-    return NextResponse.json(
-      { ok: false, error: "DOC_API_URL or PLATFORM_ADMIN_API_KEY not set" },
-      { status: 500 }
-    );
-  }
+  const auth = await requirePlatformAdmin(req);
+  if (auth instanceof Response) return auth;
+
   const body = await req.json().catch(() => ({}));
-  const res = await fetch(`${base}/firms/${encodeURIComponent(id)}/api-keys`, {
+  const res = await fetch(`${auth.base}/firms/${encodeURIComponent(id)}/api-keys`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${key}`,
+      Authorization: auth.authorization,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),

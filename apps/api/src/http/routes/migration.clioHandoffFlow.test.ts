@@ -19,6 +19,83 @@ import {
   type BatchClioRouteManifest,
 } from "./cases.batchClioRouteTestUtils";
 
+type ClioHandoffAuditMeta = {
+  batchId: string;
+  handoffExportId: string | null;
+  hasIdempotencyKey: boolean;
+  outcomeType: "replay_success" | "replay_rejected_legacy" | "replay_rejected_data_changed" | "forced_reexport";
+  requestFingerprint: string | null;
+  reason: string | null;
+};
+
+type ClioHandoffAuditReviewItem = {
+  id: string;
+  createdAt: string;
+  outcomeType:
+    | "replay_success"
+    | "replay_rejected_legacy"
+    | "replay_rejected_data_changed"
+    | "forced_reexport"
+    | "unknown";
+  batchId: string | null;
+  handoffExportId: string | null;
+  hasIdempotencyKey: boolean;
+  reason: string | null;
+};
+
+async function assertLatestClioHandoffAuditOutcome(params: {
+  firmId: string;
+  outcomeType: ClioHandoffAuditMeta["outcomeType"];
+  expectedHandoffExportId?: string | null;
+  expectsIdempotencyKey?: boolean;
+}) {
+  const { firmId, outcomeType, expectedHandoffExportId, expectsIdempotencyKey } = params;
+  const logs = await prisma.systemErrorLog.findMany({
+    where: { firmId, area: "clio_handoff_audit" },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: { id: true, metaJson: true },
+  });
+  const matching = logs.find((log) => {
+    const meta = log.metaJson as unknown as Partial<ClioHandoffAuditMeta>;
+    return meta?.outcomeType === outcomeType;
+  });
+  assert(matching !== undefined, `Expected clio handoff audit outcome '${outcomeType}'.`);
+  const meta = matching!.metaJson as unknown as ClioHandoffAuditMeta;
+  if (expectsIdempotencyKey !== undefined) {
+    assert(
+      meta.hasIdempotencyKey === expectsIdempotencyKey,
+      `Expected audit outcome '${outcomeType}' to record idempotency key presence ${expectsIdempotencyKey}.`
+    );
+  }
+  if (expectedHandoffExportId !== undefined) {
+    assert(
+      meta.handoffExportId === expectedHandoffExportId,
+      `Expected audit outcome '${outcomeType}' to include handoff export id ${expectedHandoffExportId}, got ${meta.handoffExportId}`
+    );
+  }
+}
+
+async function fetchClioHandoffAuditItems(params: {
+  baseUrl: string;
+  token: string;
+  outcomeType?: ClioHandoffAuditMeta["outcomeType"];
+  limit?: number;
+}): Promise<ClioHandoffAuditReviewItem[]> {
+  const { baseUrl, token, outcomeType, limit = 100 } = params;
+  const query = new URLSearchParams({ limit: String(limit), ...(outcomeType ? { outcomeType } : {}) });
+  const response = await fetch(`${baseUrl}/me/clio-handoff-audit?${query.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  assert(response.status === 200, `Expected clio handoff audit endpoint to return 200, got ${response.status}`);
+  const payload = (await response.json()) as { ok?: boolean; items?: ClioHandoffAuditReviewItem[] };
+  assert(payload.ok === true, "Expected clio handoff audit endpoint response to be ok.");
+  assert(Array.isArray(payload.items), "Expected clio handoff audit endpoint to return an items array.");
+  return payload.items ?? [];
+}
+
 async function main() {
   const suffix = Date.now();
   const firmId = `migration-clio-flow-firm-${suffix}`;
@@ -26,6 +103,7 @@ async function main() {
   const caseId = `migration-clio-flow-case-${suffix}`;
   const contactId = `migration-clio-flow-contact-${suffix}`;
   const idempotencyKey = `migration-clio-flow-${suffix}`;
+  const legacyIdempotencyKey = `migration-clio-flow-legacy-${suffix}`;
   const originalSend = s3.send.bind(s3);
   const originalLpush = redis.lpush.bind(redis);
   const clioHandoffExportDelegate = prisma.clioHandoffExport as any;
@@ -81,6 +159,8 @@ async function main() {
   let secondCaseId: string | null = null;
   let driftContactId: string | null = null;
   let driftCaseId: string | null = null;
+  let firstHandoffExportId: string | null = null;
+  let legacyHandoffExportId: string | null = null;
   let mainError: unknown = null;
 
   try {
@@ -119,7 +199,7 @@ async function main() {
       data: {
         status: "UPLOADED",
         processingStage: "complete",
-        reviewState: "EXPORT_READY",
+        reviewState: "APPROVED",
         routedCaseId: caseId,
         routedSystem: "manual",
         routingStatus: "routed",
@@ -161,18 +241,77 @@ async function main() {
       exportSummary?: {
         readyForClioExport?: boolean;
         routedCaseIds?: string[];
+        exportReadyCaseIds?: string[];
+        blockedReason?: string | null;
         handoffCount?: number;
+      };
+      handoffReadiness?: {
+        state?: string;
+        canFinalize?: boolean;
       };
       handoffHistory?: unknown[];
     };
     assert(readyDetail.ok === true, "Expected ready detail payload to be ok.");
-    assert(readyDetail.batch?.status === "READY_FOR_EXPORT", `Expected batch status READY_FOR_EXPORT, got ${readyDetail.batch?.status}`);
-    assert(readyDetail.exportSummary?.readyForClioExport === true, "Expected batch to be ready for Clio export.");
+    assert(readyDetail.batch?.status === "NEEDS_REVIEW", `Expected batch status NEEDS_REVIEW before finalize, got ${readyDetail.batch?.status}`);
+    assert(readyDetail.exportSummary?.readyForClioExport === false, "Expected batch to stay blocked before finalize.");
     assert(
       readyDetail.exportSummary?.routedCaseIds?.includes(caseId) === true,
       "Expected routed case id to appear in export summary."
     );
+    assert(
+      (readyDetail.exportSummary?.exportReadyCaseIds?.length ?? 0) === 0,
+      "Expected no export-ready case ids before finalize."
+    );
+    assert(
+      readyDetail.exportSummary?.blockedReason === "Finalize approved routed documents before downloading the Clio handoff package.",
+      `Unexpected blockedReason before finalize: ${readyDetail.exportSummary?.blockedReason}`
+    );
+    assert(
+      readyDetail.handoffReadiness?.state === "NEEDS_REVIEW" &&
+        readyDetail.handoffReadiness?.canFinalize === true,
+      "Expected handoff readiness to require finalize before export."
+    );
     assert((readyDetail.handoffHistory?.length ?? 0) === 0, "Expected no handoff history before export.");
+
+    const finalizeResponse = await fetch(`${baseUrl}/migration/batches/${createdBatchId}/review/ready-for-handoff`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+    assert(finalizeResponse.status === 200, `Expected finalize route to return 200, got ${finalizeResponse.status}`);
+    const finalizeJson = (await finalizeResponse.json()) as {
+      ok?: boolean;
+      markedExportReadyCount?: number;
+      batch?: { status?: string };
+      exportSummary?: {
+        readyForClioExport?: boolean;
+        exportReadyCaseIds?: string[];
+      };
+      handoffReadiness?: {
+        state?: string;
+      };
+    };
+    assert(finalizeJson.ok === true, "Expected finalize response to be ok.");
+    assert(
+      finalizeJson.markedExportReadyCount === 2,
+      `Expected finalize route to mark 2 docs export-ready, got ${finalizeJson.markedExportReadyCount}`
+    );
+    assert(
+      finalizeJson.batch?.status === "READY_FOR_EXPORT",
+      `Expected batch status READY_FOR_EXPORT after finalize, got ${finalizeJson.batch?.status}`
+    );
+    assert(
+      finalizeJson.exportSummary?.readyForClioExport === true &&
+        finalizeJson.exportSummary?.exportReadyCaseIds?.includes(caseId) === true,
+      "Expected finalize route to make the batch export-ready."
+    );
+    assert(
+      finalizeJson.handoffReadiness?.state === "READY_FOR_HANDOFF",
+      `Expected READY_FOR_HANDOFF after finalize, got ${finalizeJson.handoffReadiness?.state}`
+    );
 
     const exportResponse = await fetch(`${baseUrl}/migration/batches/${createdBatchId}/exports/clio/handoff`, {
       method: "POST",
@@ -225,6 +364,11 @@ async function main() {
       },
     });
     assert(exportsAfterFirstRun.length === 1, `Expected 1 persisted handoff export, got ${exportsAfterFirstRun.length}`);
+    firstHandoffExportId = exportsAfterFirstRun[0]?.id ?? null;
+    assert(
+      firstHandoffExportId !== null && firstHandoffExportId.length > 0,
+      "Expected the first handoff export record id to be present."
+    );
     assert(
       exportsAfterFirstRun[0]?.memberships.some((membership) => membership.caseId === caseId && membership.status === "INCLUDED") === true,
       "Expected persisted handoff export to include the migration case."
@@ -233,6 +377,111 @@ async function main() {
       exportsAfterFirstRun[0]?.migrationBatchHandoffs.some((item) => item.batchId === createdBatchId) === true,
       "Expected migration batch to be linked to the persisted Clio handoff export."
     );
+
+    const legacyExportResponse = await fetch(`${baseUrl}/migration/batches/${createdBatchId}/exports/clio/handoff`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": legacyIdempotencyKey,
+      },
+      body: JSON.stringify({}),
+    });
+    assert(
+      legacyExportResponse.status === 200,
+      `Expected legacy base handoff to return 200, got ${legacyExportResponse.status}`
+    );
+    await parseZip(legacyExportResponse);
+
+    const legacyExports = await prisma.clioHandoffExport.findMany({
+      where: {
+        firmId,
+        idempotencyKey: legacyIdempotencyKey,
+      },
+      include: {
+        migrationBatchHandoffs: true,
+      },
+      orderBy: [{ exportedAt: "desc" }, { createdAt: "desc" }],
+    });
+    assert(legacyExports.length === 1, `Expected one legacy export record, got ${legacyExports.length}`);
+    const legacyExport = legacyExports[0];
+    legacyHandoffExportId = legacyExport?.id ?? null;
+    assert(
+      legacyExport?.migrationBatchHandoffs.some((item) => item.batchId === createdBatchId) === true,
+      "Expected legacy export to be linked to the migration batch."
+    );
+    await prisma.clioHandoffExport.update({
+      where: { id: legacyExport.id },
+      data: { manifestJson: {} },
+    });
+
+    const legacyReplayResponse = await fetch(`${baseUrl}/migration/batches/${createdBatchId}/exports/clio/handoff`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": legacyIdempotencyKey,
+      },
+      body: JSON.stringify({}),
+    });
+    assert(
+      legacyReplayResponse.status === 409,
+      `Expected legacy replay attempt to return 409, got ${legacyReplayResponse.status}`
+    );
+    const legacyReplayJson = (await legacyReplayResponse.json()) as { ok?: boolean; error?: string };
+    assert(legacyReplayJson.ok === false, "Expected legacy replay response to be not ok.");
+    assert(
+      String(legacyReplayJson.error ?? "").includes("cannot be safely replayed"),
+      `Expected explicit legacy replay reason, got ${legacyReplayJson.error}`
+    );
+    await assertLatestClioHandoffAuditOutcome({
+      firmId,
+      outcomeType: "replay_rejected_legacy",
+      expectedHandoffExportId: legacyHandoffExportId,
+      expectsIdempotencyKey: true,
+    });
+
+    const legacyOverrideResponse = await fetch(`${baseUrl}/migration/batches/${createdBatchId}/exports/clio/handoff`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": legacyIdempotencyKey,
+      },
+      body: JSON.stringify({ allowReexport: true, reexportReason: "operator_override" }),
+    });
+    assert(
+      legacyOverrideResponse.status === 200,
+      `Expected legacy override handoff to return 200, got ${legacyOverrideResponse.status}`
+    );
+    assert(
+      getHeader(legacyOverrideResponse, "content-type").includes("application/zip"),
+      "Expected legacy override handoff to return a ZIP."
+    );
+    const legacyOverrideRecord = await prisma.migrationBatchClioHandoff.findFirst({
+      where: {
+        batchId: createdBatchId!,
+        firmId,
+      },
+      orderBy: { createdAt: "desc" },
+      select: { clioHandoffExportId: true },
+    });
+    const legacyOverrideExportId = legacyOverrideRecord?.clioHandoffExportId;
+    if (typeof legacyOverrideExportId !== "string" || legacyOverrideExportId.length === 0) {
+      throw new Error("Expected legacy override handoff export id.");
+    }
+    const legacyOverrideExportRecord = await prisma.clioHandoffExport.findFirst({
+      where: { id: legacyOverrideExportId },
+    });
+    if (legacyOverrideExportRecord === null) {
+      throw new Error("Expected legacy override handoff export record.");
+    }
+    await assertLatestClioHandoffAuditOutcome({
+      firmId,
+      outcomeType: "forced_reexport",
+      expectedHandoffExportId: legacyOverrideExportRecord.id,
+      expectsIdempotencyKey: true,
+    });
 
     const replayResponse = await fetch(`${baseUrl}/migration/batches/${createdBatchId}/exports/clio/handoff`, {
       method: "POST",
@@ -248,12 +497,28 @@ async function main() {
       replayResponse.headers.get("X-Clio-Idempotent-Replay") == null,
       "Expected rebuilt same-request handoff response to omit X-Clio-Idempotent-Replay."
     );
+    await assertLatestClioHandoffAuditOutcome({
+      firmId,
+      outcomeType: "replay_success",
+      expectedHandoffExportId: firstHandoffExportId,
+      expectsIdempotencyKey: true,
+    });
 
     await prisma.legalCase.update({
       where: { id: caseId },
       data: { caseNumber: `MIG-${suffix}-DRIFT` },
     });
 
+    const exportsBeforeStaleReplay = await prisma.clioHandoffExport.count({
+      where: {
+        firmId,
+        memberships: {
+          some: {
+            caseId,
+          },
+        },
+      },
+    });
     const staleReplayResponse = await fetch(`${baseUrl}/migration/batches/${createdBatchId}/exports/clio/handoff`, {
       method: "POST",
       headers: {
@@ -273,6 +538,12 @@ async function main() {
       String(staleReplayJson.error ?? "").includes("data changed"),
       `Expected stale replay to report changed underlying data, got ${staleReplayJson.error}`
     );
+    await assertLatestClioHandoffAuditOutcome({
+      firmId,
+      outcomeType: "replay_rejected_data_changed",
+      expectedHandoffExportId: firstHandoffExportId,
+      expectsIdempotencyKey: true,
+    });
 
     const exportsAfterReplay = await prisma.clioHandoffExport.findMany({
       where: {
@@ -287,10 +558,13 @@ async function main() {
         migrationBatchHandoffs: true,
       },
     });
-    assert(exportsAfterReplay.length === 1, `Expected replay to preserve a single handoff export record, got ${exportsAfterReplay.length}`);
     assert(
-      exportsAfterReplay[0]?.migrationBatchHandoffs.length === 1,
-      `Expected replay to preserve one migration-batch handoff link, got ${exportsAfterReplay[0]?.migrationBatchHandoffs.length ?? 0}`
+      exportsAfterReplay.length === exportsBeforeStaleReplay,
+      `Expected stale replay attempt to preserve handoff export count, got ${exportsAfterReplay.length}`
+    );
+    assert(
+      exportsAfterReplay.some((item) => item.migrationBatchHandoffs.length === 1),
+      "Expected replay flow to preserve batch handoff linkage."
     );
 
     driftContactId = `migration-clio-flow-contact-drift-${suffix}`;
@@ -363,12 +637,18 @@ async function main() {
     };
     assert(driftDetail.ok === true, "Expected drift detail payload to be ok.");
     assert(driftDetail.batch?.status === "EXPORTED", `Expected drifted batch to remain EXPORTED, got ${driftDetail.batch?.status}`);
-    assert(driftDetail.exportSummary?.handoffCount === 1, `Expected drifted batch handoffCount=1, got ${driftDetail.exportSummary?.handoffCount}`);
+    assert(
+      (driftDetail.exportSummary?.handoffCount ?? 0) >= 1,
+      `Expected at least one handoff for drifted batch, got ${driftDetail.exportSummary?.handoffCount}`
+    );
     assert(
       driftDetail.exportSummary?.routedCaseIds?.includes(driftCaseId) === true,
       "Expected the drifted batch to reflect the new routed case id."
     );
-    assert((driftDetail.handoffHistory?.length ?? 0) === 1, `Expected one handoff history item after drift conflict, got ${driftDetail.handoffHistory?.length ?? 0}`);
+    assert(
+      (driftDetail.handoffHistory?.length ?? 0) >= 1,
+      `Expected at least one handoff history item after drift conflict, got ${driftDetail.handoffHistory?.length ?? 0}`
+    );
 
     secondContactId = `migration-clio-flow-contact-two-${suffix}`;
     secondCaseId = `migration-clio-flow-case-two-${suffix}`;
@@ -535,11 +815,57 @@ async function main() {
     };
     assert(exportedDetail.ok === true, "Expected exported detail payload to be ok.");
     assert(exportedDetail.batch?.status === "EXPORTED", `Expected batch status EXPORTED, got ${exportedDetail.batch?.status}`);
-    assert(exportedDetail.exportSummary?.handoffCount === 1, `Expected handoffCount=1, got ${exportedDetail.exportSummary?.handoffCount}`);
+    assert(
+      (exportedDetail.exportSummary?.handoffCount ?? 0) >= 1,
+      `Expected at least one handoff, got ${exportedDetail.exportSummary?.handoffCount}`
+    );
     assert(typeof exportedDetail.exportSummary?.lastHandoffAt === "string", "Expected last handoff timestamp after export.");
-    assert((exportedDetail.handoffHistory?.length ?? 0) === 1, `Expected one batch handoff history item, got ${exportedDetail.handoffHistory?.length ?? 0}`);
+    assert((exportedDetail.handoffHistory?.length ?? 0) >= 1, `Expected at least one batch handoff history item, got ${exportedDetail.handoffHistory?.length ?? 0}`);
 
-    const historyResponse = await fetch(`${baseUrl}/cases/exports/clio/history?limit=5`, {
+    const clioHandoffAuditItems = await fetchClioHandoffAuditItems({ baseUrl, token, limit: 200 });
+    const outcomeTypes = new Set(clioHandoffAuditItems.map((item) => item.outcomeType));
+    assert(
+      outcomeTypes.has("replay_success"),
+      "Expected clio handoff audit review surface to include a replay_success outcome."
+    );
+    assert(
+      outcomeTypes.has("replay_rejected_legacy"),
+      "Expected clio handoff audit review surface to include a replay_rejected_legacy outcome."
+    );
+    assert(
+      outcomeTypes.has("replay_rejected_data_changed"),
+      "Expected clio handoff audit review surface to include a replay_rejected_data_changed outcome."
+    );
+    assert(
+      outcomeTypes.has("forced_reexport"),
+      "Expected clio handoff audit review surface to include a forced_reexport outcome."
+    );
+
+    const replayLegacy = clioHandoffAuditItems.find((item) => item.outcomeType === "replay_rejected_legacy");
+    const replayChanged = clioHandoffAuditItems.find((item) => item.outcomeType === "replay_rejected_data_changed");
+    const replaySuccess = clioHandoffAuditItems.find((item) => item.outcomeType === "replay_success");
+    const forcedReexport = clioHandoffAuditItems.find((item) => item.outcomeType === "forced_reexport");
+    if (replayLegacy === undefined) throw new Error("Expected to locate replay_rejected_legacy audit review row.");
+    if (replayChanged === undefined) throw new Error("Expected to locate replay_rejected_data_changed audit review row.");
+    if (replaySuccess === undefined) throw new Error("Expected to locate replay_success audit review row.");
+    if (forcedReexport === undefined) throw new Error("Expected to locate forced_reexport audit review row.");
+    assert(replayLegacy.batchId === createdBatchId, "Expected replay_rejected_legacy item to include the migration batch id.");
+    assert(replayChanged.batchId === createdBatchId, "Expected replay_rejected_data_changed item to include the migration batch id.");
+    assert(replaySuccess.batchId === createdBatchId, "Expected replay_success item to include the migration batch id.");
+    assert(forcedReexport.batchId === createdBatchId, "Expected forced_reexport item to include the migration batch id.");
+    assert(
+      replayLegacy.reason?.toLowerCase().includes("legacy") === true,
+      "Expected replay_rejected_legacy item to include legacy reason."
+    );
+    assert(
+      replayChanged.reason?.toLowerCase().includes("data changed") === true ||
+        replayChanged.reason?.toLowerCase().includes("manifest") === true,
+      "Expected replay_rejected_data_changed item to include changed-data reason."
+    );
+    assert(replaySuccess.hasIdempotencyKey === true, "Expected replay_success item to preserve idempotency flag.");
+    assert(forcedReexport.hasIdempotencyKey === true, "Expected forced_reexport item to preserve idempotency flag.");
+
+    const historyResponse = await fetch(`${baseUrl}/cases/exports/clio/history?limit=20`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     assert(historyResponse.status === 200, `Expected history route to return 200, got ${historyResponse.status}`);
@@ -552,7 +878,11 @@ async function main() {
     };
     assert(historyJson.ok === true, "Expected history route response to be ok.");
     assert(
-      historyJson.items?.some((item) => item.exportId === exportsAfterReplay[0]?.id && item.includedCases.some((entry) => entry.caseId === caseId)) === true,
+      historyJson.items?.some(
+        (item) =>
+          item.exportId === firstHandoffExportId &&
+          item.includedCases.some((entry) => entry.caseId === caseId)
+      ) === true,
       "Expected export history to include the persisted migration handoff."
     );
 
@@ -589,6 +919,9 @@ async function main() {
       if (batchIds.length > 0) {
         await prisma.migrationBatch.deleteMany({ where: { id: { in: batchIds } } });
       }
+      await prisma.systemErrorLog.deleteMany({
+        where: { firmId, area: "clio_handoff_audit" },
+      });
       await prisma.legalCase.deleteMany({ where: { id: caseId } });
       if (driftCaseId) {
         await prisma.legalCase.deleteMany({ where: { id: driftCaseId } });

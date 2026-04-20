@@ -91,10 +91,32 @@ export type MigrationBatchHandoffHistoryItem = {
   exportedAt: string;
   actorLabel: string | null;
   archiveFileName: string | null;
+  archiveAvailable: boolean;
   contactsFileName: string | null;
   mattersFileName: string | null;
   includedCaseCount: number;
   skippedCaseCount: number;
+};
+
+export type MigrationBatchHandoffReadiness = {
+  state: "PROCESSING" | "NEEDS_REVIEW" | "READY_FOR_HANDOFF" | "HANDED_OFF";
+  canFinalize: boolean;
+  canDownloadPackage: boolean;
+  nextAction: string;
+  issueCount: number;
+  blockingIssueCount: number;
+  warningIssueCount: number;
+  contactCount: number;
+  contactNeedsReviewCount: number;
+  matterCount: number;
+  matterNeedsReviewCount: number;
+  matterExportReadyCount: number;
+  routedDocumentCount: number;
+  approvedDocumentCount: number;
+  exportReadyDocumentCount: number;
+  inReviewDocumentCount: number;
+  rejectedDocumentCount: number;
+  failedDocumentCount: number;
 };
 
 export type MigrationBatchDetail = {
@@ -157,13 +179,28 @@ export type MigrationBatchDetail = {
   exportSummary: {
     routedCaseIds: string[];
     routedCaseNumbers: string[];
+    exportReadyCaseIds: string[];
+    exportReadyCaseNumbers: string[];
     readyForClioExport: boolean;
     blockedReason: string | null;
     handoffCount: number;
     lastHandoffAt: string | null;
   };
+  handoffReadiness: MigrationBatchHandoffReadiness;
   handoffHistory: MigrationBatchHandoffHistoryItem[];
 };
+
+export type MigrationBatchFinalizeResult =
+  | {
+      ok: true;
+      markedExportReadyCount: number;
+      detail: MigrationBatchDetail;
+    }
+  | {
+      ok: false;
+      error: string;
+      detail: MigrationBatchDetail;
+    };
 
 const REVIEW_ACTIVITY_ACTIONS = [
   "approved",
@@ -297,6 +334,7 @@ async function loadBatchHandoffHistory(firmId: string, batchId: string): Promise
           exportedAt: true,
           actorLabel: true,
           archiveFileName: true,
+          archiveStorageKey: true,
           contactsFileName: true,
           mattersFileName: true,
           memberships: {
@@ -321,6 +359,7 @@ async function loadBatchHandoffHistory(firmId: string, batchId: string): Promise
       exportedAt: item.clioHandoffExport.exportedAt.toISOString(),
       actorLabel: item.clioHandoffExport.actorLabel ?? null,
       archiveFileName: item.clioHandoffExport.archiveFileName ?? null,
+      archiveAvailable: item.clioHandoffExport.archiveStorageKey != null,
       contactsFileName: item.clioHandoffExport.contactsFileName ?? null,
       mattersFileName: item.clioHandoffExport.mattersFileName ?? null,
       includedCaseCount,
@@ -487,9 +526,20 @@ function pickMatterDescription(
   return `Scanned matter ${doc.originalName}`;
 }
 
-function getBatchBlockedReason(flags: MigrationBatchReviewFlag[], routedCaseIds: string[]): string | null {
-  if (flags.length > 0) return "Resolve review flags before exporting this migration batch.";
-  if (routedCaseIds.length === 0) return "Route scanned documents to matters before exporting to Clio.";
+function getBatchBlockedReason(input: {
+  flags: MigrationBatchReviewFlag[];
+  routedCaseIds: string[];
+  exportReadyCaseIds: string[];
+  approvedDocumentCount: number;
+}): string | null {
+  if (input.flags.length > 0) return "Resolve review flags before exporting this migration batch.";
+  if (input.routedCaseIds.length === 0) return "Route scanned documents to matters before exporting to Clio.";
+  if (input.exportReadyCaseIds.length === 0) {
+    if (input.approvedDocumentCount > 0) {
+      return "Finalize approved routed documents before downloading the Clio handoff package.";
+    }
+    return "Mark routed documents export-ready before downloading the Clio handoff package.";
+  }
   return null;
 }
 
@@ -499,6 +549,7 @@ function deriveBatchStatus(input: {
   byStage: Record<string, number>;
   reviewFlags: MigrationBatchReviewFlag[];
   routedCaseIds: string[];
+  exportReadyCaseIds: string[];
   handoffHistory: MigrationBatchHandoffHistoryItem[];
 }): MigrationBatchStatus {
   if (input.totalDocuments === 0) return "UPLOADED";
@@ -514,13 +565,82 @@ function deriveBatchStatus(input: {
   if (input.reviewFlags.length > 0) {
     return "NEEDS_REVIEW";
   }
-  if (input.routedCaseIds.length === 0) {
+  if (input.routedCaseIds.length === 0 || input.exportReadyCaseIds.length === 0) {
     return "NEEDS_REVIEW";
   }
   if (input.handoffHistory.length > 0) {
     return "EXPORTED";
   }
   return "READY_FOR_EXPORT";
+}
+
+function buildHandoffReadiness(input: {
+  batchStatus: MigrationBatchStatus;
+  handoffHistory: MigrationBatchHandoffHistoryItem[];
+  blockedReason: string | null;
+  contactCandidates: MigrationBatchContactCandidate[];
+  matterCandidates: MigrationBatchMatterCandidate[];
+  reviewFlags: MigrationBatchReviewFlag[];
+  routedDocumentCount: number;
+  approvedDocumentCount: number;
+  exportReadyDocumentCount: number;
+  inReviewDocumentCount: number;
+  rejectedDocumentCount: number;
+  failedDocumentCount: number;
+}): MigrationBatchHandoffReadiness {
+  const blockingIssueCount = input.reviewFlags.filter((flag) => flag.severity === "error").length;
+  const warningIssueCount = input.reviewFlags.filter((flag) => flag.severity !== "error").length;
+  const state: MigrationBatchHandoffReadiness["state"] =
+    input.handoffHistory.length > 0
+      ? "HANDED_OFF"
+      : input.batchStatus === "PROCESSING" || input.batchStatus === "UPLOADED"
+        ? "PROCESSING"
+        : input.blockedReason
+          ? "NEEDS_REVIEW"
+          : "READY_FOR_HANDOFF";
+  const canFinalize =
+    input.handoffHistory.length === 0 &&
+    input.reviewFlags.length === 0 &&
+    input.routedDocumentCount > 0 &&
+    input.approvedDocumentCount > 0;
+  const canDownloadPackage =
+    input.handoffHistory.length > 0 ||
+    (input.blockedReason === null && input.exportReadyDocumentCount > 0);
+  let nextAction = "Download the final Clio handoff package.";
+  if (state === "PROCESSING") {
+    nextAction = "Wait for the batch to finish processing before review.";
+  } else if (state === "HANDED_OFF") {
+    nextAction = "Download the latest Clio handoff package or review prior handoff history.";
+  } else if (input.reviewFlags.length > 0) {
+    nextAction = "Review and fix the flagged contacts, matters, or documents before handoff.";
+  } else if (input.routedDocumentCount === 0) {
+    nextAction = "Route the batch documents to matters before handoff.";
+  } else if (input.exportReadyDocumentCount === 0 && input.approvedDocumentCount > 0) {
+    nextAction = "Finalize approved routed documents to mark the batch ready for Clio handoff.";
+  } else if (input.exportReadyDocumentCount === 0) {
+    nextAction = "Approve or fix routed documents so they become export-ready for handoff.";
+  }
+
+  return {
+    state,
+    canFinalize,
+    canDownloadPackage,
+    nextAction,
+    issueCount: input.reviewFlags.length,
+    blockingIssueCount,
+    warningIssueCount,
+    contactCount: input.contactCandidates.length,
+    contactNeedsReviewCount: input.contactCandidates.filter((candidate) => candidate.needsReview).length,
+    matterCount: input.matterCandidates.length,
+    matterNeedsReviewCount: input.matterCandidates.filter((candidate) => candidate.needsReview).length,
+    matterExportReadyCount: input.matterCandidates.filter((candidate) => candidate.exportReady).length,
+    routedDocumentCount: input.routedDocumentCount,
+    approvedDocumentCount: input.approvedDocumentCount,
+    exportReadyDocumentCount: input.exportReadyDocumentCount,
+    inReviewDocumentCount: input.inReviewDocumentCount,
+    rejectedDocumentCount: input.rejectedDocumentCount,
+    failedDocumentCount: input.failedDocumentCount,
+  };
 }
 
 export async function importMigrationBatch(
@@ -596,11 +716,15 @@ export async function syncMigrationBatchLifecycle(
   const byStage: Record<string, number> = {};
   const reviewFlags: MigrationBatchReviewFlag[] = [];
   const routedCaseIds = new Set<string>();
+  const exportReadyCaseIds = new Set<string>();
 
   for (const doc of documents) {
     byStatus[doc.status] = (byStatus[doc.status] ?? 0) + 1;
     byStage[doc.processingStage] = (byStage[doc.processingStage] ?? 0) + 1;
     if (doc.routedCaseId) routedCaseIds.add(doc.routedCaseId);
+    if (doc.routedCaseId && getEffectiveDocumentReviewState(doc) === "EXPORT_READY") {
+      exportReadyCaseIds.add(doc.routedCaseId);
+    }
     reviewFlags.push(
       ...buildReviewFlags(doc, recognitionByDocumentId.get(doc.id), trafficByDocumentId.get(doc.id))
     );
@@ -612,6 +736,7 @@ export async function syncMigrationBatchLifecycle(
     byStage,
     reviewFlags,
     routedCaseIds: [...routedCaseIds],
+    exportReadyCaseIds: [...exportReadyCaseIds],
     handoffHistory,
   });
 
@@ -720,6 +845,14 @@ export async function getMigrationBatchDetail(
   const matterCandidateMap = new Map<string, MigrationBatchMatterCandidate>();
   const routedCaseIds = new Set<string>();
   const routedCaseNumbers = new Set<string>();
+  const exportReadyCaseIds = new Set<string>();
+  const exportReadyCaseNumbers = new Set<string>();
+  let routedDocumentCount = 0;
+  let approvedDocumentCount = 0;
+  let exportReadyDocumentCount = 0;
+  let inReviewDocumentCount = 0;
+  let rejectedDocumentCount = 0;
+  let failedDocumentCount = 0;
 
   const detailDocuments: MigrationBatchDetail["documents"] = documents.map((doc) => {
     const recognition = recognitionByDocumentId.get(doc.id);
@@ -733,6 +866,7 @@ export async function getMigrationBatchDetail(
     reviewFlags.push(...docFlags);
 
     if (doc.status === "FAILED") {
+      failedDocumentCount += 1;
       failed.push({
         id: doc.id,
         originalName: doc.originalName,
@@ -742,10 +876,26 @@ export async function getMigrationBatchDetail(
     }
 
     if (doc.routedCaseId) {
+      routedDocumentCount += 1;
       routedCaseIds.add(doc.routedCaseId);
       if (trimToNull(routedCase?.caseNumber)) {
         routedCaseNumbers.add(trimToNull(routedCase?.caseNumber) as string);
       }
+    }
+    if (effectiveReviewState === "APPROVED") {
+      approvedDocumentCount += 1;
+    } else if (effectiveReviewState === "EXPORT_READY") {
+      exportReadyDocumentCount += 1;
+      if (doc.routedCaseId) {
+        exportReadyCaseIds.add(doc.routedCaseId);
+        if (trimToNull(routedCase?.caseNumber)) {
+          exportReadyCaseNumbers.add(trimToNull(routedCase?.caseNumber) as string);
+        }
+      }
+    } else if (effectiveReviewState === "IN_REVIEW") {
+      inReviewDocumentCount += 1;
+    } else if (effectiveReviewState === "REJECTED") {
+      rejectedDocumentCount += 1;
     }
 
     const contactName =
@@ -866,10 +1016,9 @@ export async function getMigrationBatchDetail(
     byStage,
     reviewFlags,
     routedCaseIds: [...routedCaseIds],
+    exportReadyCaseIds: [...exportReadyCaseIds],
     handoffHistory,
   });
-
-  const blockedReason = getBatchBlockedReason(reviewFlags, [...routedCaseIds]);
 
   await prisma.migrationBatch.update({
     where: { id: batchId },
@@ -888,6 +1037,26 @@ export async function getMigrationBatchDetail(
     paperlessSettings.reviewRequiredBeforeExport === false
       ? reviewFlags.filter((flag) => flag.code !== "needs_review")
       : reviewFlags;
+  const blockedReason = getBatchBlockedReason({
+    flags: filteredReviewFlags,
+    routedCaseIds: [...routedCaseIds],
+    exportReadyCaseIds: [...exportReadyCaseIds],
+    approvedDocumentCount,
+  });
+  const handoffReadiness = buildHandoffReadiness({
+    batchStatus: nextStatus,
+    handoffHistory,
+    blockedReason,
+    contactCandidates: [...contactCandidateMap.values()],
+    matterCandidates: [...matterCandidateMap.values()],
+    reviewFlags: filteredReviewFlags,
+    routedDocumentCount,
+    approvedDocumentCount,
+    exportReadyDocumentCount,
+    inReviewDocumentCount,
+    rejectedDocumentCount,
+    failedDocumentCount,
+  });
 
   return {
     batch: {
@@ -924,16 +1093,14 @@ export async function getMigrationBatchDetail(
     exportSummary: {
       routedCaseIds: [...routedCaseIds],
       routedCaseNumbers: [...routedCaseNumbers],
-      readyForClioExport: filteredReviewFlags.length === 0 && routedCaseIds.size > 0,
-      blockedReason:
-        filteredReviewFlags.length === 0
-          ? routedCaseIds.size > 0
-            ? null
-            : "Route scanned documents to matters before exporting to Clio."
-          : blockedReason,
+      exportReadyCaseIds: [...exportReadyCaseIds],
+      exportReadyCaseNumbers: [...exportReadyCaseNumbers],
+      readyForClioExport: filteredReviewFlags.length === 0 && exportReadyCaseIds.size > 0,
+      blockedReason,
       handoffCount: handoffHistory.length,
       lastHandoffAt: handoffHistory[0]?.exportedAt ?? null,
     },
+    handoffReadiness,
     handoffHistory,
   };
 }
@@ -944,14 +1111,76 @@ export async function buildMigrationBatchClioPreview(
   options: { allowReexport?: boolean } = {}
 ) {
   const detail = await getMigrationBatchDetail(firmId, batchId);
-  if (detail.exportSummary.routedCaseIds.length === 0) {
+  if (detail.exportSummary.exportReadyCaseIds.length === 0) {
     throw new Error("This migration batch does not have any routed cases ready for Clio export.");
   }
   return buildBatchClioHandoffExport({
     firmId,
-    caseIds: detail.exportSummary.routedCaseIds,
+    caseIds: detail.exportSummary.exportReadyCaseIds,
     allowReexport: options.allowReexport ?? true,
   });
+}
+
+export async function finalizeMigrationBatchForClioHandoff(
+  firmId: string,
+  batchId: string,
+  actor: string
+): Promise<MigrationBatchFinalizeResult> {
+  const detail = await getMigrationBatchDetail(firmId, batchId);
+  if (detail.reviewFlags.length > 0) {
+    return {
+      ok: false,
+      error: "Resolve review flags before marking this migration batch ready for Clio handoff.",
+      detail,
+    };
+  }
+
+  const eligibleDocuments = detail.documents.filter(
+    (doc) => doc.routedCaseId != null && doc.reviewState === "APPROVED"
+  );
+  if (eligibleDocuments.length === 0) {
+    if (detail.exportSummary.readyForClioExport) {
+      return { ok: true, markedExportReadyCount: 0, detail };
+    }
+    return {
+      ok: false,
+      error:
+        detail.exportSummary.blockedReason ??
+        "No approved routed documents are ready to mark export-ready for Clio handoff.",
+      detail,
+    };
+  }
+
+  const eligibleIds = eligibleDocuments.map((doc) => doc.id);
+  await prisma.$transaction(async (tx) => {
+    await tx.document.updateMany({
+      where: { firmId, id: { in: eligibleIds } },
+      data: { reviewState: "EXPORT_READY" },
+    });
+    await tx.documentAuditEvent.createMany({
+      data: eligibleDocuments.map((doc) => ({
+        documentId: doc.id,
+        firmId,
+        actor,
+        action: "review_state_changed",
+        fromCaseId: doc.routedCaseId,
+        toCaseId: doc.routedCaseId,
+        metaJson: {
+          fromReviewState: "APPROVED",
+          toReviewState: "EXPORT_READY",
+          source: "migration_batch_finalize",
+        },
+      })),
+    });
+  });
+
+  await syncMigrationBatchLifecycle(firmId, batchId);
+  const finalizedDetail = await getMigrationBatchDetail(firmId, batchId);
+  return {
+    ok: true,
+    markedExportReadyCount: eligibleDocuments.length,
+    detail: finalizedDetail,
+  };
 }
 
 export async function linkMigrationBatchToClioHandoff(

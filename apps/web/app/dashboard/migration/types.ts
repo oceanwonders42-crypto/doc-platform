@@ -98,10 +98,32 @@ export type MigrationBatchHandoffHistoryItem = {
   exportedAt: string;
   actorLabel: string | null;
   archiveFileName: string | null;
+  archiveAvailable: boolean;
   contactsFileName: string | null;
   mattersFileName: string | null;
   includedCaseCount: number;
   skippedCaseCount: number;
+};
+
+export type MigrationBatchHandoffReadiness = {
+  state: "PROCESSING" | "NEEDS_REVIEW" | "READY_FOR_HANDOFF" | "HANDED_OFF";
+  canFinalize: boolean;
+  canDownloadPackage: boolean;
+  nextAction: string;
+  issueCount: number;
+  blockingIssueCount: number;
+  warningIssueCount: number;
+  contactCount: number;
+  contactNeedsReviewCount: number;
+  matterCount: number;
+  matterNeedsReviewCount: number;
+  matterExportReadyCount: number;
+  routedDocumentCount: number;
+  approvedDocumentCount: number;
+  exportReadyDocumentCount: number;
+  inReviewDocumentCount: number;
+  rejectedDocumentCount: number;
+  failedDocumentCount: number;
 };
 
 export type MigrationBatchDetail = {
@@ -134,11 +156,14 @@ export type MigrationBatchDetail = {
   exportSummary: {
     routedCaseIds: string[];
     routedCaseNumbers: string[];
+    exportReadyCaseIds: string[];
+    exportReadyCaseNumbers: string[];
     readyForClioExport: boolean;
     blockedReason: string | null;
     handoffCount: number;
     lastHandoffAt: string | null;
   };
+  handoffReadiness: MigrationBatchHandoffReadiness;
   handoffHistory: MigrationBatchHandoffHistoryItem[];
 };
 

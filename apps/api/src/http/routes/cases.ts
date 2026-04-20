@@ -1,7 +1,14 @@
 import { ClioHandoffExportSubtype, ClioHandoffExportType, Prisma, Role } from "@prisma/client";
 import { Router, type Request } from "express";
 import { prisma } from "../../db/prisma";
-import { generateClioContactsCsv, generateClioMattersCsv, listClioContactRows, listClioMatterRows } from "../../exports/clioExport";
+import {
+  generateClioContactsCsv,
+  generateClioContactsXlsx,
+  generateClioMattersCsv,
+  generateClioMattersXlsx,
+  listClioContactRows,
+  listClioMatterRows,
+} from "../../exports/clioExport";
 import { buildBatchClioHandoffExport } from "../../services/batchClioHandoffExport";
 import {
   findRecentClioHandoffDuplicate,
@@ -555,6 +562,84 @@ router.get("/:id/exports/clio/contacts.csv", auth, requireRole(Role.STAFF), asyn
   }
 });
 
+router.get("/:id/exports/clio/contacts.xlsx", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const actor = await resolveClioHandoffActorSnapshot({
+      firmId,
+      userId: ((req as any).userId as string | null | undefined) ?? null,
+      apiKeyId: ((req as any).apiKeyId as string | null | undefined) ?? null,
+      authRole: ((req as any).authRole as string | null | undefined) ?? null,
+    });
+    const caseId = String(req.params.id ?? "");
+    const item = await prisma.legalCase.findFirst({
+      where: { id: caseId, firmId },
+      include: { clientContact: { select: CONTACT_SELECT } },
+    });
+    if (!item) return res.status(404).json({ ok: false, error: "Case not found" });
+    const handoffSummary = (await getClioHandoffSummaryByCaseIds(firmId, [caseId])).get(caseId);
+    const reExportOverride = getSingleCaseReexportOverride(req);
+    const reExportReason = reExportOverride
+      ? getSingleCaseReexportReason(req) ?? "operator_override"
+      : null;
+    if (handoffSummary?.alreadyExported && !reExportOverride) {
+      return res.status(409).json({
+        ok: false,
+        error: "This case has already been handed off to Clio. Turn on re-export anyway to export it again.",
+      });
+    }
+
+    const rows = await listClioContactRows(firmId, { caseIds: [caseId] });
+    if (rows.length === 0) {
+      return res.status(400).json({ ok: false, error: "This case does not have exportable client contact data yet." });
+    }
+
+    const xlsx = await generateClioContactsXlsx(firmId, { caseIds: [caseId] });
+    const fileBase = sanitizeFilePart(item.caseNumber ?? item.title ?? item.id, item.id);
+    const fileName = `${fileBase}-contact.xlsx`;
+    const idempotencyKey = getClioIdempotencyKey(req);
+    const requestFingerprint = buildSingleCaseRequestFingerprint(
+      caseId,
+      ClioHandoffExportSubtype.CONTACTS,
+      reExportOverride
+    );
+    const duplicate = await findRecentClioHandoffDuplicate({
+      firmId,
+      exportType: ClioHandoffExportType.SINGLE_CASE,
+      exportSubtype: ClioHandoffExportSubtype.CONTACTS,
+      idempotencyKey,
+      requestFingerprint,
+    });
+    if (!duplicate) {
+      await recordSingleCaseClioHandoff({
+        firmId,
+        actor,
+        exportSubtype: ClioHandoffExportSubtype.CONTACTS,
+        idempotencyKey,
+        requestFingerprint,
+        reExportOverride,
+        reExportReason,
+        isReExport: handoffSummary?.alreadyExported === true,
+        caseSnapshot: {
+          id: item.id,
+          caseNumber: item.caseNumber ?? null,
+          title: item.title ?? null,
+          clientName: item.clientContact?.fullName ?? item.clientName ?? null,
+        },
+        fileName,
+        rowCount: rows.length,
+      });
+    } else {
+      res.setHeader("X-Clio-Idempotent-Replay", "true");
+    }
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.send(xlsx);
+  } catch (e: unknown) {
+    res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });
+  }
+});
+
 router.get("/:id/exports/clio/matters.csv", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -628,6 +713,84 @@ router.get("/:id/exports/clio/matters.csv", auth, requireRole(Role.STAFF), async
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
     res.send(Buffer.from(csv, "utf-8"));
+  } catch (e: unknown) {
+    res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });
+  }
+});
+
+router.get("/:id/exports/clio/matters.xlsx", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const actor = await resolveClioHandoffActorSnapshot({
+      firmId,
+      userId: ((req as any).userId as string | null | undefined) ?? null,
+      apiKeyId: ((req as any).apiKeyId as string | null | undefined) ?? null,
+      authRole: ((req as any).authRole as string | null | undefined) ?? null,
+    });
+    const caseId = String(req.params.id ?? "");
+    const item = await prisma.legalCase.findFirst({
+      where: { id: caseId, firmId },
+      include: { clientContact: { select: CONTACT_SELECT } },
+    });
+    if (!item) return res.status(404).json({ ok: false, error: "Case not found" });
+    const handoffSummary = (await getClioHandoffSummaryByCaseIds(firmId, [caseId])).get(caseId);
+    const reExportOverride = getSingleCaseReexportOverride(req);
+    const reExportReason = reExportOverride
+      ? getSingleCaseReexportReason(req) ?? "operator_override"
+      : null;
+    if (handoffSummary?.alreadyExported && !reExportOverride) {
+      return res.status(409).json({
+        ok: false,
+        error: "This case has already been handed off to Clio. Turn on re-export anyway to export it again.",
+      });
+    }
+
+    const rows = await listClioMatterRows(firmId, { caseIds: [caseId] });
+    if (rows.length === 0) {
+      return res.status(400).json({ ok: false, error: "This case does not have exportable matter data yet." });
+    }
+
+    const xlsx = await generateClioMattersXlsx(firmId, { caseIds: [caseId] });
+    const fileBase = sanitizeFilePart(item.caseNumber ?? item.title ?? item.id, item.id);
+    const fileName = `${fileBase}-matter.xlsx`;
+    const idempotencyKey = getClioIdempotencyKey(req);
+    const requestFingerprint = buildSingleCaseRequestFingerprint(
+      caseId,
+      ClioHandoffExportSubtype.MATTERS,
+      reExportOverride
+    );
+    const duplicate = await findRecentClioHandoffDuplicate({
+      firmId,
+      exportType: ClioHandoffExportType.SINGLE_CASE,
+      exportSubtype: ClioHandoffExportSubtype.MATTERS,
+      idempotencyKey,
+      requestFingerprint,
+    });
+    if (!duplicate) {
+      await recordSingleCaseClioHandoff({
+        firmId,
+        actor,
+        exportSubtype: ClioHandoffExportSubtype.MATTERS,
+        idempotencyKey,
+        requestFingerprint,
+        reExportOverride,
+        reExportReason,
+        isReExport: handoffSummary?.alreadyExported === true,
+        caseSnapshot: {
+          id: item.id,
+          caseNumber: item.caseNumber ?? null,
+          title: item.title ?? null,
+          clientName: item.clientContact?.fullName ?? item.clientName ?? null,
+        },
+        fileName,
+        rowCount: rows.length,
+      });
+    } else {
+      res.setHeader("X-Clio-Idempotent-Replay", "true");
+    }
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.send(xlsx);
   } catch (e: unknown) {
     res.status(500).json({ ok: false, error: String((e as Error)?.message ?? e) });
   }

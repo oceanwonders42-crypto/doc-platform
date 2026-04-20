@@ -1,5 +1,6 @@
 import "dotenv/config";
 
+import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { Role } from "@prisma/client";
 
@@ -19,6 +20,21 @@ async function parseZip(response: Response) {
   const buffer = Buffer.from(await response.arrayBuffer());
   assert(buffer.length > 0, "Expected ZIP response body to be non-empty.");
   return JSZip.loadAsync(buffer);
+}
+
+async function parseWorkbook(response: Response): Promise<string[][]> {
+  const buffer = Buffer.from(await response.arrayBuffer());
+  assert(buffer.length > 0, "Expected XLSX response body to be non-empty.");
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer as any);
+  const worksheet = workbook.worksheets[0];
+  assert(!!worksheet, "Expected XLSX response to contain a worksheet.");
+  const rows: string[][] = [];
+  worksheet!.eachRow((row) => {
+    const rawValues = Array.isArray(row.values) ? row.values : [];
+    rows.push(rawValues.slice(1).map((cell: unknown) => (cell == null ? "" : String(cell))));
+  });
+  return rows;
 }
 
 async function main() {
@@ -180,18 +196,51 @@ async function main() {
     });
     assert(contactsResponse.status === 200, `Expected contacts export to return 200, got ${contactsResponse.status}`);
     const contactsCsv = await contactsResponse.text();
-    assert(contactsCsv.includes("first_name,last_name,company,primary_phone,email_address"), "Expected Clio contacts CSV header.");
+    assert(contactsCsv.includes("First Name,Last Name,Email,Phone,Address,Company"), "Expected Clio contacts CSV header.");
     assert(contactsCsv.includes("Alice"), "Expected contacts CSV to include Alice.");
     assert(contactsCsv.includes("Bob"), "Expected contacts CSV to include Bob.");
+
+    const contactsXlsxResponse = await fetch(`${baseUrl}/migration/batches/${batchId}/exports/clio/contacts.xlsx`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert(contactsXlsxResponse.status === 200, `Expected contacts XLSX export to return 200, got ${contactsXlsxResponse.status}`);
+    assert(
+      (contactsXlsxResponse.headers.get("content-type") ?? "").includes(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      ),
+      "Expected contacts XLSX export to return workbook content."
+    );
+    const contactWorkbookRows = await parseWorkbook(contactsXlsxResponse);
+    assert(contactWorkbookRows[0]?.join(",") === "First Name,Last Name,Email,Phone,Address,Company", "Expected contacts XLSX header.");
+    assert(contactWorkbookRows.some((row) => row.includes("Alice")), "Expected contacts XLSX to include Alice.");
+    assert(contactWorkbookRows.some((row) => row.includes("Bob")), "Expected contacts XLSX to include Bob.");
 
     const mattersResponse = await fetch(`${baseUrl}/migration/batches/${batchId}/exports/clio/matters.csv`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     assert(mattersResponse.status === 200, `Expected matters export to return 200, got ${mattersResponse.status}`);
     const mattersCsv = await mattersResponse.text();
-    assert(mattersCsv.includes("description,custom_number,status,client_first_name,client_last_name,client_company_name"), "Expected Clio matters CSV header.");
+    assert(mattersCsv.includes("Matter Name,Client,Matter Number,Description,Practice Area,Status"), "Expected Clio matters CSV header.");
     assert(mattersCsv.includes("BATCH-001"), "Expected matters CSV to include BATCH-001.");
     assert(mattersCsv.includes("BATCH-002"), "Expected matters CSV to include BATCH-002.");
+
+    const mattersXlsxResponse = await fetch(`${baseUrl}/migration/batches/${batchId}/exports/clio/matters.xlsx`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert(mattersXlsxResponse.status === 200, `Expected matters XLSX export to return 200, got ${mattersXlsxResponse.status}`);
+    assert(
+      (mattersXlsxResponse.headers.get("content-type") ?? "").includes(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      ),
+      "Expected matters XLSX export to return workbook content."
+    );
+    const matterWorkbookRows = await parseWorkbook(mattersXlsxResponse);
+    assert(
+      matterWorkbookRows[0]?.join(",") === "Matter Name,Client,Matter Number,Description,Practice Area,Status",
+      "Expected matters XLSX header."
+    );
+    assert(matterWorkbookRows.some((row) => row.includes("BATCH-001")), "Expected matters XLSX to include BATCH-001.");
+    assert(matterWorkbookRows.some((row) => row.includes("BATCH-002")), "Expected matters XLSX to include BATCH-002.");
 
     const handoffResponse = await fetch(`${baseUrl}/migration/batches/${batchId}/exports/clio/handoff`, {
       method: "POST",
@@ -208,6 +257,19 @@ async function main() {
     );
 
     const zip = await parseZip(handoffResponse);
+    const zipDatePart = new Date().toISOString().slice(0, 10);
+    const zipEntryNames = Object.keys(zip.files).sort();
+    assert(
+      JSON.stringify(zipEntryNames) ===
+        JSON.stringify([
+          `clio-contacts-batch-${zipDatePart}.csv`,
+          `clio-contacts-batch-${zipDatePart}.xlsx`,
+          `clio-matters-batch-${zipDatePart}.csv`,
+          `clio-matters-batch-${zipDatePart}.xlsx`,
+          "manifest.json",
+        ]),
+      `Expected handoff ZIP to include CSV and XLSX exports, got ${JSON.stringify(zipEntryNames)}`
+    );
     const manifestText = await zip.file("manifest.json")?.async("string");
     assert(typeof manifestText === "string" && manifestText.length > 0, "Expected manifest.json in ZIP response.");
     assert(manifestText!.includes(caseOneId), "Expected ZIP manifest to include the first case id.");

@@ -46,6 +46,7 @@
     "cors": "^2.8.6",
     "docx": "^9.5.0",
     "dotenv": "^17.3.1",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-session": "^1.18.1",
     "form-data": "^4.0.5",

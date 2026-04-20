@@ -4,6 +4,7 @@
  */
 import "dotenv/config";
 
+import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { ClioHandoffCaseStatus, ClioHandoffExportSubtype, ClioHandoffExportType } from "@prisma/client";
 import { prisma } from "../db/prisma";
@@ -85,12 +86,30 @@ function rowToObject(headers: string[], row: string[]): Record<string, string> {
   return out;
 }
 
+async function parseWorkbook(buffer: Uint8Array | ArrayBuffer): Promise<{ sheetName: string; rows: string[][] }> {
+  const workbook = new ExcelJS.Workbook();
+  const workbookInput = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  await workbook.xlsx.load(workbookInput as any);
+  const worksheet = workbook.worksheets[0];
+  assert(!!worksheet, "Expected XLSX workbook to contain a worksheet.");
+  const rows: string[][] = [];
+  worksheet!.eachRow((row) => {
+    const rawValues = Array.isArray(row.values) ? row.values : [];
+    rows.push(rawValues.slice(1).map((cell: unknown) => (cell == null ? "" : String(cell))));
+  });
+  return {
+    sheetName: worksheet!.name,
+    rows,
+  };
+}
+
 async function main() {
   const demoCase = await prisma.legalCase.findUnique({
     where: { id: INCLUDED_CASE_IDS[0] },
     select: { id: true, firmId: true },
   });
   assert(!!demoCase, "Seeded demo-case-1 was not found. Run pnpm run bootstrap:dev in apps/api first.");
+  const stamp = Date.now().toString();
   await prisma.clioHandoffExport.deleteMany({
     where: {
       firmId: demoCase!.firmId,
@@ -100,6 +119,39 @@ async function main() {
         },
       },
     },
+  });
+  await prisma.document.deleteMany({
+    where: {
+      firmId: demoCase!.firmId,
+      spacesKey: {
+        in: [
+          `tests/clio-batch-${stamp}-1.pdf`,
+          `tests/clio-batch-${stamp}-2.pdf`,
+        ],
+      },
+    },
+  });
+  await prisma.document.createMany({
+    data: [
+      {
+        firmId: demoCase!.firmId,
+        source: "test",
+        spacesKey: `tests/clio-batch-${stamp}-1.pdf`,
+        originalName: "clio-batch-1.pdf",
+        mimeType: "application/pdf",
+        routedCaseId: INCLUDED_CASE_IDS[0],
+        reviewState: "EXPORT_READY",
+      },
+      {
+        firmId: demoCase!.firmId,
+        source: "test",
+        spacesKey: `tests/clio-batch-${stamp}-2.pdf`,
+        originalName: "clio-batch-2.pdf",
+        mimeType: "application/pdf",
+        routedCaseId: INCLUDED_CASE_IDS[1],
+        reviewState: "EXPORT_READY",
+      },
+    ],
   });
 
   const singleCaseContactsCsv = await generateClioContactsCsv(demoCase!.firmId, {
@@ -115,12 +167,13 @@ async function main() {
   assert(singleMatterRows.length >= 2, "Single-case matters CSV should include header plus data row.");
 
   const singleContact = rowToObject(singleContactRows[0], singleContactRows[1]);
-  assert(singleContact.first_name === "Alice", "Single-case contacts export should still use Alice as first_name.");
-  assert(singleContact.last_name === "Smith", "Single-case contacts export should still use Smith as last_name.");
+  assert(singleContact["First Name"] === "Alice", "Single-case contacts export should still use Alice as First Name.");
+  assert(singleContact["Last Name"] === "Smith", "Single-case contacts export should still use Smith as Last Name.");
 
   const singleMatter = rowToObject(singleMatterRows[0], singleMatterRows[1]);
-  assert(singleMatter.description === "Smith v. State Farm", "Single-case matters export should still preserve the case title.");
-  assert(singleMatter.custom_number === "DEMO-001", "Single-case matters export should still preserve the case number.");
+  assert(singleMatter["Matter Name"] === "Smith v. State Farm", "Single-case matters export should still preserve the case title.");
+  assert(singleMatter["Matter Number"] === "DEMO-001", "Single-case matters export should still preserve the case number.");
+  assert(singleMatter.Client === "Alice Smith", "Single-case matters export should still link back to the exported client.");
 
   const batch = await buildBatchClioHandoffExport({
     firmId: demoCase!.firmId,
@@ -137,7 +190,9 @@ async function main() {
     zipEntryNames,
     [
       "clio-contacts-batch-2026-03-19.csv",
+      "clio-contacts-batch-2026-03-19.xlsx",
       "clio-matters-batch-2026-03-19.csv",
+      "clio-matters-batch-2026-03-19.xlsx",
       "manifest.json",
     ],
     "zip entries"
@@ -145,25 +200,41 @@ async function main() {
 
   const contactsCsv = await zip.file(batch.contactsFileName)?.async("string");
   const mattersCsv = await zip.file(batch.mattersFileName)?.async("string");
+  const contactsXlsx = await zip.file(batch.contactsWorkbookFileName)?.async("nodebuffer");
+  const mattersXlsx = await zip.file(batch.mattersWorkbookFileName)?.async("nodebuffer");
   const manifestText = await zip.file(batch.manifestFileName)?.async("string");
 
   assert(typeof contactsCsv === "string" && contactsCsv.trim().length > 0, "Batch contacts CSV should be present and non-empty.");
   assert(typeof mattersCsv === "string" && mattersCsv.trim().length > 0, "Batch matters CSV should be present and non-empty.");
+  assert(Buffer.isBuffer(contactsXlsx) && contactsXlsx.length > 0, "Batch contacts XLSX should be present and non-empty.");
+  assert(Buffer.isBuffer(mattersXlsx) && mattersXlsx.length > 0, "Batch matters XLSX should be present and non-empty.");
   assert(typeof manifestText === "string" && manifestText.trim().length > 0, "Batch manifest should be present and non-empty.");
 
   const contactRows = parseCsv(contactsCsv!);
   const matterRows = parseCsv(mattersCsv!);
+  const contactWorkbook = await parseWorkbook(contactsXlsx!);
+  const matterWorkbook = await parseWorkbook(mattersXlsx!);
   assertSameRow(contactRows[0], singleContactRows[0], "contacts header");
   assertSameRow(matterRows[0], singleMatterRows[0], "matters header");
+  assert(contactWorkbook.sheetName === "Contacts", "Expected contacts workbook sheet to be named Contacts.");
+  assert(matterWorkbook.sheetName === "Matters", "Expected matters workbook sheet to be named Matters.");
+  assert(
+    JSON.stringify(contactWorkbook.rows) === JSON.stringify(contactRows),
+    "Expected contacts workbook rows to match the batch contacts CSV exactly."
+  );
+  assert(
+    JSON.stringify(matterWorkbook.rows) === JSON.stringify(matterRows),
+    "Expected matters workbook rows to match the batch matters CSV exactly."
+  );
 
   assert(contactRows.length >= 3, "Batch contacts CSV should include a header and rows from multiple cases.");
   assert(matterRows.length >= 3, "Batch matters CSV should include a header and rows from multiple cases.");
 
-  const contactFirstNames = contactRows.slice(1).map((row) => rowToObject(contactRows[0], row).first_name);
+  const contactFirstNames = contactRows.slice(1).map((row) => rowToObject(contactRows[0], row)["First Name"]);
   assert(contactFirstNames.includes("Alice"), "Batch contacts CSV should include Alice.");
   assert(contactFirstNames.includes("Bob"), "Batch contacts CSV should include Bob.");
 
-  const matterNumbers = matterRows.slice(1).map((row) => rowToObject(matterRows[0], row).custom_number);
+  const matterNumbers = matterRows.slice(1).map((row) => rowToObject(matterRows[0], row)["Matter Number"]);
   assertSameRow(matterNumbers, ["DEMO-001", "DEMO-002"], "matter order");
 
   const manifest = JSON.parse(manifestText!) as BatchClioHandoffManifest;
@@ -251,6 +322,14 @@ main()
       select: { firmId: true },
     });
     if (demoCase) {
+      await prisma.document.deleteMany({
+        where: {
+          firmId: demoCase.firmId,
+          spacesKey: {
+            startsWith: "tests/clio-batch-",
+          },
+        },
+      });
       await prisma.clioHandoffExport.deleteMany({
         where: {
           firmId: demoCase.firmId,

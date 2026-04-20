@@ -1,15 +1,12 @@
 import { NextResponse } from "next/server";
+import { requirePlatformAdmin } from "../_lib/requirePlatformAdmin";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const base = process.env.DOC_API_URL;
-  if (!base) {
-    return NextResponse.json(
-      { ok: false, error: "DOC_API_URL not set" },
-      { status: 500 }
-    );
-  }
+  const auth = await requirePlatformAdmin(req);
+  if (auth instanceof Response) return auth;
+
   const body = await req.json().catch(() => ({})) as Record<string, unknown>;
   const { apiKey, ...mailboxFields } = body;
   if (!apiKey || typeof apiKey !== "string") {
@@ -18,7 +15,7 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
-  const res = await fetch(`${base}/mailboxes`, {
+  const res = await fetch(`${auth.base}/mailboxes`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,

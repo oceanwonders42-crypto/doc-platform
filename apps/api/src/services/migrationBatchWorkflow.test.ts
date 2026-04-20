@@ -3,6 +3,7 @@ import "dotenv/config";
 import { pgPool } from "../db/pg";
 import { prisma } from "../db/prisma";
 import {
+  finalizeMigrationBatchForClioHandoff,
   getMigrationBatchDetail,
   importMigrationBatch,
   listMigrationBatches,
@@ -102,7 +103,7 @@ async function main() {
               pageCount: 1,
               status: isTraffic ? "NEEDS_REVIEW" : "UPLOADED",
               processingStage: "complete",
-              reviewState: isTraffic ? "IN_REVIEW" : "EXPORT_READY",
+              reviewState: isTraffic ? "IN_REVIEW" : "APPROVED",
               routedCaseId: isTraffic ? null : routedCaseId,
               routedSystem: isTraffic ? null : "manual",
               routingStatus: isTraffic ? "needs_review" : "routed",
@@ -177,6 +178,14 @@ async function main() {
     assert(
       initialDetail.exportSummary.readyForClioExport === false,
       "Expected batch to be blocked from Clio export before review is complete."
+    );
+    assert(
+      initialDetail.handoffReadiness.state === "NEEDS_REVIEW",
+      `Expected initial handoff readiness NEEDS_REVIEW, got ${initialDetail.handoffReadiness.state}`
+    );
+    assert(
+      initialDetail.exportSummary.blockedReason === "Resolve review flags before exporting this migration batch.",
+      `Unexpected initial blockedReason: ${initialDetail.exportSummary.blockedReason}`
     );
     const initialList = await listMigrationBatches(firmId);
     const initialBatchListItem = initialList.find((item) => item.id === importResult.batchId);
@@ -316,7 +325,7 @@ async function main() {
         routedSystem: "manual",
         routingStatus: "routed",
         status: "UPLOADED",
-        reviewState: "EXPORT_READY",
+        reviewState: "APPROVED",
       },
     });
     await prisma.trafficMatter.updateMany({
@@ -332,12 +341,48 @@ async function main() {
     });
 
     const nextStatus = await syncMigrationBatchLifecycle(firmId, importResult.batchId);
-    assert(nextStatus === "READY_FOR_EXPORT", `Expected batch status READY_FOR_EXPORT after review, got ${nextStatus}`);
+    assert(nextStatus === "NEEDS_REVIEW", `Expected batch status NEEDS_REVIEW before finalize, got ${nextStatus}`);
+
+    const preFinalizeDetail = await getMigrationBatchDetail(firmId, importResult.batchId);
+    assert(
+      preFinalizeDetail.exportSummary.readyForClioExport === false,
+      "Expected batch to stay blocked until approved docs are finalized."
+    );
+    assert(
+      preFinalizeDetail.exportSummary.blockedReason === "Finalize approved routed documents before downloading the Clio handoff package.",
+      `Unexpected pre-finalize blockedReason: ${preFinalizeDetail.exportSummary.blockedReason}`
+    );
+    assert(
+      preFinalizeDetail.handoffReadiness.canFinalize === true,
+      "Expected finalized transition to be available once review blockers are cleared."
+    );
+    assert(preFinalizeDetail.reviewFlags.length === 0, `Expected review flags to clear, got ${preFinalizeDetail.reviewFlags.length}`);
+
+    const finalizeResult = await finalizeMigrationBatchForClioHandoff(
+      firmId,
+      importResult.batchId,
+      "migration-batch-reviewer"
+    );
+    assert(finalizeResult.ok === true, "Expected finalizeMigrationBatchForClioHandoff to succeed.");
+    if (!finalizeResult.ok) {
+      throw new Error(`Finalize unexpectedly failed: ${finalizeResult.error}`);
+    }
+    assert(
+      finalizeResult.markedExportReadyCount === 2,
+      `Expected finalize to mark 2 docs export-ready, got ${finalizeResult.markedExportReadyCount}`
+    );
 
     const finalDetail = await getMigrationBatchDetail(firmId, importResult.batchId);
-    assert(finalDetail.exportSummary.readyForClioExport === true, "Expected batch to become Clio-export ready after routing and review.");
+    assert(finalDetail.exportSummary.readyForClioExport === true, "Expected batch to become Clio-export ready after finalize.");
     assert(finalDetail.exportSummary.routedCaseIds.length === 2, `Expected 2 routed case ids, got ${finalDetail.exportSummary.routedCaseIds.length}`);
-    assert(finalDetail.reviewFlags.length === 0, `Expected review flags to clear, got ${finalDetail.reviewFlags.length}`);
+    assert(
+      finalDetail.exportSummary.exportReadyCaseIds.length === 2,
+      `Expected 2 export-ready case ids after finalize, got ${finalDetail.exportSummary.exportReadyCaseIds.length}`
+    );
+    assert(
+      finalDetail.handoffReadiness.state === "READY_FOR_HANDOFF",
+      `Expected handoff readiness READY_FOR_HANDOFF, got ${finalDetail.handoffReadiness.state}`
+    );
     const finalList = await listMigrationBatches(firmId);
     const finalBatchListItem = finalList.find((item) => item.id === importResult.batchId);
     assert(

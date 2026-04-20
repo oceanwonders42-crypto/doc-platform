@@ -31,6 +31,8 @@ async function main() {
     select: { firmId: true },
   });
   assert(!!seededCase, "Seeded demo-case-1 was not found. Run pnpm run bootstrap:dev in apps/api first.");
+  const stamp = Date.now().toString();
+  const seededSpacesKeys = [`tests/clio-batch-route-${stamp}-1.pdf`, `tests/clio-batch-route-${stamp}-2.pdf`];
 
   const otherFirm = await prisma.firm.upsert({
     where: { id: "batch-clio-route-test-firm" },
@@ -60,6 +62,34 @@ async function main() {
         },
       },
     },
+  });
+  await prisma.document.deleteMany({
+    where: {
+      firmId: seededCase!.firmId,
+      spacesKey: { in: seededSpacesKeys },
+    },
+  });
+  await prisma.document.createMany({
+    data: [
+      {
+        firmId: seededCase!.firmId,
+        source: "test",
+        spacesKey: seededSpacesKeys[0],
+        originalName: "clio-batch-route-1.pdf",
+        mimeType: "application/pdf",
+        routedCaseId: "demo-case-1",
+        reviewState: "EXPORT_READY",
+      },
+      {
+        firmId: seededCase!.firmId,
+        source: "test",
+        spacesKey: seededSpacesKeys[1],
+        originalName: "clio-batch-route-2.pdf",
+        mimeType: "application/pdf",
+        routedCaseId: "demo-case-2",
+        reviewState: "EXPORT_READY",
+      },
+    ],
   });
 
   const { baseUrl, server } = await startTestServer(app);
@@ -100,7 +130,9 @@ async function main() {
     const successEntries = Object.keys(successZip.files).sort();
     const expectedEntries = [
       `clio-contacts-batch-${datePart}.csv`,
+      `clio-contacts-batch-${datePart}.xlsx`,
       `clio-matters-batch-${datePart}.csv`,
+      `clio-matters-batch-${datePart}.xlsx`,
       "manifest.json",
     ];
     assert(
@@ -155,6 +187,12 @@ async function main() {
     console.log("Batch Clio route integration tests passed");
   } finally {
     await stopTestServer(server);
+    await prisma.document.deleteMany({
+      where: {
+        firmId: seededCase!.firmId,
+        spacesKey: { in: seededSpacesKeys },
+      },
+    });
     await prisma.clioHandoffExport.deleteMany({
       where: {
         firmId: seededCase!.firmId,

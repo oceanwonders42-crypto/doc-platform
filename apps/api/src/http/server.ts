@@ -73,7 +73,12 @@ import migrationRouter from "./routes/migration";
 import recordsRequestsRouter from "./routes/recordsRequests";
 import trafficRouter from "./routes/traffic";
 import { Prisma, Role } from "@prisma/client";
-import { generateClioContactsCsv, generateClioMattersCsv } from "../exports/clioExport";
+import {
+  generateClioContactsCsv,
+  generateClioContactsXlsx,
+  generateClioMattersCsv,
+  generateClioMattersXlsx,
+} from "../exports/clioExport";
 import { importClioMappingsFromCsv } from "../services/clioMappingsImport";
 import { logSystemError } from "../services/errorLog";
 import { signToken } from "../lib/jwt";
@@ -143,8 +148,39 @@ function buildVersionPayload(service: string) {
   };
 }
 
+function requireNonProductionDevRoute(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ ok: false, error: "Not found" });
+  }
+
+  next();
+}
+
 type FastPathTrace = {
   mark: (stage: "persistence_complete" | "audit_complete" | "enqueue_complete", meta?: Record<string, unknown>) => void;
+};
+
+const clioHandoffAuditOutcomeTypes = [
+  "replay_success",
+  "replay_rejected_legacy",
+  "replay_rejected_data_changed",
+  "forced_reexport",
+] as const;
+
+type ClioHandoffAuditOutcomeType = (typeof clioHandoffAuditOutcomeTypes)[number];
+
+type ClioHandoffAuditReviewItem = {
+  id: string;
+  createdAt: string;
+  outcomeType: ClioHandoffAuditOutcomeType | "unknown";
+  batchId: string | null;
+  handoffExportId: string | null;
+  hasIdempotencyKey: boolean;
+  reason: string | null;
 };
 
 function createFastPathTrace(
@@ -634,6 +670,18 @@ app.get("/exports/clio/contacts.csv", auth, requireRole(Role.STAFF), requireExpo
   }
 });
 
+app.get("/exports/clio/contacts.xlsx", auth, requireRole(Role.STAFF), requireExportFirm, async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const xlsx = await generateClioContactsXlsx(firmId);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", 'attachment; filename="clio-contacts.xlsx"');
+    res.send(xlsx);
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.get("/exports/clio/matters.csv", auth, requireRole(Role.STAFF), requireExportFirm, async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -641,6 +689,18 @@ app.get("/exports/clio/matters.csv", auth, requireRole(Role.STAFF), requireExpor
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", 'attachment; filename="clio-matters.csv"');
     res.send(Buffer.from(csv, "utf-8"));
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/exports/clio/matters.xlsx", auth, requireRole(Role.STAFF), requireExportFirm, async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const xlsx = await generateClioMattersXlsx(firmId);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", 'attachment; filename="clio-matters.xlsx"');
+    res.send(xlsx);
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
@@ -1461,7 +1521,7 @@ app.post("/admin/demo/seed", async (req, res) => {
 });
 
 // TEMP dev route: create a firm
-app.post("/dev/create-firm", async (req, res) => {
+app.post("/dev/create-firm", requireNonProductionDevRoute, auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   const { name } = req.body ?? {};
   if (!name) return res.status(400).json({ error: "name is required" });
 
@@ -1471,10 +1531,7 @@ app.post("/dev/create-firm", async (req, res) => {
 
 // TEMP dev route: create an API key for a firm (shows secret once)
 // Dev-only: create API key for first/only firm (no auth, no firmId needed)
-app.post("/admin/dev/create-api-key", async (req, res) => {
-  if (process.env.NODE_ENV === "production") {
-    return res.status(404).json({ ok: false, error: "Not found" });
-  }
+app.post("/admin/dev/create-api-key", requireNonProductionDevRoute, auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   let firm = await prisma.firm.findFirst({ orderBy: { createdAt: "asc" } });
   if (!firm) {
     firm = await prisma.firm.create({ data: { name: "Demo Firm" } });
@@ -1496,9 +1553,10 @@ app.post("/admin/dev/create-api-key", async (req, res) => {
   return res.json({ ok: true, apiKey: rawKey, firmId: firm.id });
 });
 
-app.post("/dev/create-api-key/:firmId", async (req, res) => {
-  const { firmId } = req.params;
+app.post("/dev/create-api-key/:firmId", requireNonProductionDevRoute, auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  const firmId = String(req.params.firmId ?? "");
   const { name } = req.body ?? {};
+  if (!firmId) return res.status(400).json({ error: "firmId is required" });
   if (!name) return res.status(400).json({ error: "name is required" });
 
   const rawKey = "sk_live_" + crypto.randomBytes(24).toString("hex");
@@ -1692,6 +1750,61 @@ app.get("/me/audit-events", auth, requireRole(Role.STAFF), async (req, res) => {
         createdAt: e.createdAt.toISOString(),
       })),
     });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/me/clio-handoff-audit", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const limit = Math.min(parseInt(String(req.query.limit), 10) || 100, 500);
+    const outcomeFilter =
+      typeof req.query.outcomeType === "string" && req.query.outcomeType.trim()
+        ? req.query.outcomeType.trim()
+        : null;
+    const allowedOutcomeFilter =
+      outcomeFilter && clioHandoffAuditOutcomeTypes.includes(outcomeFilter as ClioHandoffAuditOutcomeType)
+        ? (outcomeFilter as ClioHandoffAuditOutcomeType)
+        : null;
+
+    const where: Prisma.SystemErrorLogWhereInput = {
+      firmId,
+      area: "clio_handoff_audit",
+    };
+    if (allowedOutcomeFilter) {
+      where.metaJson = { path: ["outcomeType"], equals: allowedOutcomeFilter };
+    }
+
+    const logs = await prisma.systemErrorLog.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        createdAt: true,
+        metaJson: true,
+      },
+    });
+
+    const items: ClioHandoffAuditReviewItem[] = logs.map((entry) => {
+      const meta = (entry.metaJson ?? {}) as Record<string, unknown>;
+      const outcomeValue = typeof meta.outcomeType === "string" ? meta.outcomeType : "unknown";
+      const outcomeType = clioHandoffAuditOutcomeTypes.includes(outcomeValue as ClioHandoffAuditOutcomeType)
+        ? (outcomeValue as ClioHandoffAuditOutcomeType)
+        : "unknown";
+      return {
+        id: entry.id,
+        createdAt: entry.createdAt.toISOString(),
+        outcomeType,
+        batchId: typeof meta.batchId === "string" ? meta.batchId : null,
+        handoffExportId: typeof meta.handoffExportId === "string" ? meta.handoffExportId : null,
+        hasIdempotencyKey: typeof meta.hasIdempotencyKey === "boolean" ? meta.hasIdempotencyKey : false,
+        reason: typeof meta.reason === "string" ? meta.reason : null,
+      };
+    });
+
+    res.json({ ok: true, items });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }

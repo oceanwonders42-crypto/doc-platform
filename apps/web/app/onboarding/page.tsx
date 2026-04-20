@@ -1,18 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { DashboardAuthProvider, useDashboardAuth } from "@/contexts/DashboardAuthContext";
+import { getAuthHeader } from "@/lib/api";
 
 const STEPS = [
   { id: 1, title: "Create firm", desc: "Name and plan" },
-  { id: 2, title: "Create admin user", desc: "Firm admin email" },
-  { id: 3, title: "Create API key", desc: "Save it — shown once" },
+  { id: 2, title: "Create admin user", desc: "Firm admin login" },
+  { id: 3, title: "Create API key", desc: "Save it - shown once" },
   { id: 4, title: "Connect mailbox", desc: "IMAP or Gmail" },
   { id: 5, title: "Test ingest", desc: "Upload sample PDF" },
   { id: 6, title: "Success", desc: "Ready for dashboard" },
 ];
 
-export default function OnboardingPage() {
+function OnboardingPageContent() {
+  const router = useRouter();
+  const { checked, unauthorized, isPlatformAdmin } = useDashboardAuth();
   const [step, setStep] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -22,6 +27,7 @@ export default function OnboardingPage() {
   const [firmPlan, setFirmPlan] = useState("starter");
 
   const [userEmail, setUserEmail] = useState("");
+  const [userPassword, setUserPassword] = useState("");
   const [apiKey, setApiKey] = useState("");
 
   const [mailbox, setMailbox] = useState({
@@ -35,6 +41,29 @@ export default function OnboardingPage() {
 
   const [uploadFile, setUploadFile] = useState<File | null>(null);
 
+  useEffect(() => {
+    if (!checked) return;
+    if (unauthorized) {
+      router.replace("/login");
+      return;
+    }
+    if (!isPlatformAdmin) {
+      router.replace("/dashboard");
+    }
+  }, [checked, unauthorized, isPlatformAdmin, router]);
+
+  if (!checked) {
+    return (
+      <main style={{ padding: 24, maxWidth: 560, margin: "0 auto", fontFamily: "system-ui, -apple-system" }}>
+        <p style={{ color: "#666" }}>Checking access...</p>
+      </main>
+    );
+  }
+
+  if (unauthorized || !isPlatformAdmin) {
+    return null;
+  }
+
   const step1Submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -42,7 +71,7 @@ export default function OnboardingPage() {
     try {
       const res = await fetch("/api/onboarding/firms", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...getAuthHeader(), "Content-Type": "application/json" },
         body: JSON.stringify({ name: firmName.trim(), plan: firmPlan }),
       });
       const data = await res.json().catch(() => ({}));
@@ -64,8 +93,12 @@ export default function OnboardingPage() {
     try {
       const res = await fetch(`/api/onboarding/firms/${firm.id}/users`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: userEmail.trim(), role: "FIRM_ADMIN" }),
+        headers: { ...getAuthHeader(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: userEmail.trim(),
+          password: userPassword,
+          role: "FIRM_ADMIN",
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!data.ok) throw new Error(data.error ?? "Failed to create user");
@@ -85,7 +118,7 @@ export default function OnboardingPage() {
     try {
       const res = await fetch(`/api/onboarding/firms/${firm.id}/api-keys`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...getAuthHeader(), "Content-Type": "application/json" },
         body: JSON.stringify({ name: "Onboarding API Key" }),
       });
       const data = await res.json().catch(() => ({}));
@@ -106,7 +139,7 @@ export default function OnboardingPage() {
     try {
       const res = await fetch("/api/onboarding/mailboxes", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...getAuthHeader(), "Content-Type": "application/json" },
         body: JSON.stringify({
           apiKey,
           imapHost: mailbox.imapHost.trim(),
@@ -138,7 +171,11 @@ export default function OnboardingPage() {
       fd.append("source", "onboarding");
       fd.append("file", uploadFile);
 
-      const res = await fetch("/api/onboarding/ingest", { method: "POST", body: fd });
+      const res = await fetch("/api/onboarding/ingest", {
+        method: "POST",
+        headers: getAuthHeader(),
+        body: fd,
+      });
       const text = await res.text();
       const data = (() => {
         try {
@@ -160,7 +197,7 @@ export default function OnboardingPage() {
     <main style={{ padding: 24, maxWidth: 560, margin: "0 auto", fontFamily: "system-ui, -apple-system" }}>
       <div style={{ marginBottom: 24 }}>
         <Link href="/admin/firms" style={{ fontSize: 14, color: "#666", textDecoration: "underline" }}>
-          ← Admin
+          {"<-"} Admin
         </Link>
       </div>
 
@@ -220,7 +257,7 @@ export default function OnboardingPage() {
             </select>
           </div>
           <button type="submit" disabled={loading || !firmName.trim()} style={btnStyle}>
-            {loading ? "Creating…" : "Create firm"}
+            {loading ? "Creating..." : "Create firm"}
           </button>
         </form>
       )}
@@ -239,8 +276,23 @@ export default function OnboardingPage() {
               style={{ width: "100%", padding: 10, boxSizing: "border-box", borderRadius: 8, border: "1px solid #ccc" }}
             />
           </div>
-          <button type="submit" disabled={loading || !userEmail.trim()} style={btnStyle}>
-            {loading ? "Creating…" : "Create user"}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: "block", marginBottom: 4, fontWeight: 600 }}>Temporary password</label>
+            <input
+              type="password"
+              value={userPassword}
+              onChange={(e) => setUserPassword(e.target.value)}
+              placeholder="Use at least 8 characters"
+              minLength={8}
+              required
+              style={{ width: "100%", padding: 10, boxSizing: "border-box", borderRadius: 8, border: "1px solid #ccc" }}
+            />
+            <p style={{ color: "#666", fontSize: 13, marginTop: 6 }}>
+              The first firm admin can sign in immediately with this email and password.
+            </p>
+          </div>
+          <button type="submit" disabled={loading || !userEmail.trim() || userPassword.length < 8} style={btnStyle}>
+            {loading ? "Creating..." : "Create user"}
           </button>
         </form>
       )}
@@ -250,7 +302,7 @@ export default function OnboardingPage() {
           <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>{STEPS[2].title}</h2>
           {apiKey ? (
             <div style={{ marginBottom: 16 }}>
-              <p style={{ fontWeight: 600, marginBottom: 8 }}>Save this key now — it won't be shown again:</p>
+              <p style={{ fontWeight: 600, marginBottom: 8 }}>Save this key now - it will not be shown again:</p>
               <code
                 style={{
                   display: "block",
@@ -265,14 +317,14 @@ export default function OnboardingPage() {
                 {apiKey}
               </code>
               <button type="button" onClick={() => setStep(4)} style={{ ...btnStyle, marginTop: 12 }}>
-                Continue →
+                {"Continue ->"}
               </button>
             </div>
           ) : (
             <>
               <p style={{ color: "#666", marginBottom: 16 }}>Creates an API key for the firm. Copy and store it securely.</p>
               <button type="submit" disabled={loading} style={btnStyle}>
-                {loading ? "Creating…" : "Create API key"}
+                {loading ? "Creating..." : "Create API key"}
               </button>
             </>
           )}
@@ -344,7 +396,7 @@ export default function OnboardingPage() {
             />
           </div>
           <button type="submit" disabled={loading || !mailbox.imapUsername.trim() || !mailbox.imapPassword} style={btnStyle}>
-            {loading ? "Connecting…" : "Connect mailbox"}
+            {loading ? "Connecting..." : "Connect mailbox"}
           </button>
         </form>
       )}
@@ -361,16 +413,19 @@ export default function OnboardingPage() {
             />
           </div>
           <button type="submit" disabled={loading || !uploadFile} style={btnStyle}>
-            {loading ? "Uploading…" : "Upload sample PDF"}
+            {loading ? "Uploading..." : "Upload sample PDF"}
           </button>
         </form>
       )}
 
       {step === 6 && (
         <div>
-          <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>✓ {STEPS[5].title}</h2>
+          <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Success</h2>
           <p style={{ marginBottom: 16 }}>
             Your firm is ready. Configure the dashboard to use <code>DOC_API_KEY={apiKey ? `${apiKey.slice(0, 12)}...` : "the new API key"}</code> for this firm.
+          </p>
+          <p style={{ color: "#666", marginBottom: 16 }}>
+            The first admin can sign in with <code>{userEmail || "the admin email"}</code> and the password from step 2.
           </p>
           <Link
             href="/dashboard"
@@ -384,11 +439,19 @@ export default function OnboardingPage() {
               textDecoration: "none",
             }}
           >
-            Go to dashboard →
+            {"Go to dashboard ->"}
           </Link>
         </div>
       )}
     </main>
+  );
+}
+
+export default function OnboardingPage() {
+  return (
+    <DashboardAuthProvider>
+      <OnboardingPageContent />
+    </DashboardAuthProvider>
   );
 }
 

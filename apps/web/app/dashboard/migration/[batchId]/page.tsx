@@ -22,6 +22,9 @@ import type {
 } from "../types";
 
 type DownloadingState = "contacts" | "matters" | "handoff" | null;
+type MigrationBatchFinalizeResponse = MigrationBatchDetailResponse & {
+  markedExportReadyCount?: number;
+};
 
 type ContactRow = MigrationBatchContactCandidate & { id: string };
 type MatterRow = MigrationBatchMatterCandidate & { id: string };
@@ -102,6 +105,31 @@ function toDisplayLabel(value: string): string {
     .join(" ");
 }
 
+function getHandoffReadinessMeta(state: MigrationBatchDetail["handoffReadiness"]["state"]) {
+  if (state === "PROCESSING") {
+    return {
+      label: "Processing",
+      className: "onyx-badge onyx-badge-info",
+    };
+  }
+  if (state === "READY_FOR_HANDOFF") {
+    return {
+      label: "Ready for handoff",
+      className: "onyx-badge onyx-badge-success",
+    };
+  }
+  if (state === "HANDED_OFF") {
+    return {
+      label: "Handed off",
+      className: "onyx-badge onyx-badge-neutral",
+    };
+  }
+  return {
+    label: "Needs review",
+    className: "onyx-badge onyx-badge-warning",
+  };
+}
+
 function getDocumentStatusClassName(status: string): string {
   if (status === "FAILED") return "onyx-badge onyx-badge-error";
   if (status === "NEEDS_REVIEW" || status === "UNMATCHED") return "onyx-badge onyx-badge-warning";
@@ -148,6 +176,8 @@ export default function MigrationBatchDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<DownloadingState>(null);
+  const [historyDownloadId, setHistoryDownloadId] = useState<string | null>(null);
+  const [finalizing, setFinalizing] = useState(false);
   const [allowReexport, setAllowReexport] = useState(false);
   const [reexportReason, setReexportReason] = useState("operator_override");
 
@@ -309,6 +339,83 @@ export default function MigrationBatchDetailPage() {
       setError(err instanceof Error ? err.message : "Clio handoff failed.");
     } finally {
       setDownloading(null);
+    }
+  }
+
+  async function handleStoredHandoffDownload(exportId: string, fallbackFileName: string | null) {
+    if (!detail) return;
+    setHistoryDownloadId(exportId);
+    setError(null);
+    setMessage(null);
+
+    try {
+      const response = await fetch(
+        `${getApiBase()}/migration/batches/${detail.batch.id}/exports/clio/handoff/${exportId}`,
+        {
+          headers: getAuthHeader(),
+          ...getFetchOptions(),
+        }
+      );
+      if (!response.ok) {
+        setError(await readErrorMessage(response, "Failed to download the stored Clio handoff archive."));
+        return;
+      }
+
+      const blob = await response.blob();
+      downloadBlob(
+        blob,
+        parseFileName(
+          response.headers.get("content-disposition"),
+          fallbackFileName?.trim() || "clio-handoff-batch.zip"
+        )
+      );
+      setMessage("Stored Clio handoff archive download started.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to download the stored Clio handoff archive.");
+    } finally {
+      setHistoryDownloadId(null);
+    }
+  }
+
+  async function handleFinalizeReadyForHandoff() {
+    if (!detail) return;
+    setFinalizing(true);
+    setError(null);
+    setMessage(null);
+
+    try {
+      const response = await fetch(
+        `${getApiBase()}/migration/batches/${detail.batch.id}/review/ready-for-handoff`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeader(),
+          },
+          ...getFetchOptions(),
+          body: JSON.stringify({}),
+        }
+      );
+      const payload = (await parseJsonResponse(response)) as MigrationBatchFinalizeResponse;
+      if (!payload.ok || !payload.batch) {
+        if (payload.batch) {
+          setDetail(payload as MigrationBatchDetail);
+        }
+        setError(payload.error ?? "Failed to finalize this batch for Clio handoff.");
+        return;
+      }
+
+      setDetail(payload as MigrationBatchDetail);
+      const markedCount = payload.markedExportReadyCount ?? 0;
+      setMessage(
+        markedCount > 0
+          ? `Marked ${markedCount} approved document${markedCount === 1 ? "" : "s"} export-ready for Clio handoff.`
+          : "This batch is already ready for Clio handoff."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to finalize this batch for Clio handoff.");
+    } finally {
+      setFinalizing(false);
     }
   }
 
@@ -568,6 +675,11 @@ export default function MigrationBatchDetailPage() {
 
   const statusMeta = getMigrationBatchStatusMeta(detail.batch.status);
   const readyForExport = detail.exportSummary.readyForClioExport;
+  const handoffReadinessMeta = getHandoffReadinessMeta(detail.handoffReadiness.state);
+  const canFinalize = detail.handoffReadiness.canFinalize;
+  const canDownloadPackage = detail.handoffReadiness.canDownloadPackage;
+  const exportReadyCaseCount = detail.exportSummary.exportReadyCaseIds.length;
+  const activeActionLocked = downloading !== null || finalizing || historyDownloadId !== null;
 
   return (
     <div style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
@@ -644,6 +756,10 @@ export default function MigrationBatchDetailPage() {
           <p style={{ margin: 0, fontSize: "1.4rem", fontWeight: 600 }}>{detail.exportSummary.routedCaseIds.length}</p>
         </DashboardCard>
         <DashboardCard>
+          <p style={{ margin: "0 0 0.3rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Export-ready matters</p>
+          <p style={{ margin: 0, fontSize: "1.4rem", fontWeight: 600 }}>{exportReadyCaseCount}</p>
+        </DashboardCard>
+        <DashboardCard>
           <p style={{ margin: "0 0 0.3rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Review flags</p>
           <p style={{ margin: 0, fontSize: "1.4rem", fontWeight: 600 }}>{detail.reviewFlags.length}</p>
         </DashboardCard>
@@ -684,6 +800,12 @@ export default function MigrationBatchDetailPage() {
             <dd style={{ margin: 0 }}>
               {detail.exportSummary.routedCaseNumbers.length > 0
                 ? detail.exportSummary.routedCaseNumbers.join(", ")
+                : "-"}
+            </dd>
+            <dt style={{ color: "var(--onyx-text-muted)" }}>Export-ready case numbers</dt>
+            <dd style={{ margin: 0 }}>
+              {detail.exportSummary.exportReadyCaseNumbers.length > 0
+                ? detail.exportSummary.exportReadyCaseNumbers.join(", ")
                 : "-"}
             </dd>
           </dl>
@@ -729,7 +851,7 @@ export default function MigrationBatchDetailPage() {
         </DashboardCard>
       </div>
 
-      <DashboardCard title="Clio export actions" style={{ marginBottom: "1rem" }}>
+      <DashboardCard title="Clio handoff readiness" style={{ marginBottom: "1rem" }}>
         <div style={{ display: "grid", gap: "0.85rem" }}>
           <div
             style={{
@@ -739,21 +861,80 @@ export default function MigrationBatchDetailPage() {
               alignItems: "center",
             }}
           >
-            <span className={readyForExport ? "onyx-badge onyx-badge-success" : "onyx-badge onyx-badge-warning"}>
-              {readyForExport ? "Ready for Clio export" : "Not ready for Clio export"}
+            <span className={handoffReadinessMeta.className}>{handoffReadinessMeta.label}</span>
+            <span className={canDownloadPackage ? "onyx-badge onyx-badge-success" : "onyx-badge onyx-badge-warning"}>
+              {canDownloadPackage ? "Package download available" : "Package download blocked"}
             </span>
             <span style={{ color: "var(--onyx-text-muted)", fontSize: "0.875rem" }}>
               Routed cases: {detail.exportSummary.routedCaseIds.length}
+            </span>
+            <span style={{ color: "var(--onyx-text-muted)", fontSize: "0.875rem" }}>
+              Export-ready cases: {exportReadyCaseCount}
             </span>
             <span style={{ color: "var(--onyx-text-muted)", fontSize: "0.875rem" }}>
               Handoffs recorded: {detail.exportSummary.handoffCount}
             </span>
           </div>
 
+          <p style={{ margin: 0, fontSize: "0.95rem", fontWeight: 600 }}>
+            {detail.handoffReadiness.nextAction}
+          </p>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              gap: "0.75rem",
+            }}
+          >
+            <div className="onyx-card" style={{ padding: "0.85rem 1rem" }}>
+              <p style={{ margin: "0 0 0.3rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Issues</p>
+              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{detail.handoffReadiness.issueCount}</p>
+              <p style={{ margin: "0.3rem 0 0", fontSize: "0.8rem", color: "var(--onyx-text-muted)" }}>
+                {detail.handoffReadiness.blockingIssueCount} blocking, {detail.handoffReadiness.warningIssueCount} warning
+              </p>
+            </div>
+            <div className="onyx-card" style={{ padding: "0.85rem 1rem" }}>
+              <p style={{ margin: "0 0 0.3rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Review-ready docs</p>
+              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{detail.handoffReadiness.approvedDocumentCount}</p>
+              <p style={{ margin: "0.3rem 0 0", fontSize: "0.8rem", color: "var(--onyx-text-muted)" }}>
+                Approved and waiting to finalize
+              </p>
+            </div>
+            <div className="onyx-card" style={{ padding: "0.85rem 1rem" }}>
+              <p style={{ margin: "0 0 0.3rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Export-ready docs</p>
+              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{detail.handoffReadiness.exportReadyDocumentCount}</p>
+              <p style={{ margin: "0.3rem 0 0", fontSize: "0.8rem", color: "var(--onyx-text-muted)" }}>
+                {detail.handoffReadiness.matterExportReadyCount} matter candidate{detail.handoffReadiness.matterExportReadyCount === 1 ? "" : "s"} ready
+              </p>
+            </div>
+            <div className="onyx-card" style={{ padding: "0.85rem 1rem" }}>
+              <p style={{ margin: "0 0 0.3rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Candidates needing review</p>
+              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>
+                {detail.handoffReadiness.contactNeedsReviewCount + detail.handoffReadiness.matterNeedsReviewCount}
+              </p>
+              <p style={{ margin: "0.3rem 0 0", fontSize: "0.8rem", color: "var(--onyx-text-muted)" }}>
+                {detail.handoffReadiness.contactNeedsReviewCount} contacts, {detail.handoffReadiness.matterNeedsReviewCount} matters
+              </p>
+            </div>
+          </div>
+
           {detail.exportSummary.blockedReason && (
-            <p style={{ margin: 0, color: "var(--onyx-text-muted)", fontSize: "0.875rem" }}>
-              {detail.exportSummary.blockedReason}
-            </p>
+            <div
+              style={{
+                display: "grid",
+                gap: "0.35rem",
+                padding: "0.85rem 1rem",
+                borderRadius: "var(--onyx-radius-md)",
+                border: "1px solid var(--onyx-border-subtle)",
+                background: "var(--onyx-surface-subtle)",
+              }}
+            >
+              <strong style={{ fontSize: "0.9rem" }}>Blocked</strong>
+              <p style={{ margin: 0, color: "var(--onyx-text-muted)", fontSize: "0.875rem" }}>
+                {detail.exportSummary.blockedReason}
+              </p>
+            </div>
           )}
 
           {showBatchReviewActions && (
@@ -781,30 +962,62 @@ export default function MigrationBatchDetailPage() {
             </div>
           )}
 
+          {canFinalize && (
+            <div
+              style={{
+                display: "grid",
+                gap: "0.65rem",
+                padding: "0.85rem 1rem",
+                borderRadius: "var(--onyx-radius-md)",
+                border: "1px solid var(--onyx-border-subtle)",
+                background: "rgba(34, 197, 94, 0.08)",
+              }}
+            >
+              <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+                {detail.handoffReadiness.approvedDocumentCount} approved routed document
+                {detail.handoffReadiness.approvedDocumentCount === 1 ? "" : "s"} can be finalized for Clio handoff now.
+              </p>
+              <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="onyx-btn-primary"
+                  disabled={activeActionLocked}
+                  onClick={handleFinalizeReadyForHandoff}
+                >
+                  {finalizing ? "Finalizing..." : "Finalize batch for handoff"}
+                </button>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
             <button
               type="button"
               className="onyx-btn-primary"
-              disabled={!readyForExport || downloading !== null}
+              disabled={!canDownloadPackage || activeActionLocked}
+              onClick={handleRecordHandoff}
+            >
+              {downloading === "handoff"
+                ? "Preparing package..."
+                : detail.handoffHistory.length > 0
+                  ? "Download latest Clio handoff package"
+                  : "Download final Clio handoff package"}
+            </button>
+            <button
+              type="button"
+              className="onyx-btn-secondary"
+              disabled={!readyForExport || activeActionLocked}
               onClick={() => handleCsvDownload("contacts")}
             >
               {downloading === "contacts" ? "Preparing..." : "Download Clio contacts CSV"}
             </button>
             <button
               type="button"
-              className="onyx-btn-primary"
-              disabled={!readyForExport || downloading !== null}
+              className="onyx-btn-secondary"
+              disabled={!readyForExport || activeActionLocked}
               onClick={() => handleCsvDownload("matters")}
             >
               {downloading === "matters" ? "Preparing..." : "Download Clio matters CSV"}
-            </button>
-            <button
-              type="button"
-              className="onyx-btn-secondary"
-              disabled={!readyForExport || downloading !== null}
-              onClick={handleRecordHandoff}
-            >
-              {downloading === "handoff" ? "Recording..." : "Record Clio handoff"}
             </button>
           </div>
 
@@ -1029,6 +1242,20 @@ export default function MigrationBatchDetailPage() {
                     <span className="onyx-badge onyx-badge-warning">
                       Skipped {item.skippedCaseCount}
                     </span>
+                    {item.archiveAvailable ? (
+                      <button
+                        type="button"
+                        className="onyx-btn-secondary"
+                        disabled={activeActionLocked}
+                        onClick={() => handleStoredHandoffDownload(item.exportId, item.archiveFileName)}
+                      >
+                        {historyDownloadId === item.exportId ? "Downloading..." : "Download"}
+                      </button>
+                    ) : (
+                      <span style={{ fontSize: "0.8rem", color: "var(--onyx-text-muted)" }}>
+                        Archive unavailable
+                      </span>
+                    )}
                   </div>
                 </div>
                 <p style={{ margin: "0.65rem 0 0", fontSize: "0.85rem", color: "var(--onyx-text-muted)" }}>
