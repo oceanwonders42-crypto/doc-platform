@@ -21,6 +21,12 @@ loadOptionalEnvFile(apiEnvLocalPath);
 
 const resolvedTesseractPath =
   process.env.TESSERACT_PATH?.trim() || "C:\\Program Files\\Tesseract-OCR\\tesseract.exe";
+const resolvedOpenAiEnv = {
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+  OPENAI_ORG_ID: process.env.OPENAI_ORG_ID,
+  OPENAI_PROJECT: process.env.OPENAI_PROJECT,
+};
 
 module.exports = {
   apps: [
@@ -50,6 +56,7 @@ module.exports = {
         API_SECRET: process.env.API_SECRET,
         PROVIDER_SESSION_SECRET: process.env.PROVIDER_SESSION_SECRET,
         TESSERACT_PATH: resolvedTesseractPath,
+        ...resolvedOpenAiEnv,
       },
     },
     {
@@ -74,6 +81,7 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         TESSERACT_PATH: resolvedTesseractPath,
+        ...resolvedOpenAiEnv,
       },
     },
     {
