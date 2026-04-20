@@ -10,6 +10,7 @@ import { requireRole } from "./requireRole";
  */
 export function requireAdminOrFirmAdminForFirm(req: Request, res: Response, next: NextFunction) {
   if ((req as any).isAdmin === true) return next();
+  if ((req as any).authRole === Role.PLATFORM_ADMIN) return next();
 
   const firmId = (req as any).firmId as string;
   const paramId = String(req.params.id ?? req.params.firmId ?? "");

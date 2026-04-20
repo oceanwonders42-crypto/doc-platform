@@ -4,6 +4,8 @@ process.env.ENABLE_INLINE_DOCUMENT_WORKER = "false";
 process.env.REDIS_URL = "redis://localhost:6379/15";
 process.env.PLATFORM_ADMIN_API_KEY = process.env.PLATFORM_ADMIN_API_KEY ?? "platform-admin-test-key";
 
+const { Role } = require("@prisma/client") as typeof import("@prisma/client");
+const { signToken } = require("../../lib/jwt") as typeof import("../../lib/jwt");
 const { prisma } = require("../../db/prisma") as typeof import("../../db/prisma");
 const { app } = require("../server") as typeof import("../server");
 const { assert, startTestServer, stopTestServer } = require("./cases.batchClioRouteTestUtils") as typeof import("./cases.batchClioRouteTestUtils");
@@ -37,6 +39,12 @@ async function main() {
     const createFirmJson = (await createFirm.json()) as { ok?: boolean; firm?: { id?: string } };
     assert(createFirmJson.ok === true && typeof createFirmJson.firm?.id === "string", "Expected firm creation to succeed.");
     firmId = createFirmJson.firm!.id!;
+    const platformAdminJwt = signToken({
+      userId: `platform-admin-proof-${suffix}`,
+      firmId,
+      role: Role.PLATFORM_ADMIN,
+      email: `platform-admin-proof-${suffix}@example.com`,
+    });
 
     const onboardingEmail = `onboarding-proof-${suffix}@example.com`;
     const onboardingPassword = `ProofPass!${suffix}`;
@@ -47,7 +55,7 @@ async function main() {
         password: onboardingPassword,
         role: "FIRM_ADMIN",
       },
-      platformAdminToken
+      platformAdminJwt
     );
     assert(createUser.status === 200, `Expected platform admin user creation to return 200, got ${createUser.status}`);
     const createUserJson = (await createUser.json()) as {
