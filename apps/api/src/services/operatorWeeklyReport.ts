@@ -16,6 +16,7 @@ import {
   type DeferredJobTimingByType,
 } from "./deferredJobTelemetry";
 import { getRedisQueueSnapshot, type QueueSnapshot } from "./queue";
+import { prisma } from "../db/prisma";
 
 type ReportScope = "global" | "firm";
 
@@ -29,7 +30,7 @@ type WeeklyOperatorAnomaly = {
   severity: "info" | "warning" | "critical";
   code: string;
   summary: string;
-  evidence: Record<string, number | string | null>;
+  evidence: Record<string, string | number | string[] | null>;
   recommendation: string;
 };
 
@@ -39,6 +40,162 @@ type WeeklyQueueHealthByType = DeferredJobTimingByType & {
   retriedQueuedCountNow: number;
   maxQueuedAttempt: number;
 };
+
+const clioHandoffFailureOutcomes = [
+  "replay_rejected_legacy",
+  "replay_rejected_data_changed",
+  "forced_reexport",
+] as const;
+
+type ClioHandoffFailureOutcome = (typeof clioHandoffFailureOutcomes)[number];
+
+const clioHandoffFailureThreshold = 3;
+const clioHandoffSpikeMinCurrentFailures = 6;
+const clioHandoffSpikeNoHistoryMin = 10;
+const clioHandoffSpikeRatio = 2;
+
+type ClioHandoffFailureSummary = {
+  count: number;
+  latestAt: string | null;
+  batchIds: string[];
+};
+
+function isClioHandoffFailureOutcome(value: string): value is ClioHandoffFailureOutcome {
+  return clioHandoffFailureOutcomes.includes(value as ClioHandoffFailureOutcome);
+}
+
+function toClioFailureSummaryWindow(
+  logs: Array<{ id: string; firmId: string | null; createdAt: Date; metaJson: unknown }>
+): Map<string, { total: ClioHandoffFailureSummary; byOutcome: Map<ClioHandoffFailureOutcome, ClioHandoffFailureSummary> }> {
+  const byFirm = new Map<string, { total: ClioHandoffFailureSummary; byOutcome: Map<ClioHandoffFailureOutcome, ClioHandoffFailureSummary> }>();
+
+  for (const entry of logs) {
+    const firmId = entry.firmId?.trim();
+    if (!firmId) {
+      continue;
+    }
+
+    const meta = (entry.metaJson ?? {}) as Record<string, unknown>;
+    const outcome = typeof meta.outcomeType === "string" ? meta.outcomeType : null;
+    const batchId = typeof meta.batchId === "string" && meta.batchId.trim() ? meta.batchId.trim() : null;
+
+    if (!outcome || !isClioHandoffFailureOutcome(outcome)) {
+      continue;
+    }
+
+    const createdAt = entry.createdAt.toISOString();
+    const summary = byFirm.get(firmId) ?? {
+      total: { count: 0, latestAt: null, batchIds: [] },
+      byOutcome: new Map<ClioHandoffFailureOutcome, ClioHandoffFailureSummary>(),
+    };
+
+    const byOutcome = summary.byOutcome.get(outcome) ?? {
+      count: 0,
+      latestAt: null,
+      batchIds: [],
+    };
+
+    byOutcome.count += 1;
+    if (summary.total.latestAt === null || createdAt > summary.total.latestAt) {
+      summary.total.latestAt = createdAt;
+    }
+    summary.total.count += 1;
+    if (summary.total.batchIds.length < 3 && batchId && !summary.total.batchIds.includes(batchId)) {
+      summary.total.batchIds.push(batchId);
+    }
+    if (byOutcome.latestAt === null || createdAt > byOutcome.latestAt) {
+      byOutcome.latestAt = createdAt;
+    }
+    if (byOutcome.batchIds.length < 3 && batchId && !byOutcome.batchIds.includes(batchId)) {
+      byOutcome.batchIds.push(batchId);
+    }
+
+    summary.byOutcome.set(outcome, byOutcome);
+    if (!byFirm.has(firmId)) {
+      byFirm.set(firmId, summary);
+    }
+  }
+
+  return byFirm;
+}
+
+function getClioHandoffFailureRows(params: {
+  from: Date;
+  to: Date;
+  firmId?: string | null;
+}): Promise<Array<{ id: string; firmId: string | null; createdAt: Date; metaJson: unknown }>> {
+  const whereClause: { area: string; firmId?: string; createdAt: { gte: Date; lt: Date } } = {
+    area: "clio_handoff_audit",
+    createdAt: {
+      gte: params.from,
+      lt: params.to,
+    },
+  };
+  if (params.firmId) {
+    whereClause.firmId = params.firmId;
+  }
+
+  return prisma.systemErrorLog.findMany({
+    where: whereClause,
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      firmId: true,
+      createdAt: true,
+      metaJson: true,
+    },
+  });
+}
+
+function addClioHandoffAnomalies(
+  currentSummary: Map<string, { total: ClioHandoffFailureSummary; byOutcome: Map<ClioHandoffFailureOutcome, ClioHandoffFailureSummary> }>,
+  previousSummary: Map<string, { total: ClioHandoffFailureSummary; byOutcome: Map<ClioHandoffFailureOutcome, ClioHandoffFailureSummary> }>,
+  anomalies: WeeklyOperatorAnomaly[]
+) {
+  for (const [firmId, summary] of currentSummary.entries()) {
+    for (const [outcome, outcomeSummary] of summary.byOutcome.entries()) {
+      if (outcomeSummary.count >= clioHandoffFailureThreshold) {
+        anomalies.push({
+          severity: "warning",
+          code: `clio_handoff_${outcome}`,
+          summary: `Firm ${firmId} has repeated Clio handoff ${outcome.replace(/_/g, " ")} outcomes.`,
+          evidence: {
+            firmId,
+            outcomeType: outcome,
+            currentWindowCount: outcomeSummary.count,
+            latestFailureAt: outcomeSummary.latestAt,
+            sampleBatchIds: outcomeSummary.batchIds,
+          },
+          recommendation: "Review recent migration handoff failures for this batch pattern before continuing exports.",
+        });
+      }
+    }
+
+    const currentFailures = summary.total.count;
+    if (currentFailures >= clioHandoffSpikeMinCurrentFailures) {
+      const previousFailures = previousSummary.get(firmId)?.total.count ?? 0;
+      const noHistoryAlert = previousFailures === 0 && currentFailures >= clioHandoffSpikeNoHistoryMin;
+      const ratioAlert =
+        previousFailures > 0 && currentFailures / previousFailures >= clioHandoffSpikeRatio;
+
+      if (noHistoryAlert || ratioAlert) {
+        anomalies.push({
+          severity: "warning",
+          code: "clio_handoff_firm_failure_spike",
+          summary: `Firm ${firmId} has an unusual spike in Clio handoff failures this week.`,
+          evidence: {
+            firmId,
+            currentFailureCount: currentFailures,
+            previousFailureCount: previousFailures,
+            latestFailureAt: summary.total.latestAt,
+            sampleBatchIds: summary.total.batchIds,
+          },
+          recommendation: "Check whether affected batches share the same manifest/idempotency state before retrying.",
+        });
+      }
+    }
+  }
+}
 
 type WeeklyOperatorSavings = {
   cacheSavedCostUsd: number;
@@ -175,6 +332,8 @@ function buildAnomalies(params: {
   currentCost: AiCostEntitySummary["totals"];
   previousCost: AiCostEntitySummary["totals"];
   cacheHitRates: AiCacheHitRateEntry[];
+  clioHandoffCurrent: Map<string, { total: ClioHandoffFailureSummary; byOutcome: Map<ClioHandoffFailureOutcome, ClioHandoffFailureSummary> }>;
+  clioHandoffPrevious: Map<string, { total: ClioHandoffFailureSummary; byOutcome: Map<ClioHandoffFailureOutcome, ClioHandoffFailureSummary> }>;
 }): WeeklyOperatorAnomaly[] {
   const anomalies: WeeklyOperatorAnomaly[] = [];
   const currentOcr = getJobTypeEntry(params.currentDeferred.byType, "ocr");
@@ -301,6 +460,8 @@ function buildAnomalies(params: {
     });
   }
 
+  addClioHandoffAnomalies(params.clioHandoffCurrent, params.clioHandoffPrevious, anomalies);
+
   return anomalies;
 }
 
@@ -317,6 +478,8 @@ export async function buildWeeklyOperatorReport(
     queueSnapshot,
     currentDeferred,
     previousDeferred,
+    clioHandoffCurrentRows,
+    clioHandoffPreviousRows,
     currentCost,
     previousCost,
     cacheHitRates,
@@ -331,6 +494,16 @@ export async function buildWeeklyOperatorReport(
       firmId: scopedFirmId,
     }),
     getDeferredJobTelemetryOverview({
+      from: previousWindow.fromDate,
+      to: previousWindow.toDate,
+      firmId: scopedFirmId,
+    }),
+    getClioHandoffFailureRows({
+      from: currentWindow.fromDate,
+      to: currentWindow.toDate,
+      firmId: scopedFirmId,
+    }),
+    getClioHandoffFailureRows({
       from: previousWindow.fromDate,
       to: previousWindow.toDate,
       firmId: scopedFirmId,
@@ -380,6 +553,8 @@ export async function buildWeeklyOperatorReport(
     currentCost: currentCost.totals,
     previousCost: previousCost.totals,
     cacheHitRates,
+    clioHandoffCurrent: toClioFailureSummaryWindow(clioHandoffCurrentRows),
+    clioHandoffPrevious: toClioFailureSummaryWindow(clioHandoffPreviousRows),
   });
 
   return {

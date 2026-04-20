@@ -16,6 +16,8 @@ async function main() {
 
   const currentCreatedAt = new Date("2026-04-18T12:00:00.000Z");
   const previousCreatedAt = new Date("2026-04-10T12:00:00.000Z");
+  const clioCurrentCreatedAt = new Date("2026-04-18T13:00:00.000Z");
+  const clioPreviousCreatedAt = new Date("2026-04-11T09:00:00.000Z");
 
   try {
     await prisma.aiTaskTelemetry.createMany({
@@ -165,6 +167,215 @@ async function main() {
       ],
     });
 
+    await prisma.systemErrorLog.createMany({
+      data: [
+        {
+          id: `weekly-clio-audit-legacy-a-${suffix}`,
+          firmId: firmA,
+          service: "api",
+          message: "Clio handoff outcome: replay_rejected_legacy",
+          area: "clio_handoff_audit",
+          route: "/migration/batches/batch-a/exports/clio/handoff",
+          method: "POST",
+          severity: "WARN",
+          createdAt: clioCurrentCreatedAt,
+          metaJson: {
+            batchId: `weekly-batch-stale-legacy-a-${suffix}`,
+            handoffExportId: `weekly-handoff-legacy-a-${suffix}`,
+            hasIdempotencyKey: true,
+            outcomeType: "replay_rejected_legacy",
+            reason: "legacy export cannot be safely replayed",
+            requestFingerprint: `fingerprint-legacy-a-${suffix}`,
+          },
+        },
+        {
+          id: `weekly-clio-audit-legacy-b-${suffix}`,
+          firmId: firmA,
+          service: "api",
+          message: "Clio handoff outcome: replay_rejected_legacy",
+          area: "clio_handoff_audit",
+          route: "/migration/batches/batch-a/exports/clio/handoff",
+          method: "POST",
+          severity: "WARN",
+          createdAt: clioCurrentCreatedAt,
+          metaJson: {
+            batchId: `weekly-batch-stale-legacy-b-${suffix}`,
+            handoffExportId: `weekly-handoff-legacy-b-${suffix}`,
+            hasIdempotencyKey: true,
+            outcomeType: "replay_rejected_legacy",
+            requestFingerprint: `fingerprint-legacy-b-${suffix}`,
+          },
+        },
+        {
+          id: `weekly-clio-audit-legacy-c-${suffix}`,
+          firmId: firmA,
+          service: "api",
+          message: "Clio handoff outcome: replay_rejected_legacy",
+          area: "clio_handoff_audit",
+          route: "/migration/batches/batch-a/exports/clio/handoff",
+          method: "POST",
+          severity: "WARN",
+          createdAt: clioCurrentCreatedAt,
+          metaJson: {
+            batchId: `weekly-batch-stale-legacy-c-${suffix}`,
+            handoffExportId: `weekly-handoff-legacy-c-${suffix}`,
+            hasIdempotencyKey: true,
+            outcomeType: "replay_rejected_legacy",
+            requestFingerprint: `fingerprint-legacy-c-${suffix}`,
+          },
+        },
+        {
+          id: `weekly-clio-audit-changed-a-${suffix}`,
+          firmId: firmA,
+          service: "api",
+          message: "Clio handoff outcome: replay_rejected_data_changed",
+          area: "clio_handoff_audit",
+          route: "/migration/batches/batch-a/exports/clio/handoff",
+          method: "POST",
+          severity: "WARN",
+          createdAt: clioCurrentCreatedAt,
+          metaJson: {
+            batchId: `weekly-batch-stale-changed-a-${suffix}`,
+            handoffExportId: `weekly-handoff-changed-a-${suffix}`,
+            hasIdempotencyKey: true,
+            outcomeType: "replay_rejected_data_changed",
+            reason: "underlying data changed",
+            requestFingerprint: `fingerprint-changed-a-${suffix}`,
+          },
+        },
+        {
+          id: `weekly-clio-audit-changed-b-${suffix}`,
+          firmId: firmA,
+          service: "api",
+          message: "Clio handoff outcome: replay_rejected_data_changed",
+          area: "clio_handoff_audit",
+          route: "/migration/batches/batch-a/exports/clio/handoff",
+          method: "POST",
+          severity: "WARN",
+          createdAt: clioCurrentCreatedAt,
+          metaJson: {
+            batchId: `weekly-batch-stale-changed-b-${suffix}`,
+            handoffExportId: `weekly-handoff-changed-b-${suffix}`,
+            hasIdempotencyKey: true,
+            outcomeType: "replay_rejected_data_changed",
+            requestFingerprint: `fingerprint-changed-b-${suffix}`,
+          },
+        },
+        {
+          id: `weekly-clio-audit-changed-c-${suffix}`,
+          firmId: firmA,
+          service: "api",
+          message: "Clio handoff outcome: replay_rejected_data_changed",
+          area: "clio_handoff_audit",
+          route: "/migration/batches/batch-a/exports/clio/handoff",
+          method: "POST",
+          severity: "WARN",
+          createdAt: clioCurrentCreatedAt,
+          metaJson: {
+            batchId: `weekly-batch-stale-changed-c-${suffix}`,
+            handoffExportId: `weekly-handoff-changed-c-${suffix}`,
+            hasIdempotencyKey: true,
+            outcomeType: "replay_rejected_data_changed",
+            requestFingerprint: `fingerprint-changed-c-${suffix}`,
+          },
+        },
+        {
+          id: `weekly-clio-audit-forced-a-${suffix}`,
+          firmId: firmA,
+          service: "api",
+          message: "Clio handoff outcome: forced_reexport",
+          area: "clio_handoff_audit",
+          route: "/migration/batches/batch-a/exports/clio/handoff",
+          method: "POST",
+          severity: "WARN",
+          createdAt: clioCurrentCreatedAt,
+          metaJson: {
+            batchId: `weekly-batch-stale-forced-a-${suffix}`,
+            handoffExportId: `weekly-handoff-forced-a-${suffix}`,
+            hasIdempotencyKey: false,
+            outcomeType: "forced_reexport",
+            reason: "operator override",
+            requestFingerprint: `fingerprint-forced-a-${suffix}`,
+          },
+        },
+        {
+          id: `weekly-clio-audit-forced-b-${suffix}`,
+          firmId: firmA,
+          service: "api",
+          message: "Clio handoff outcome: forced_reexport",
+          area: "clio_handoff_audit",
+          route: "/migration/batches/batch-a/exports/clio/handoff",
+          method: "POST",
+          severity: "WARN",
+          createdAt: clioCurrentCreatedAt,
+          metaJson: {
+            batchId: `weekly-batch-stale-forced-b-${suffix}`,
+            handoffExportId: `weekly-handoff-forced-b-${suffix}`,
+            hasIdempotencyKey: true,
+            outcomeType: "forced_reexport",
+            requestFingerprint: `fingerprint-forced-b-${suffix}`,
+          },
+        },
+        {
+          id: `weekly-clio-audit-forced-c-${suffix}`,
+          firmId: firmA,
+          service: "api",
+          message: "Clio handoff outcome: forced_reexport",
+          area: "clio_handoff_audit",
+          route: "/migration/batches/batch-a/exports/clio/handoff",
+          method: "POST",
+          severity: "WARN",
+          createdAt: clioCurrentCreatedAt,
+          metaJson: {
+            batchId: `weekly-batch-stale-forced-c-${suffix}`,
+            handoffExportId: `weekly-handoff-forced-c-${suffix}`,
+            hasIdempotencyKey: false,
+            outcomeType: "forced_reexport",
+            reason: "operator override",
+            requestFingerprint: `fingerprint-forced-c-${suffix}`,
+          },
+        },
+        {
+          id: `weekly-clio-audit-forced-d-${suffix}`,
+          firmId: firmA,
+          service: "api",
+          message: "Clio handoff outcome: forced_reexport",
+          area: "clio_handoff_audit",
+          route: "/migration/batches/batch-a/exports/clio/handoff",
+          method: "POST",
+          severity: "WARN",
+          createdAt: clioCurrentCreatedAt,
+          metaJson: {
+            batchId: `weekly-batch-stale-forced-d-${suffix}`,
+            handoffExportId: `weekly-handoff-forced-d-${suffix}`,
+            hasIdempotencyKey: true,
+            outcomeType: "forced_reexport",
+            reason: "operator override",
+            requestFingerprint: `fingerprint-forced-d-${suffix}`,
+          },
+        },
+        {
+          id: `weekly-clio-audit-prev-${suffix}`,
+          firmId: firmA,
+          service: "api",
+          message: "Clio handoff outcome: replay_rejected_legacy",
+          area: "clio_handoff_audit",
+          route: "/migration/batches/batch-a/exports/clio/handoff",
+          method: "POST",
+          severity: "WARN",
+          createdAt: clioPreviousCreatedAt,
+          metaJson: {
+            batchId: `weekly-batch-stale-prev-${suffix}`,
+            handoffExportId: `weekly-handoff-prev-${suffix}`,
+            hasIdempotencyKey: true,
+            outcomeType: "replay_rejected_legacy",
+            reason: "legacy export cannot be safely replayed",
+            requestFingerprint: "fingerprint-prev-legacy",
+          },
+        },
+      ],
+    });
+
     const report = await buildWeeklyOperatorReport({
       scope: "global",
       days: 7,
@@ -174,6 +385,9 @@ async function main() {
         queueDepth: 1,
         oldestJobAgeMs: 500,
         retriedQueuedCount: 0,
+        byFirm: {
+          [firmA]: { queued: 1, running: 0 },
+        },
         byType: {
           ocr: { queued: 1, oldestAgeMs: 500, retriedQueuedCount: 0, maxAttempt: 1 },
           classification: { queued: 0, oldestAgeMs: null, retriedQueuedCount: 0, maxAttempt: 0 },
@@ -204,6 +418,22 @@ async function main() {
     assert.equal(report.queue.ocr.current?.avgWaitMs, 2000);
     assert(report.anomalies.some((entry) => entry.code === "ocr_wait_regression"));
     assert(report.anomalies.some((entry) => entry.code === "ocr_runtime_regression"));
+    assert(
+      report.anomalies.some((entry) => entry.code === "clio_handoff_replay_rejected_legacy"),
+      "Expected repeated legacy Clio failure anomaly."
+    );
+    assert(
+      report.anomalies.some((entry) => entry.code === "clio_handoff_replay_rejected_data_changed"),
+      "Expected repeated data-changed Clio failure anomaly."
+    );
+    assert(
+      report.anomalies.some((entry) => entry.code === "clio_handoff_forced_reexport"),
+      "Expected repeated forced re-export Clio failure anomaly."
+    );
+    const clioSpike = report.anomalies.find((entry) => entry.code === "clio_handoff_firm_failure_spike");
+    assert(clioSpike !== undefined, "Expected clio handoff failure spike anomaly.");
+    assert.equal(clioSpike?.evidence.currentFailureCount, 10);
+    assert.equal(clioSpike?.evidence.previousFailureCount, 1);
 
     console.log("operator weekly report tests passed", {
       topDocument: report.cost.topDocuments[0],
@@ -233,6 +463,25 @@ async function main() {
             `weekly-job-2-${suffix}`,
             `weekly-job-3-${suffix}`,
             `weekly-job-4-${suffix}`,
+          ],
+        },
+      },
+    });
+    await prisma.systemErrorLog.deleteMany({
+      where: {
+        id: {
+          in: [
+            `weekly-clio-audit-legacy-a-${suffix}`,
+            `weekly-clio-audit-legacy-b-${suffix}`,
+            `weekly-clio-audit-legacy-c-${suffix}`,
+            `weekly-clio-audit-changed-a-${suffix}`,
+            `weekly-clio-audit-changed-b-${suffix}`,
+            `weekly-clio-audit-changed-c-${suffix}`,
+            `weekly-clio-audit-forced-a-${suffix}`,
+            `weekly-clio-audit-forced-b-${suffix}`,
+            `weekly-clio-audit-forced-c-${suffix}`,
+            `weekly-clio-audit-forced-d-${suffix}`,
+            `weekly-clio-audit-prev-${suffix}`,
           ],
         },
       },
