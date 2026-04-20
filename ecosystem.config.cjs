@@ -2,7 +2,25 @@
  * PM2 ecosystem config for doc-platform (API, worker, web).
  * Run from repo root: pm2 start ecosystem.config.cjs
  */
+const fs = require("fs");
 const path = require("path");
+
+function loadOptionalEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return;
+  }
+
+  process.loadEnvFile(filePath);
+}
+
+const apiEnvPath = path.join(__dirname, "apps", "api", ".env");
+const apiEnvLocalPath = path.join(__dirname, "apps", "api", ".env.local");
+
+loadOptionalEnvFile(apiEnvPath);
+loadOptionalEnvFile(apiEnvLocalPath);
+
+const resolvedTesseractPath =
+  process.env.TESSERACT_PATH?.trim() || "C:\\Program Files\\Tesseract-OCR\\tesseract.exe";
 
 module.exports = {
   apps: [
@@ -31,7 +49,7 @@ module.exports = {
         JWT_SECRET: process.env.JWT_SECRET,
         API_SECRET: process.env.API_SECRET,
         PROVIDER_SESSION_SECRET: process.env.PROVIDER_SESSION_SECRET,
-        TESSERACT_PATH: process.env.TESSERACT_PATH,
+        TESSERACT_PATH: resolvedTesseractPath,
       },
     },
     {
@@ -53,7 +71,10 @@ module.exports = {
       time: true,
       out_file: path.join(__dirname, "logs", "pm2", "worker-out.log"),
       error_file: path.join(__dirname, "logs", "pm2", "worker-error.log"),
-      env: { NODE_ENV: "production" },
+      env: {
+        NODE_ENV: "production",
+        TESSERACT_PATH: resolvedTesseractPath,
+      },
     },
     {
       name: "doc-platform-web",
