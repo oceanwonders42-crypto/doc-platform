@@ -80,9 +80,15 @@ type PdfToImgModule = {
   pdf?: (buffer: Buffer, opts?: { scale?: number }) => Promise<{ getPage: (n: number) => Promise<Buffer> }>;
 };
 
+// Keep a native dynamic import here so the built CommonJS runtime can still load
+// the ESM-only pdf-to-img package under PM2/release builds.
+const dynamicImport = new Function("specifier", "return import(specifier)") as (
+  specifier: string
+) => Promise<unknown>;
+
 async function renderPdfPage(pdfBuffer: Buffer, pageNum: number): Promise<Buffer | null> {
   try {
-    const mod = (await import("pdf-to-img")) as unknown as PdfToImgModule;
+    const mod = (await dynamicImport("pdf-to-img")) as PdfToImgModule;
     const pdfFn = (mod.default ?? mod.pdf) as PdfToImgModule["default"];
     if (typeof pdfFn !== "function") return null;
     const doc = await pdfFn(pdfBuffer, { scale: PDF_PAGE_SCALE });
