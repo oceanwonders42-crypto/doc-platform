@@ -21,6 +21,7 @@ export type IngestFromBufferInput = {
   mimeType: string;
   source: string;
   externalId?: string | null;
+  metaJsonPatch?: Record<string, unknown> | null;
 };
 
 export type IngestFromBufferResult =
@@ -184,7 +185,7 @@ export function buildDuplicateDocumentCreateData(params: {
 }
 
 export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Promise<IngestFromBufferResult> {
-  const { firmId, buffer, originalName, mimeType, source, externalId } = input;
+  const { firmId, buffer, originalName, mimeType, source, externalId, metaJsonPatch } = input;
 
   if (!buffer || !Buffer.isBuffer(buffer) || buffer.length === 0) {
     logIntakeFailure({ stage: "validation", error: "Empty or missing buffer", code: "INVALID_FILE", firmId, fileName: originalName, sizeBytes: 0 });
@@ -216,6 +217,47 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
 
   const fileSha256 = crypto.createHash("sha256").update(buffer).digest("hex");
   const fileSizeBytes = buffer.length;
+
+  if (externalId) {
+    const existingByExternalId = await prisma.document.findFirst({
+      where: {
+        firmId,
+        external_id: externalId,
+      },
+      orderBy: { ingestedAt: "desc" },
+      select: {
+        id: true,
+        spacesKey: true,
+        metaJson: true,
+      },
+    });
+    if (existingByExternalId) {
+      if (metaJsonPatch && Object.keys(metaJsonPatch).length > 0) {
+        const existingMeta =
+          existingByExternalId.metaJson != null
+            && typeof existingByExternalId.metaJson === "object"
+            && !Array.isArray(existingByExternalId.metaJson)
+            ? (existingByExternalId.metaJson as Record<string, unknown>)
+            : {};
+        await prisma.document.update({
+          where: { id: existingByExternalId.id },
+          data: {
+            metaJson: {
+              ...existingMeta,
+              ...metaJsonPatch,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
+      return {
+        ok: true,
+        documentId: existingByExternalId.id,
+        spacesKey: existingByExternalId.spacesKey,
+        duplicate: true,
+        existingId: existingByExternalId.id,
+      };
+    }
+  }
 
   const duplicatesEnabled = await hasFeature(firmId, "duplicates_detection");
   if (duplicatesEnabled) {
@@ -265,11 +307,14 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
         where: { id: existing.id },
         data: { duplicateMatchCount: { increment: 1 } },
       });
-      const meta = buildOriginalMetadata({
-        originalFilename: originalName,
-        sizeBytes: buffer.length,
-        mimeType: mimeType || "application/octet-stream",
-      });
+      const meta = {
+        ...buildOriginalMetadata({
+          originalFilename: originalName,
+          sizeBytes: buffer.length,
+          mimeType: mimeType || "application/octet-stream",
+        }),
+        ...(metaJsonPatch ?? {}),
+      };
       const doc = await createDuplicateDocumentFromExisting({
         firmId,
         source,
@@ -290,11 +335,14 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
 
   await putObject(key, buffer, mimeType);
 
-  const originalMeta = buildOriginalMetadata({
-    originalFilename: originalName,
-    sizeBytes: buffer.length,
-    mimeType: mimeType || "application/octet-stream",
-  });
+  const originalMeta = {
+    ...buildOriginalMetadata({
+      originalFilename: originalName,
+      sizeBytes: buffer.length,
+      mimeType: mimeType || "application/octet-stream",
+    }),
+    ...(metaJsonPatch ?? {}),
+  };
 
   const doc = await prisma.document.create({
     data: {

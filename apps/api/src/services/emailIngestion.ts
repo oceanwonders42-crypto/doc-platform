@@ -6,6 +6,7 @@
 import { prisma } from "../db/prisma";
 import { decryptSecret } from "./credentialEncryption";
 import { pollImapSinceUid } from "../email/imapPoller";
+import { buildEmailAutomationSnapshot } from "../email/emailIngestRunner";
 import { ingestDocumentFromBuffer } from "./ingestFromBuffer";
 import { createNotification } from "./notifications";
 import type { MailboxConnection } from "@prisma/client";
@@ -15,6 +16,8 @@ import type { IntegrationCredential } from "@prisma/client";
 type FirmIntegrationWithCreds = FirmIntegration & { credentials: IntegrationCredential[] };
 
 const MAX_MESSAGES_PER_POLL = 25;
+const BOOLEAN_FALSE_VALUES = new Set(["0", "false", "off", "no"]);
+const BOOLEAN_TRUE_VALUES = new Set(["1", "true", "on", "yes"]);
 
 function isPdfAttachment(filename: string, mimeType?: string | null): boolean {
   const lower = (filename || "").toLowerCase();
@@ -31,6 +34,15 @@ function isIngestibleAttachment(filename: string, mimeType?: string | null): boo
   if (lower.endsWith(".tif") || lower.endsWith(".tiff") || mt === "image/tiff" || mt.startsWith("image/tiff;")) return true;
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || mt === "image/jpeg" || mt.startsWith("image/jpeg;")) return true;
   return false;
+}
+
+function isEmailAutomationEnabled(): boolean {
+  const rawValue = process.env.EMAIL_AUTOMATION_ENABLED;
+  if (rawValue == null) return true;
+  const normalizedValue = rawValue.trim().toLowerCase();
+  if (BOOLEAN_TRUE_VALUES.has(normalizedValue)) return true;
+  if (BOOLEAN_FALSE_VALUES.has(normalizedValue)) return false;
+  return true;
 }
 
 export type PollMailboxResult = {
@@ -100,12 +112,31 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
   }
 
   let attachmentsIngested = 0;
+  const emailAutomationEnabled = isEmailAutomationEnabled();
   for (const m of messages) {
+    const attachmentNames = (m.attachments ?? []).map((attachment) => attachment.filename);
     for (const a of m.attachments ?? []) {
       if (!a?.content || !a.filename) continue;
       if (!isIngestibleAttachment(a.filename, a.mimeType)) continue;
       const externalId = `integration:${mailboxId}:${m.uid}:${a.filename}`;
       const content = Buffer.isBuffer(a.content) ? a.content : Buffer.from(a.content as ArrayBuffer);
+      const emailAutomation = emailAutomationEnabled
+        ? buildEmailAutomationSnapshot(
+            {
+              ...m,
+              attachments: (m.attachments ?? []).map((attachment) => ({
+                ...attachment,
+                filename: attachment.filename,
+              })),
+            },
+            a.filename
+          )
+        : null;
+      if (emailAutomation) {
+        emailAutomation.source.attachmentNames = attachmentNames.filter(
+          (entry): entry is string => typeof entry === "string" && entry.trim().length > 0
+        );
+      }
       const result = await ingestDocumentFromBuffer({
         firmId,
         buffer: content,
@@ -113,6 +144,7 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
         mimeType: a.mimeType || "application/pdf",
         source: "email",
         externalId,
+        metaJsonPatch: emailAutomation ? { emailAutomation } : undefined,
       });
       if (result.ok) {
         attachmentsIngested++;

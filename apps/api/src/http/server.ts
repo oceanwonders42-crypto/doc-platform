@@ -59,7 +59,7 @@ import { explainDocument } from "../ai/documentExplain";
 import { pushCaseIntelligenceToCrm, pushCrmWebhook } from "../integrations/crm/pushService";
 import { buildOffersSummaryPdf } from "../services/offersSummaryPdf";
 import { getPresignedGetUrl } from "../services/storage";
-import { hasFeature } from "../services/featureFlags";
+import { hasFeature, isEmailAutomationEnabled } from "../services/featureFlags";
 import {
   canMarkDocumentExportReady,
   getEffectiveDocumentReviewState,
@@ -2752,7 +2752,7 @@ app.get("/me/search", auth, requireRole(Role.STAFF), async (req, res) => {
   }
 });
 
-// Feature flags for add-ons (insurance_extraction, court_extraction, demand_narratives)
+// Feature flags for add-ons plus global kill switches exposed to the client.
 app.get("/me/features", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -2765,7 +2765,17 @@ app.get("/me/features", auth, requireRole(Role.STAFF), async (req, res) => {
       hasFeature(firmId, "crm_push"),
       hasFeature(firmId, "case_insights"),
     ]);
-    res.json({ insurance_extraction, court_extraction, demand_narratives, duplicates_detection, crm_sync, crm_push, case_insights });
+    const email_automation = isEmailAutomationEnabled();
+    res.json({
+      insurance_extraction,
+      court_extraction,
+      demand_narratives,
+      duplicates_detection,
+      crm_sync,
+      crm_push,
+      case_insights,
+      email_automation,
+    });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }

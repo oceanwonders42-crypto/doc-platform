@@ -102,6 +102,15 @@ type WorkerOcrDependencies = {
 
 type RecognitionTextQuery = (sql: string, params: [string, string]) => Promise<unknown>;
 
+type WorkerRoutingStateDocument = {
+  source?: string | null;
+  routedCaseId?: string | null;
+  status?: string | null;
+  reviewState?: string | null;
+  processingStage?: string | null;
+  routingStatus?: string | null;
+};
+
 function normalizeMimeType(mimeType?: string | null): string {
   return (mimeType ?? "").toLowerCase();
 }
@@ -118,6 +127,87 @@ export function getOcrNoTextReviewState() {
     failureStage: "ocr" as const,
     failureReason: "No OCR text extracted" as const,
   };
+}
+
+export function isWorkerEmailSourceDocument(
+  doc: Pick<WorkerRoutingStateDocument, "source">
+): boolean {
+  return doc.source === "email";
+}
+
+export function isWorkerReviewFallbackRecorded(
+  doc: Pick<WorkerRoutingStateDocument, "status" | "reviewState" | "processingStage" | "routingStatus">
+): boolean {
+  return doc.status === "NEEDS_REVIEW"
+    && doc.processingStage === "complete"
+    && (doc.reviewState === "IN_REVIEW" || doc.routingStatus === "needs_review");
+}
+
+export function shouldWorkerDeferCaseMatchUntilAfterExtraction(
+  doc: Pick<WorkerRoutingStateDocument, "source">,
+  suggestedMatterType: string
+): boolean {
+  return suggestedMatterType !== "TRAFFIC" && isWorkerEmailSourceDocument(doc);
+}
+
+export function shouldWorkerQueueCaseMatchAfterExtraction(
+  doc: Pick<WorkerRoutingStateDocument, "source" | "routedCaseId" | "status" | "reviewState" | "processingStage" | "routingStatus">,
+  suggestedMatterType: string
+): boolean {
+  if (!shouldWorkerDeferCaseMatchUntilAfterExtraction(doc, suggestedMatterType)) {
+    return false;
+  }
+
+  if (doc.routedCaseId) {
+    return false;
+  }
+
+  return !isWorkerReviewFallbackRecorded(doc);
+}
+
+export function getWorkerCaseMatchSkipReason(
+  doc: Pick<WorkerRoutingStateDocument, "routedCaseId" | "status" | "reviewState" | "processingStage" | "routingStatus">
+): "already_routed" | "review_fallback_recorded" | null {
+  if (doc.routedCaseId) {
+    return "already_routed";
+  }
+
+  if (isWorkerReviewFallbackRecorded(doc)) {
+    return "review_fallback_recorded";
+  }
+
+  return null;
+}
+
+type ClioMatterWriteBackResult = {
+  noteStatus: string;
+  claimNumberStatus: string;
+  claimNumber?: string | null;
+  currentClaimNumber?: string | null;
+  noteError?: string | null;
+  claimNumberError?: string | null;
+};
+
+async function syncClioMatterWriteBackOnIngestIfAvailable(params: {
+  firmId: string;
+  caseId: string;
+  documentId: string;
+}): Promise<ClioMatterWriteBackResult | null> {
+  try {
+    const loaded = (await import("../integrations/clioAdapter")) as {
+      syncClioMatterWriteBackOnIngest?: (args: typeof params) => Promise<ClioMatterWriteBackResult>;
+    };
+    if (typeof loaded.syncClioMatterWriteBackOnIngest !== "function") {
+      return null;
+    }
+    return await loaded.syncClioMatterWriteBackOnIngest(params);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/syncClioMatterWriteBackOnIngest/i.test(message) || /Cannot find module/i.test(message)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export function inferWorkerOcrMimeType(
@@ -286,6 +376,27 @@ async function handlePostRouteSyncJob(
             documentId,
             error: pushResult.error,
           });
+        } else {
+          const writeBackResult = await syncClioMatterWriteBackOnIngestIfAvailable({
+            firmId,
+            caseId,
+            documentId,
+          });
+          if (writeBackResult) {
+            logInfo("transfer_fast_path_async", {
+              jobType: "post_route_sync",
+              stage: "clio_writeback_end",
+              documentId,
+              firmId,
+              caseId,
+              noteStatus: writeBackResult.noteStatus,
+              claimNumberStatus: writeBackResult.claimNumberStatus,
+              claimNumber: writeBackResult.claimNumber ?? null,
+              currentClaimNumber: writeBackResult.currentClaimNumber ?? null,
+              noteError: writeBackResult.noteError ?? null,
+              claimNumberError: writeBackResult.claimNumberError ?? null,
+            });
+          }
         }
         logInfo("transfer_fast_path_async", {
           jobType: "post_route_sync",
@@ -575,6 +686,18 @@ async function handleClassificationJob(documentId: string, firmId: string): Prom
     await enqueueExtractionJob({ documentId, firmId });
     console.log(
       `Classification done, queued extraction: ${documentId} (docType=${finalDocType}, matterType=${suggestedMatterType})`
+    );
+    return;
+  }
+
+  if (shouldWorkerDeferCaseMatchUntilAfterExtraction(doc, suggestedMatterType)) {
+    await prisma.document.update({
+      where: { id: documentId },
+      data: { processingStage: "extraction" },
+    });
+    await enqueueExtractionJob({ documentId, firmId });
+    console.log(
+      `Classification done, queued extraction before case_match: ${documentId} (docType=${finalDocType}, matterType=${suggestedMatterType}, source=${doc.source ?? "unknown"})`
     );
     return;
   }
@@ -904,6 +1027,26 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
     });
   }
 
+  if (shouldWorkerQueueCaseMatchAfterExtraction(doc, suggestedMatterType)) {
+    await prisma.document.update({
+      where: { id: documentId },
+      data: { processingStage: "case_match" },
+    });
+    await enqueueCaseMatchJob({ documentId, firmId });
+    console.log(
+      `Extraction done, queued case_match: ${documentId} (docType=${finalDocType}, matterType=${suggestedMatterType}, source=${doc.source ?? "unknown"})`
+    );
+    logInfo("transfer_fast_path_async", {
+      jobType: "extraction",
+      stage: "queued_case_match",
+      documentId,
+      firmId,
+      source: doc.source ?? null,
+      elapsedMs: Date.now() - startedAt,
+    });
+    return;
+  }
+
   await prisma.document.update({
     where: { id: documentId },
     data: { processingStage: "complete" },
@@ -928,9 +1071,19 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
   });
   const existingDocument = await prisma.document.findUnique({
     where: { id: documentId },
-    select: { routedCaseId: true },
+    select: {
+      routedCaseId: true,
+      status: true,
+      reviewState: true,
+      processingStage: true,
+      routingStatus: true,
+    },
   });
-  if (existingDocument?.routedCaseId) {
+  if (!existingDocument) {
+    throw new Error(`Document not found: ${documentId}`);
+  }
+  const caseMatchSkipReason = getWorkerCaseMatchSkipReason(existingDocument);
+  if (caseMatchSkipReason === "already_routed") {
     console.log(`Case match skipped (already routed): ${documentId} -> ${existingDocument.routedCaseId}`);
     logInfo("transfer_fast_path_async", {
       jobType: "case_match",
@@ -938,6 +1091,20 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
       documentId,
       firmId,
       routedCaseId: existingDocument.routedCaseId,
+      elapsedMs: Date.now() - startedAt,
+    });
+    return;
+  }
+  if (caseMatchSkipReason === "review_fallback_recorded") {
+    console.log(`Case match skipped (review fallback already recorded): ${documentId}`);
+    logInfo("transfer_fast_path_async", {
+      jobType: "case_match",
+      stage: "skip_review_fallback_recorded",
+      documentId,
+      firmId,
+      status: existingDocument.status,
+      reviewState: existingDocument.reviewState,
+      routingStatus: existingDocument.routingStatus,
       elapsedMs: Date.now() - startedAt,
     });
     return;

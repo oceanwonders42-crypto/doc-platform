@@ -4,7 +4,7 @@
  */
 import { prisma } from "../db/prisma";
 import { pgPool } from "../db/pg";
-import { matchDocumentToCase, type MatchSignals } from "./caseMatching";
+import { getStoredMatchSignalsForDocument, matchDocumentToCase, type MatchSignals } from "./caseMatching";
 
 export type DocumentForRouting = {
   id: string;
@@ -20,6 +20,8 @@ export type ExtractedForRouting = {
   clientName?: string | null;
   docType?: string | null;
   providerName?: string | null;
+  documentClientName?: string | null;
+  emailClientName?: string | null;
 };
 
 export type RoutingCandidate = {
@@ -60,12 +62,42 @@ export type RoutingScoreResult = {
     baseMatchReason: string | null;
     providerName?: string | null;
     providerMatchReasons?: string[];
+    documentClientName?: string | null;
+    emailClientName?: string | null;
   };
 };
+
+type JsonRecord = Record<string, unknown>;
 
 function normalize(s: string | null | undefined): string {
   if (s == null) return "";
   return String(s).trim().toLowerCase();
+}
+
+function asRecord(value: unknown): JsonRecord | null {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as JsonRecord;
+}
+
+function readString(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  const record = asRecord(value);
+  if (!record) return null;
+  const extractedValue = readString(record.extractedValue);
+  if (extractedValue) return extractedValue;
+  return readString(record.value);
+}
+
+function firstNonEmpty(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
 }
 
 /** Simple filename pattern: supports * wildcard or includes substring. */
@@ -93,7 +125,7 @@ export async function scoreDocumentRouting(
   extracted: ExtractedForRouting,
   ocrText: string | null
 ): Promise<RoutingScoreResult> {
-  const { id: documentId, firmId, originalName, source, routedCaseId, status } = document;
+  const { id: documentId, firmId, originalName, source, routedCaseId } = document;
   const signals: RoutingScoreResult["signals"] = {
     caseNumber: extracted.caseNumber ?? null,
     clientName: extracted.clientName ?? null,
@@ -103,6 +135,8 @@ export async function scoreDocumentRouting(
     baseMatchReason: null,
     providerName: extracted.providerName ?? null,
     providerMatchReasons: [],
+    documentClientName: extracted.documentClientName ?? null,
+    emailClientName: extracted.emailClientName ?? null,
   };
 
   const candidates: RoutingCandidate[] = [];
@@ -110,6 +144,7 @@ export async function scoreDocumentRouting(
 
   // 1) Base case match (deterministic)
   const baseSignals: MatchSignals = {
+    documentId,
     caseNumber: extracted.caseNumber,
     clientName: extracted.clientName,
   };
@@ -310,21 +345,53 @@ export async function scoreDocumentRouting(
 /** Load extracted fields from document_recognition for a document. */
 export async function getExtractedForRouting(documentId: string): Promise<ExtractedForRouting | null> {
   const { rows } = await pgPool.query<{
+    firm_id: string;
     case_number: string | null;
     client_name: string | null;
     doc_type: string | null;
     provider_name: string | null;
+    extracted_fields: unknown;
   }>(
-    `select case_number, client_name, doc_type, provider_name from document_recognition where document_id = $1`,
+    `
+    select
+      d."firmId" as firm_id,
+      dr.case_number,
+      dr.client_name,
+      dr.doc_type,
+      dr.provider_name,
+      d."extractedFields" as extracted_fields
+    from document_recognition dr
+    join "Document" d on d.id = dr.document_id
+    where dr.document_id = $1
+    `,
     [documentId]
   );
   const r = rows[0];
   if (!r) return null;
+
+  const storedSignals = await getStoredMatchSignalsForDocument(r.firm_id, documentId).catch(() => null);
+  const extractedFields = asRecord(r.extracted_fields);
+  const medicalRecord = asRecord(extractedFields?.medicalRecord);
+
   return {
-    caseNumber: r.case_number,
-    clientName: r.client_name,
-    docType: r.doc_type,
-    providerName: (r as { provider_name?: string | null }).provider_name ?? null,
+    caseNumber: firstNonEmpty(r.case_number, storedSignals?.documentCaseNumber),
+    clientName: firstNonEmpty(
+      r.client_name,
+      storedSignals?.documentClientName,
+      storedSignals?.emailClientName,
+      ...(storedSignals?.courtPartyNames ?? [])
+    ),
+    docType: firstNonEmpty(r.doc_type, readString(extractedFields?.docType)),
+    providerName: firstNonEmpty(
+      r.provider_name ?? null,
+      readString(extractedFields?.providerName),
+      readString(extractedFields?.provider),
+      readString(extractedFields?.facility),
+      readString(medicalRecord?.provider),
+      readString(medicalRecord?.facility)
+    ),
+    documentClientName: storedSignals?.documentClientName ?? null,
+    emailClientName: storedSignals?.emailClientName ?? null,
   };
 }
 

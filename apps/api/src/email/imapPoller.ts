@@ -20,6 +20,7 @@ export type EmailMessage = {
   providerMessageId: string; // Message-ID header if available, else fallback uid
   fromEmail?: string;
   subject?: string;
+  bodyText?: string;
   sentAt?: Date;
   receivedAt?: Date;
   attachments: EmailAttachment[];
@@ -122,6 +123,7 @@ export async function pollImapSinceUid(
         providerMessageId,
         fromEmail,
         subject,
+        bodyText: parsed.text || undefined,
         sentAt: parsed.date || undefined,
         receivedAt: (msg as any).internalDate || undefined,
         attachments,
