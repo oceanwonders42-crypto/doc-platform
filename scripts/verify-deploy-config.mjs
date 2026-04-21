@@ -17,6 +17,16 @@ async function readPackageScripts(packagePath) {
   return parsed?.scripts && typeof parsed.scripts === "object" ? parsed.scripts : {};
 }
 
+async function readJsonFile(filePath) {
+  try {
+    const raw = await readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizePath(value) {
   return path.normalize(String(value));
 }
@@ -63,6 +73,65 @@ function verifyPm2App({ failures, passes }, app, expected) {
   }
 }
 
+function verifyBuildScript({ failures, passes }, service, script) {
+  if (!script?.includes("write-build-meta.mjs")) {
+    failures.push(`apps/${service}/package.json build script no longer writes build-meta.json`);
+    return;
+  }
+
+  const writesPendingState = script.includes("--state pending");
+  const writesCompleteState = script.includes("--state complete");
+  if (!writesPendingState || !writesCompleteState) {
+    failures.push(
+      `apps/${service}/package.json build script must mark build-meta.json as pending before build and complete after build`
+    );
+    return;
+  }
+
+  passes.push(`apps/${service} build script marks build-meta.json pending before build and complete after build`);
+}
+
+function verifyStartScript({ failures, passes }, service, script) {
+  if (!script?.includes("start-service-with-build-info.mjs")) {
+    failures.push(`apps/${service}/package.json start script no longer launches through start-service-with-build-info.mjs`);
+    return;
+  }
+
+  passes.push(`apps/${service} start script launches through start-service-with-build-info.mjs`);
+}
+
+function verifyCompletedBuildMeta({ failures, warnings, passes }, service, buildMetaRaw) {
+  if (!buildMetaRaw) {
+    failures.push(`apps/${service}/build-meta.json could not be parsed after build`);
+    return;
+  }
+
+  if (buildMetaRaw.buildState !== "complete") {
+    failures.push(
+      `apps/${service}/build-meta.json state is ${readScript(buildMetaRaw.buildState) ?? "unknown"}; expected complete`
+    );
+  } else {
+    passes.push(`apps/${service}/build-meta.json reports buildState=complete`);
+  }
+
+  const missingFields = [];
+  if (!readScript(buildMetaRaw.buildStartedAt)) missingFields.push("buildStartedAt");
+  if (!readScript(buildMetaRaw.builtAt)) missingFields.push("builtAt");
+  if (!readScript(buildMetaRaw.source)) missingFields.push("source");
+  if (!readScript(buildMetaRaw.branch)) missingFields.push("branch");
+  if (typeof buildMetaRaw.dirty !== "boolean") missingFields.push("dirty");
+
+  if (missingFields.length > 0) {
+    failures.push(`apps/${service}/build-meta.json is missing completed-build fields: ${missingFields.join(", ")}`);
+  } else {
+    passes.push(`apps/${service}/build-meta.json contains completed-build fields`);
+  }
+
+  if (buildMetaRaw.dirty === true) {
+    warnings.push(`apps/${service}/build-meta.json reports a dirty build`);
+  }
+}
+
 export async function verifyDeployConfig(options = {}) {
   const requireBuilt = options.requireBuilt === true;
   const expectedSha = readScript(options.expectedSha);
@@ -83,25 +152,13 @@ export async function verifyDeployConfig(options = {}) {
 
   const apiBuildScript = readScript(apiScripts.build);
   const webBuildScript = readScript(webScripts.build);
+  const apiStartScript = readScript(apiScripts.start);
   const webStartScript = readScript(webScripts.start);
 
-  if (!apiBuildScript?.includes("write-build-meta.mjs")) {
-    failures.push("apps/api/package.json build script no longer writes build-meta.json");
-  } else {
-    passes.push("apps/api build script writes build-meta.json before compiling");
-  }
-
-  if (!webBuildScript?.includes("write-build-meta.mjs")) {
-    failures.push("apps/web/package.json build script no longer writes build-meta.json");
-  } else {
-    passes.push("apps/web build script writes build-meta.json before Next build");
-  }
-
-  if (!webStartScript?.includes("start-service-with-build-info.mjs")) {
-    failures.push("apps/web/package.json start script no longer launches through start-service-with-build-info.mjs");
-  } else {
-    passes.push("apps/web start script launches through start-service-with-build-info.mjs");
-  }
+  verifyBuildScript({ failures, passes }, "api", apiBuildScript);
+  verifyBuildScript({ failures, passes }, "web", webBuildScript);
+  verifyStartScript({ failures, passes }, "api", apiStartScript);
+  verifyStartScript({ failures, passes }, "web", webStartScript);
 
   verifyPm2App(
     { failures, passes },
@@ -156,13 +213,11 @@ export async function verifyDeployConfig(options = {}) {
 
   const apiBuildMeta = await readBuildMeta(path.join(repoRoot, "apps", "api"));
   const webBuildMeta = await readBuildMeta(path.join(repoRoot, "apps", "web"));
+  const apiBuildMetaRaw = await readJsonFile(path.join(repoRoot, "apps", "api", "build-meta.json"));
+  const webBuildMetaRaw = await readJsonFile(path.join(repoRoot, "apps", "web", "build-meta.json"));
 
-  if (!apiBuildMeta) {
-    failures.push("apps/api/build-meta.json could not be parsed after build");
-  }
-  if (!webBuildMeta) {
-    failures.push("apps/web/build-meta.json could not be parsed after build");
-  }
+  verifyCompletedBuildMeta({ failures, warnings, passes }, "api", apiBuildMetaRaw);
+  verifyCompletedBuildMeta({ failures, warnings, passes }, "web", webBuildMetaRaw);
 
   if (apiBuildMeta && webBuildMeta) {
     if (apiBuildMeta.sha !== webBuildMeta.sha) {

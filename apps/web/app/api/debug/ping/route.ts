@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { parseJsonResponse } from "../../../../lib/api";
 
 export async function GET() {
   const base = process.env.DOC_API_URL;
@@ -11,15 +12,33 @@ export async function GET() {
     });
   }
   const start = Date.now();
+  const upstreamUrl = `${base}/health`;
   try {
-    const res = await fetch(`${base}/health`, { cache: "no-store" });
+    const res = await fetch(upstreamUrl, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
     const latencyMs = Date.now() - start;
-    const data = await res.json().catch(() => ({}));
+    let data: { ok?: boolean | string; error?: string };
+    try {
+      data = (await parseJsonResponse(res)) as { ok?: boolean | string; error?: string };
+    } catch (error) {
+      return NextResponse.json({
+        ok: false,
+        status: res.status,
+        latencyMs,
+        upstreamUrl,
+        upstreamContentType: res.headers.get("content-type"),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     const ok = res.ok && data && (data.ok === true || data.ok === "true");
     return NextResponse.json({
       ok,
       status: res.status,
       latencyMs,
+      upstreamUrl,
+      upstreamContentType: res.headers.get("content-type"),
       error: ok ? undefined : (data?.error || `HTTP ${res.status}`),
     });
   } catch (e: unknown) {
@@ -28,6 +47,8 @@ export async function GET() {
       ok: false,
       status: 0,
       latencyMs,
+      upstreamUrl,
+      upstreamContentType: null,
       error: e instanceof Error ? e.message : String(e),
     });
   }

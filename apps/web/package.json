@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "node ../../scripts/write-build-meta.mjs . && next build",
+    "build": "node ../../scripts/write-build-meta.mjs . --state pending && next build && node ../../scripts/write-build-meta.mjs . --state complete",
     "start": "node ../../scripts/start-service-with-build-info.mjs web node node_modules/next/dist/bin/next start",
     "test:e2e": "playwright test"
   },

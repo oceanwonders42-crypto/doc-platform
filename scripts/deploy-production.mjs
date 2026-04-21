@@ -34,6 +34,12 @@ const targetPm2Apps = [
     cwd: path.join(repoRoot, "apps", "api"),
     script: path.join(repoRoot, "scripts", "start-service-with-build-info.mjs"),
     args: ["api", "node", "dist/http/server.js"],
+    expectedEnv: {
+      DOC_BUILD_SHA: buildMeta.sha,
+      DOC_BUILD_SOURCE: buildMeta.source,
+      DOC_BUILD_BRANCH: buildMeta.branch,
+      DOC_BUILD_DIRTY: buildMeta.dirty ? "true" : "false",
+    },
     outFile: path.join(repoRoot, "logs", "pm2", "api-out.log"),
     errorFile: path.join(repoRoot, "logs", "pm2", "api-error.log"),
   },
@@ -42,6 +48,12 @@ const targetPm2Apps = [
     cwd: path.join(repoRoot, "apps", "api"),
     script: path.join(repoRoot, "scripts", "start-service-with-build-info.mjs"),
     args: ["worker", "node", "dist/workers/worker.js"],
+    expectedEnv: {
+      DOC_BUILD_SHA: buildMeta.sha,
+      DOC_BUILD_SOURCE: buildMeta.source,
+      DOC_BUILD_BRANCH: buildMeta.branch,
+      DOC_BUILD_DIRTY: buildMeta.dirty ? "true" : "false",
+    },
     outFile: path.join(repoRoot, "logs", "pm2", "worker-out.log"),
     errorFile: path.join(repoRoot, "logs", "pm2", "worker-error.log"),
   },
@@ -50,6 +62,12 @@ const targetPm2Apps = [
     cwd: path.join(repoRoot, "apps", "web"),
     script: path.join(repoRoot, "scripts", "start-service-with-build-info.mjs"),
     args: ["web", "node", "node_modules/next/dist/bin/next", "start"],
+    expectedEnv: {
+      DOC_BUILD_SHA: buildMeta.sha,
+      DOC_BUILD_SOURCE: buildMeta.source,
+      DOC_BUILD_BRANCH: buildMeta.branch,
+      DOC_BUILD_DIRTY: buildMeta.dirty ? "true" : "false",
+    },
     outFile: path.join(repoRoot, "logs", "pm2", "web-out.log"),
     errorFile: path.join(repoRoot, "logs", "pm2", "web-error.log"),
   },
@@ -267,6 +285,12 @@ function collectPm2RuntimeFailures(parsedApps, expectedApps, options = {}) {
     const actualOutLog = app.pm_out_log_path ?? env.pm_out_log_path;
     const actualErrorLog = app.pm_err_log_path ?? env.pm_err_log_path;
     const actualPwd = app.PWD ?? app.cwd ?? nestedEnv.PWD;
+    const actualRuntimeEnv = {
+      DOC_BUILD_SHA: readScriptEnv(app, env, nestedEnv, "DOC_BUILD_SHA"),
+      DOC_BUILD_SOURCE: readScriptEnv(app, env, nestedEnv, "DOC_BUILD_SOURCE"),
+      DOC_BUILD_BRANCH: readScriptEnv(app, env, nestedEnv, "DOC_BUILD_BRANCH"),
+      DOC_BUILD_DIRTY: readScriptEnv(app, env, nestedEnv, "DOC_BUILD_DIRTY"),
+    };
 
     if (requireOnlineStatus && actualStatus !== "online") {
       failures.push(`PM2 app ${expectedApp.name} status is ${actualStatus ?? "missing"} after deploy`);
@@ -291,9 +315,20 @@ function collectPm2RuntimeFailures(parsedApps, expectedApps, options = {}) {
     if (actualPwd && !samePath(actualPwd, expectedApp.cwd)) {
       failures.push(`PM2 app ${expectedApp.name} env.PWD is ${actualPwd}; expected ${expectedApp.cwd}`);
     }
+    for (const [key, expectedValue] of Object.entries(expectedApp.expectedEnv ?? {})) {
+      if ((actualRuntimeEnv[key] ?? null) !== expectedValue) {
+        failures.push(
+          `PM2 app ${expectedApp.name} env.${key} is ${actualRuntimeEnv[key] ?? "missing"}; expected ${expectedValue}`
+        );
+      }
+    }
   }
 
   return failures;
+}
+
+function readScriptEnv(app, env, nestedEnv, key) {
+  return app?.[key] ?? env?.[key] ?? nestedEnv?.[key] ?? null;
 }
 
 async function verifyPm2Runtime(expectedApps) {
@@ -395,6 +430,18 @@ async function verifyLiveVersions() {
   if (apiVersion.versionLabel !== webVersion.versionLabel) {
     failures.push(`live API versionLabel ${apiVersion.versionLabel} does not match live web versionLabel ${webVersion.versionLabel}`);
   }
+  if ((apiVersion.buildSource ?? "unknown") !== (webVersion.buildSource ?? "unknown")) {
+    failures.push(
+      `live API buildSource ${apiVersion.buildSource ?? "unknown"} does not match live web buildSource ${webVersion.buildSource ?? "unknown"}`
+    );
+  }
+  if (apiVersion.buildDirty !== webVersion.buildDirty) {
+    failures.push(
+      `live API buildDirty ${apiVersion.buildDirty === null ? "unknown" : apiVersion.buildDirty} does not match live web buildDirty ${
+        webVersion.buildDirty === null ? "unknown" : webVersion.buildDirty
+      }`
+    );
+  }
   if (apiVersion.commitHash !== buildMeta.sha) {
     failures.push(`live API commitHash ${apiVersion.commitHash} does not match deployed commit ${buildMeta.sha}`);
   }
@@ -417,20 +464,23 @@ async function verifyLiveVersions() {
   if (webVersion.versionLabel !== buildMeta.versionLabel) {
     failures.push(`live web versionLabel ${webVersion.versionLabel} does not match deployed versionLabel ${buildMeta.versionLabel}`);
   }
-  if (!allowDirty && apiVersion.buildDirty === true) {
-    failures.push("live API reports dirty=true");
+  if (apiVersion.buildSource == null) {
+    failures.push("live API did not report buildSource");
   }
-  if (!allowDirty && webVersion.buildDirty === true) {
-    failures.push("live web reports dirty=true");
+  if (webVersion.buildSource == null) {
+    failures.push("live web did not report buildSource");
   }
-  if (allowDirty && (apiVersion.buildDirty === true || webVersion.buildDirty === true)) {
-    printWarn("live services report dirty=true (bypass enabled)");
+  if (apiVersion.buildDirty === null) {
+    failures.push("live API did not report buildDirty");
   }
-  if (!allowDirty && apiVersion.buildDirty !== false) {
-    failures.push(`live API buildDirty is ${apiVersion.buildDirty ?? "unknown"} instead of false`);
+  if (webVersion.buildDirty === null) {
+    failures.push("live web did not report buildDirty");
   }
-  if (!allowDirty && webVersion.buildDirty !== false) {
-    failures.push(`live web buildDirty is ${webVersion.buildDirty ?? "unknown"} instead of false`);
+  if (apiVersion.buildDirty !== buildMeta.dirty) {
+    failures.push(`live API buildDirty is ${apiVersion.buildDirty ?? "unknown"} instead of deployed dirty=${buildMeta.dirty}`);
+  }
+  if (webVersion.buildDirty !== buildMeta.dirty) {
+    failures.push(`live web buildDirty is ${webVersion.buildDirty ?? "unknown"} instead of deployed dirty=${buildMeta.dirty}`);
   }
   if (apiVersion.buildSource !== buildMeta.source) {
     failures.push(`live API buildSource ${apiVersion.buildSource ?? "unknown"} does not match deployed source ${buildMeta.source}`);
@@ -506,6 +556,10 @@ async function main() {
     buildMeta.shortSha,
     "--expect-version-label",
     buildMeta.versionLabel,
+    "--expect-build-source",
+    buildMeta.source,
+    "--expect-build-dirty",
+    buildMeta.dirty ? "true" : "false",
     "--require-services",
     "api,web",
     ...(allowDirty ? ["--allow-dirty"] : []),

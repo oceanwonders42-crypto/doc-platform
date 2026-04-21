@@ -35,9 +35,9 @@ for (const target of targets) {
     console.log(
       `[deploy-status] ${target.service} live sha=${result.commitHash} shortSha=${
         result.shortCommitHash ?? "unknown"
-      } dirty=${result.buildDirty === true ? "YES" : result.buildDirty === false ? "NO" : "unknown"} versionLabel=${
-        result.versionLabel
-      }`
+      } source=${result.buildSource ?? "unknown"} dirty=${
+        result.buildDirty === true ? "YES" : result.buildDirty === false ? "NO" : "unknown"
+      } versionLabel=${result.versionLabel}`
     );
   } catch (error) {
     failures.push(`${target.service} is unreachable: ${error instanceof Error ? error.message : String(error)}`);
@@ -62,11 +62,27 @@ if (api && web) {
   if (api.versionLabel !== web.versionLabel) {
     failures.push(`live API/web versionLabel mismatch (${api.versionLabel} vs ${web.versionLabel})`);
   }
+  if ((api.buildSource ?? "unknown") !== (web.buildSource ?? "unknown")) {
+    failures.push(`live API/web buildSource mismatch (${api.buildSource ?? "unknown"} vs ${web.buildSource ?? "unknown"})`);
+  }
+  if (api.buildDirty !== web.buildDirty) {
+    failures.push(
+      `live API/web buildDirty mismatch (${api.buildDirty === null ? "unknown" : api.buildDirty ? "YES" : "NO"} vs ${
+        web.buildDirty === null ? "unknown" : web.buildDirty ? "YES" : "NO"
+      })`
+    );
+  }
 }
 
 for (const result of liveResults) {
   if (!commitsMatch(localGit.sha, result.commitHash)) {
     failures.push(`${result.service} live commit ${result.commitHash} does not match local ${localGit.sha}`);
+  }
+  if (!result.buildSource) {
+    failures.push(`${result.service} live buildSource is missing`);
+  }
+  if (result.buildDirty === null) {
+    failures.push(`${result.service} live buildDirty is missing`);
   }
 }
 
@@ -77,7 +93,7 @@ if (failures.length > 0) {
   for (const failure of failures) {
     printFail(failure, "Redeploy or roll back until local, API, and web all report the same clean version.");
   }
-  process.exit(1);
+  process.exitCode = 1;
+} else {
+  printPass(`local and live versions match (${localGit.sha}, ${localGit.versionLabel})`);
 }
-
-printPass(`local and live versions match (${localGit.sha}, ${localGit.versionLabel})`);

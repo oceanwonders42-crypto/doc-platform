@@ -74,24 +74,51 @@ export function getApiFetchInit(init?: RequestInit): RequestInit {
 export async function parseJsonResponse(response: Response): Promise<unknown> {
   const text = await response.text();
   const trimmed = text.trim();
-  if (trimmed.startsWith("<")) {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  const looksLikeHtml = trimmed.startsWith("<") || contentType.includes("text/html");
+  if (looksLikeHtml) {
     const snippet = trimmed.slice(0, 200);
     console.error(
-      "[api] Server returned HTML instead of JSON. Is the API URL correct?",
-      { url: response.url, status: response.status, snippet }
+      "[api] Server returned HTML instead of JSON. Is the API target correct?",
+      { url: response.url, status: response.status, contentType, snippet }
     );
     throw new Error(
-      `Server returned HTML instead of JSON (status ${response.status}). ` +
-        `Check that the API is running and NEXT_PUBLIC_API_URL is set (e.g. http://localhost:4000). ` +
+      `Server returned HTML instead of JSON (status ${response.status}, content-type ${contentType || "unknown"}). ` +
+        `Check that the API target is running and that NEXT_PUBLIC_API_URL or DOC_API_URL points to the JSON API instead of the web app. ` +
         `Response starts with: ${snippet.slice(0, 80)}...`
     );
   }
   try {
     return JSON.parse(text);
   } catch (e) {
-    console.error("[api] JSON parse failed", { url: response.url, status: response.status, text: text.slice(0, 300) });
+    console.error("[api] JSON parse failed", {
+      url: response.url,
+      status: response.status,
+      contentType,
+      text: text.slice(0, 300),
+    });
     throw new Error(
-      `Invalid JSON from server (status ${response.status}). Response: ${text.slice(0, 100)}...`
+      `Invalid JSON from server (status ${response.status}, content-type ${contentType || "unknown"}). Response: ${text.slice(0, 100)}...`
     );
   }
+}
+
+export function formatApiClientError(
+  error: unknown,
+  fallback: string,
+  options?: {
+    deploymentMessage?: string;
+  }
+): string {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (message.includes("Server returned HTML instead of JSON")) {
+    return (
+      options?.deploymentMessage ??
+      "The API target returned HTML instead of JSON. Check NEXT_PUBLIC_API_URL, API routing, and whether the latest web build has been redeployed."
+    );
+  }
+  if (message.includes("Invalid JSON from server")) {
+    return "The API returned invalid JSON. Check the active API build and server logs.";
+  }
+  return message || fallback;
 }

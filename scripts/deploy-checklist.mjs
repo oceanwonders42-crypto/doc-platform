@@ -87,6 +87,26 @@ if (apiBuildMeta && webBuildMeta && apiBuildMeta.sha !== webBuildMeta.sha) {
   );
 }
 
+if (apiBuildMeta && webBuildMeta) {
+  if (apiBuildMeta.source !== webBuildMeta.source) {
+    failures.push(
+      `api/web build-meta source mismatch (${apiBuildMeta.source ?? "unknown"} vs ${webBuildMeta.source ?? "unknown"})`
+    );
+  } else {
+    printPass(`api/web build metadata source agree on ${apiBuildMeta.source ?? "unknown"}`);
+  }
+
+  if (apiBuildMeta.dirty !== webBuildMeta.dirty) {
+    failures.push(
+      `api/web build-meta dirty mismatch (${apiBuildMeta.dirty === null ? "unknown" : apiBuildMeta.dirty ? "YES" : "NO"} vs ${
+        webBuildMeta.dirty === null ? "unknown" : webBuildMeta.dirty ? "YES" : "NO"
+      })`
+    );
+  } else {
+    printPass(`api/web build metadata dirty agree on ${apiBuildMeta.dirty === true ? "YES" : "NO"}`);
+  }
+}
+
 if (failures.length > 0) {
   for (const failure of failures) {
     printFail(

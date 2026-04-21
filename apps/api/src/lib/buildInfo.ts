@@ -87,31 +87,64 @@ function readBuildMetaFile(): BuildInfo | null {
   }
 }
 
-export function getBuildInfo(): BuildInfo {
-  const fileBuild = readBuildMetaFile();
-  if (fileBuild) {
-    return fileBuild;
-  }
-
-  const packageMeta = readPackageMeta();
+function readEnvBuild(packageMeta: ReturnType<typeof readPackageMeta>): BuildInfo | null {
   const sha =
     process.env.DOC_BUILD_SHA?.trim() ||
     process.env.SOURCE_VERSION?.trim() ||
     process.env.VERCEL_GIT_COMMIT_SHA?.trim() ||
-    "unknown";
+    "";
   const builtAt = process.env.DOC_BUILD_TIMESTAMP?.trim() || null;
   const source = process.env.DOC_BUILD_SOURCE?.trim() || "runtime-env";
   const branch = process.env.DOC_BUILD_BRANCH?.trim() || null;
   const dirtyEnv = process.env.DOC_BUILD_DIRTY?.trim();
+  const dirty = dirtyEnv === "true" ? true : dirtyEnv === "false" ? false : null;
+
+  if (!sha && !builtAt && source === "runtime-env" && !branch && dirty === null) {
+    return null;
+  }
+
+  const resolvedSha = sha || "unknown";
+  const shortSha = getShortSha(resolvedSha);
 
   return {
-    sha,
-    shortSha: getShortSha(sha),
-    versionLabel: computeVersionLabel(branch, getShortSha(sha), dirtyEnv === "true" ? true : dirtyEnv === "false" ? false : null),
+    sha: resolvedSha,
+    shortSha,
+    versionLabel: computeVersionLabel(branch, shortSha, dirty),
     builtAt,
     source,
     branch,
-    dirty: dirtyEnv === "true" ? true : dirtyEnv === "false" ? false : null,
+    dirty,
     ...packageMeta,
   };
+}
+
+export function getBuildInfo(): BuildInfo {
+  const packageMeta = readPackageMeta();
+  const fileBuild = readBuildMetaFile();
+  const envBuild = readEnvBuild(packageMeta);
+
+  if (
+    envBuild &&
+    envBuild.sha !== "unknown" &&
+    (envBuild.source !== "runtime-env" || envBuild.builtAt || envBuild.dirty !== null || envBuild.branch)
+  ) {
+    return envBuild;
+  }
+
+  if (fileBuild) {
+    return fileBuild;
+  }
+
+  return (
+    envBuild ?? {
+      sha: "unknown",
+      shortSha: "unknown",
+      versionLabel: computeVersionLabel(null, "unknown", null),
+      builtAt: null,
+      source: "runtime-env",
+      branch: null,
+      dirty: null,
+      ...packageMeta,
+    }
+  );
 }
