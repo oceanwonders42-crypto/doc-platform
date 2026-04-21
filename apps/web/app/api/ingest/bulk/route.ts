@@ -4,7 +4,7 @@ import {
   readUploadFormData,
   resolveApiBase,
   resolveUpstreamAuth,
-} from "./shared";
+} from "../shared";
 
 export const runtime = "nodejs";
 
@@ -12,18 +12,17 @@ export async function POST(req: Request) {
   const base = resolveApiBase();
   if (typeof base !== "string") return base;
 
-  const auth = resolveUpstreamAuth(req, process.env.DOC_API_KEY);
+  const auth = resolveUpstreamAuth(req);
   if (!auth.ok) return auth.response;
 
-  const formResult = await readUploadFormData(req, "file", { maxFiles: 1 });
+  const formResult = await readUploadFormData(req, "files", { maxFiles: 20 });
   if (!formResult.ok) return formResult.response;
 
   if (!formResult.formData.get("source")) {
     formResult.formData.set("source", "web");
   }
 
-  const upstreamPath = auth.mode === "user" ? "/me/ingest" : "/ingest";
-  return proxyUploadJson(`${base}${upstreamPath}`, {
+  return proxyUploadJson(`${base}/me/ingest/bulk`, {
     method: "POST",
     headers: auth.headers,
     body: formResult.formData,

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
+import { formatApiClientError, getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DataTable, Column } from "@/components/dashboard/DataTable";
 
@@ -20,9 +20,63 @@ type Doc = {
 };
 
 type DocumentsListResponse = { ok?: boolean; items?: Doc[] };
+type UploadResponse = {
+  ok?: boolean;
+  error?: string;
+  code?: string;
+  documentIds?: string[];
+  duplicatesDetected?: number;
+  duplicateIndices?: number[];
+  errors?: { file: string; error: string; code?: string }[];
+};
 
 function isDocumentsListResponse(res: unknown): res is DocumentsListResponse {
   return typeof res === "object" && res !== null;
+}
+
+function formatUploadError(params: {
+  responseStatus?: number;
+  responseCode?: string;
+  responseError?: string;
+  thrownError?: unknown;
+  endpoint: string;
+}): string {
+  const { responseStatus, responseCode, responseError, thrownError, endpoint } = params;
+
+  if (responseCode === "PAYLOAD_TOO_LARGE" || responseStatus === 413) {
+    return "This file is larger than the 100MB upload limit. Split it, compress it, or upload fewer files at once.";
+  }
+
+  if (
+    responseCode === "UNAUTHORIZED"
+    || responseStatus === 401
+    || responseStatus === 403
+    || /invalid api key|unauthorized|forbidden/i.test(responseError ?? "")
+  ) {
+    return "Your session is not authorized to upload documents right now. Sign in again and retry.";
+  }
+
+  if (thrownError != null) {
+    const message = formatApiClientError(thrownError, "Upload failed", {
+      deploymentMessage:
+        "The upload endpoint returned HTML instead of JSON. Check the active API host, routing, and whether the latest web/API build is deployed.",
+    });
+    if (message.includes("Server returned HTML instead of JSON")) {
+      return "The upload endpoint returned HTML instead of JSON. Check the active API host and deploy version, then retry.";
+    }
+    if (message.includes("We couldn't reach the API")) {
+      return "We couldn't reach the upload service. Check the active API host and your network connection, then retry.";
+    }
+    console.error("[documents-upload] request failed", {
+      endpoint,
+      message,
+      error: thrownError,
+      locationOrigin: typeof window !== "undefined" ? window.location.origin : null,
+    });
+    return message;
+  }
+
+  return responseError ?? "Upload failed";
 }
 
 export default function DocumentsPage() {
@@ -67,6 +121,7 @@ export default function DocumentsPage() {
     async (fileList: FileList | null) => {
       if (!fileList || fileList.length === 0) return;
       const base = getApiBase();
+      const uploadEndpoint = base ? `${base}/me/ingest/bulk` : "/api/ingest/bulk";
       const form = new FormData();
       for (let i = 0; i < fileList.length; i++) {
         form.append("files", fileList[i]);
@@ -75,16 +130,30 @@ export default function DocumentsPage() {
       setUploadError(null);
       setUploadMessage(null);
       try {
-        const res = await fetch(`${base}/me/ingest/bulk`, {
+        const res = await fetch(uploadEndpoint, {
           method: "POST",
           headers: getAuthHeader(),
           ...getFetchOptions(),
           body: form,
         });
         const data = await parseJsonResponse(res);
-        const json = data as { ok?: boolean; error?: string; documentIds?: string[]; duplicatesDetected?: number; duplicateIndices?: number[]; errors?: { file: string; error: string }[] };
+        const json = data as UploadResponse;
         if (!res.ok) {
-          setUploadError(json.error ?? `Upload failed (${res.status})`);
+          console.error("[documents-upload] upload rejected", {
+            endpoint: uploadEndpoint,
+            status: res.status,
+            code: json.code,
+            error: json.error,
+            errors: json.errors,
+          });
+          setUploadError(
+            formatUploadError({
+              responseStatus: res.status,
+              responseCode: json.code,
+              responseError: json.error,
+              endpoint: uploadEndpoint,
+            })
+          );
           return;
         }
         if (json.ok && (json.documentIds?.length ?? 0) > 0) {
@@ -96,10 +165,15 @@ export default function DocumentsPage() {
           }
         }
         if (json.errors && json.errors.length > 0) {
-          setUploadError(json.errors.map((e: { file: string; error: string }) => `${e.file}: ${e.error}`).join("; "));
+          setUploadError(json.errors.map((e) => `${e.file}: ${e.error}`).join("; "));
         }
       } catch (e) {
-        setUploadError((e as Error)?.message ?? "Upload failed");
+        setUploadError(
+          formatUploadError({
+            thrownError: e,
+            endpoint: uploadEndpoint,
+          })
+        );
       } finally {
         setUploading(false);
       }

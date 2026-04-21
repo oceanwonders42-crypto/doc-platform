@@ -123,6 +123,7 @@ import {
 export const app = express();
 const MAX_DOCUMENT_UPLOAD_FILES = 20;
 const MAX_DOCUMENT_UPLOAD_MB = Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024));
+const MAX_DOCUMENT_UPLOAD_BODY_LIMIT = `${MAX_DOCUMENT_UPLOAD_MB}mb`;
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -132,7 +133,8 @@ const upload = multer({
 });
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
-app.use(express.json({ limit: "25mb" }));
+app.use(express.json({ limit: MAX_DOCUMENT_UPLOAD_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: MAX_DOCUMENT_UPLOAD_BODY_LIMIT }));
 const buildInfo = getBuildInfo();
 const nodeEnv = process.env.NODE_ENV ?? "development";
 
@@ -259,11 +261,38 @@ function sendUploadTooLarge(res: express.Response, requestId: string | null): vo
   );
 }
 
-function uploadFailureStatus(message: string): number {
+function classifyUploadFailure(message: string): {
+  status: number;
+  code: "PAYLOAD_TOO_LARGE" | "UNSUPPORTED_FILE" | "INVALID_FILE" | "VALIDATION_ERROR";
+} {
   const normalized = message.trim().toLowerCase();
-  if (normalized.includes("too large")) return 413;
-  if (normalized.includes("monthly document limit exceeded")) return 402;
-  return 400;
+  if (normalized.includes("too large")) {
+    return { status: 413, code: "PAYLOAD_TOO_LARGE" };
+  }
+  if (
+    normalized.includes("mime type not allowed")
+    || normalized.includes("file type not allowed")
+  ) {
+    return { status: 400, code: "UNSUPPORTED_FILE" };
+  }
+  if (
+    normalized.includes("empty")
+    || normalized.includes("invalid")
+    || normalized.includes("size mismatch")
+  ) {
+    return { status: 400, code: "INVALID_FILE" };
+  }
+  return { status: 400, code: "VALIDATION_ERROR" };
+}
+
+function methodNotAllowedForUploadRoute(req: express.Request, res: express.Response): void {
+  sendSafeError(
+    res,
+    405,
+    `Method ${req.method} is not allowed for this upload endpoint. Use POST multipart/form-data.`,
+    "METHOD_NOT_ALLOWED",
+    getRequestId(req)
+  );
 }
 
 async function ingestDashboardUploadFiles(params: {
@@ -274,12 +303,16 @@ async function ingestDashboardUploadFiles(params: {
   documentIds: string[];
   duplicatesDetected: number;
   duplicateIndices: number[];
-  errors: { file: string; error: string }[];
+  errors: { file: string; error: string; code: "PAYLOAD_TOO_LARGE" | "UNSUPPORTED_FILE" | "INVALID_FILE" | "VALIDATION_ERROR" }[];
 }> {
   const { firmId, files, source } = params;
   const documentIds: string[] = [];
   const duplicateIndices: number[] = [];
-  const errors: { file: string; error: string }[] = [];
+  const errors: {
+    file: string;
+    error: string;
+    code: "PAYLOAD_TOO_LARGE" | "UNSUPPORTED_FILE" | "INVALID_FILE" | "VALIDATION_ERROR";
+  }[] = [];
 
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index];
@@ -297,9 +330,11 @@ async function ingestDashboardUploadFiles(params: {
       continue;
     }
 
+    const classifiedFailure = classifyUploadFailure(result.error);
     errors.push({
       file: file.originalname,
       error: result.error,
+      code: classifiedFailure.code,
     });
   }
 
@@ -1754,7 +1789,8 @@ app.post("/me/ingest", auth, requireRole(Role.STAFF), rateLimitEndpoint(60, "me_
   });
 
   if (!result.ok) {
-    return res.status(uploadFailureStatus(result.error)).json({ ok: false, error: result.error });
+    const failure = classifyUploadFailure(result.error);
+    return sendSafeError(res, failure.status, result.error, failure.code, getRequestId(req));
   }
 
   return res.json({
@@ -1782,10 +1818,11 @@ app.post("/me/ingest/bulk", auth, requireRole(Role.STAFF), rateLimitEndpoint(30,
   });
 
   if (summary.documentIds.length === 0) {
-    const firstError = summary.errors[0]?.error ?? "Upload failed";
-    return res.status(uploadFailureStatus(firstError)).json({
+    const firstFailure = summary.errors[0] ?? { error: "Upload failed", code: "VALIDATION_ERROR" as const };
+    return res.status(classifyUploadFailure(firstFailure.error).status).json({
       ok: false,
-      error: firstError,
+      error: firstFailure.error,
+      code: firstFailure.code,
       errors: summary.errors,
     });
   }
@@ -1798,6 +1835,10 @@ app.post("/me/ingest/bulk", auth, requireRole(Role.STAFF), rateLimitEndpoint(30,
     errors: summary.errors.length > 0 ? summary.errors : undefined,
   });
 });
+
+app.all("/ingest", methodNotAllowedForUploadRoute);
+app.all("/me/ingest", methodNotAllowedForUploadRoute);
+app.all("/me/ingest/bulk", methodNotAllowedForUploadRoute);
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4000;
 // === Firm-scoped endpoints ===
@@ -6793,8 +6834,8 @@ app.get("/metrics/ops/weekly-report", auth, requireRole(Role.FIRM_ADMIN), async 
 });
 
 app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const requestId = getRequestId(req);
   if (err instanceof multer.MulterError) {
-    const requestId = getRequestId(req);
     if (err.code === "LIMIT_FILE_SIZE") {
       sendUploadTooLarge(res, requestId);
       return;
@@ -6813,6 +6854,15 @@ app.use((err: unknown, req: express.Request, res: express.Response, next: expres
       sendSafeError(res, 400, "Unexpected file field in upload", "VALIDATION_ERROR", requestId);
       return;
     }
+  }
+  const maybePayloadTooLarge = err as { type?: string; status?: number; statusCode?: number; message?: string } | null;
+  if (
+    maybePayloadTooLarge?.type === "entity.too.large"
+    || maybePayloadTooLarge?.status === 413
+    || maybePayloadTooLarge?.statusCode === 413
+  ) {
+    sendUploadTooLarge(res, requestId);
+    return;
   }
   next(err);
 });
