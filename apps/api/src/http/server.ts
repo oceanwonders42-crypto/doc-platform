@@ -54,6 +54,7 @@ import { buildCaseReportPdf } from "../services/caseReportPdf";
 import { fetchCourtDocket } from "../court/docketFetcher";
 import { testImapConnection } from "../email/imapPoller";
 import { routeDocument } from "../services/documentRouting";
+import { ingestDocumentFromBuffer } from "../services/ingestFromBuffer";
 import { generateNarrative } from "../ai/narrativeAssistant";
 import { explainDocument } from "../ai/documentExplain";
 import { pushCaseIntelligenceToCrm, pushCrmWebhook } from "../integrations/crm/pushService";
@@ -75,6 +76,7 @@ import trafficRouter from "./routes/traffic";
 import { Prisma, Role } from "@prisma/client";
 import { generateClioContactsCsv, generateClioMattersCsv } from "../exports/clioExport";
 import { importClioMappingsFromCsv } from "../services/clioMappingsImport";
+import { sendSafeError } from "../lib/errors";
 import { logSystemError } from "../services/errorLog";
 import { signToken } from "../lib/jwt";
 import { WEBHOOK_EVENTS } from "../services/webhooks";
@@ -92,6 +94,7 @@ import { ensureDemoSeedObjects } from "../dev/demoSeedObjects";
 import { getJobCounts } from "../services/jobQueue";
 import { getBuildInfo } from "../lib/buildInfo";
 import { logInfo } from "../lib/logger";
+import { MAX_UPLOAD_BYTES } from "../services/fileSecurity";
 import {
   getAiCacheHitRates,
   getAiCostLeaderboard,
@@ -118,7 +121,15 @@ import {
 } from "../services/documentRecognitionCache";
 
 export const app = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+const MAX_DOCUMENT_UPLOAD_FILES = 20;
+const MAX_DOCUMENT_UPLOAD_MB = Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024));
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_UPLOAD_BYTES,
+    files: MAX_DOCUMENT_UPLOAD_FILES,
+  },
+});
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: "25mb" }));
@@ -231,6 +242,73 @@ function parseCostBucket(value: unknown): "day" | "week" {
 function parseCostLeaderboardGroupBy(value: unknown): "task" | "document" | "case" | "firm" {
   const normalized = String(value ?? "task").trim().toLowerCase();
   return normalized === "document" || normalized === "case" || normalized === "firm" ? normalized : "task";
+}
+
+function getRequestId(req: express.Request): string | null {
+  const requestId = (req as { requestId?: unknown }).requestId;
+  return typeof requestId === "string" && requestId.trim().length > 0 ? requestId : null;
+}
+
+function sendUploadTooLarge(res: express.Response, requestId: string | null): void {
+  sendSafeError(
+    res,
+    413,
+    `File too large. Max upload size is ${MAX_DOCUMENT_UPLOAD_MB}MB per file.`,
+    "PAYLOAD_TOO_LARGE",
+    requestId
+  );
+}
+
+function uploadFailureStatus(message: string): number {
+  const normalized = message.trim().toLowerCase();
+  if (normalized.includes("too large")) return 413;
+  if (normalized.includes("monthly document limit exceeded")) return 402;
+  return 400;
+}
+
+async function ingestDashboardUploadFiles(params: {
+  firmId: string;
+  files: Express.Multer.File[];
+  source: string;
+}): Promise<{
+  documentIds: string[];
+  duplicatesDetected: number;
+  duplicateIndices: number[];
+  errors: { file: string; error: string }[];
+}> {
+  const { firmId, files, source } = params;
+  const documentIds: string[] = [];
+  const duplicateIndices: number[] = [];
+  const errors: { file: string; error: string }[] = [];
+
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const result = await ingestDocumentFromBuffer({
+      firmId,
+      buffer: file.buffer,
+      originalName: file.originalname,
+      mimeType: file.mimetype || "application/octet-stream",
+      source,
+    });
+
+    if (result.ok) {
+      documentIds.push(result.documentId);
+      if (result.duplicate) duplicateIndices.push(index);
+      continue;
+    }
+
+    errors.push({
+      file: file.originalname,
+      error: result.error,
+    });
+  }
+
+  return {
+    documentIds,
+    duplicatesDetected: duplicateIndices.length,
+    duplicateIndices,
+    errors,
+  };
 }
 
 app.get("/health", (_req, res) => res.json({ ok: true, build: buildInfo }));
@@ -1654,6 +1732,71 @@ app.post("/ingest", authWithScope("ingest"), rateLimitEndpoint(60, "ingest"), up
   await enqueueDocumentJob({ documentId: doc.id, firmId });
 
   res.json({ ok: true, documentId: doc.id, spacesKey: key });
+});
+
+app.post("/me/ingest", auth, requireRole(Role.STAFF), rateLimitEndpoint(60, "me_ingest"), upload.single("file"), async (req, res) => {
+  const firmId = (req as any).firmId as string;
+  const file = req.file;
+  const source = typeof req.body?.source === "string" && req.body.source.trim() ? req.body.source.trim() : "web";
+  const externalId = req.body?.externalId ? String(req.body.externalId) : null;
+
+  if (!file) {
+    return res.status(400).json({ ok: false, error: "Missing file (multipart field name must be 'file')" });
+  }
+
+  const result = await ingestDocumentFromBuffer({
+    firmId,
+    buffer: file.buffer,
+    originalName: file.originalname,
+    mimeType: file.mimetype || "application/octet-stream",
+    source,
+    externalId,
+  });
+
+  if (!result.ok) {
+    return res.status(uploadFailureStatus(result.error)).json({ ok: false, error: result.error });
+  }
+
+  return res.json({
+    ok: true,
+    documentId: result.documentId,
+    duplicate: result.duplicate ?? false,
+    existingId: result.existingId ?? null,
+    spacesKey: result.spacesKey,
+  });
+});
+
+app.post("/me/ingest/bulk", auth, requireRole(Role.STAFF), rateLimitEndpoint(30, "me_ingest_bulk"), upload.array("files", MAX_DOCUMENT_UPLOAD_FILES), async (req, res) => {
+  const firmId = (req as any).firmId as string;
+  const files = Array.isArray(req.files) ? req.files : [];
+  const source = typeof req.body?.source === "string" && req.body.source.trim() ? req.body.source.trim() : "web";
+
+  if (files.length === 0) {
+    return res.status(400).json({ ok: false, error: "Missing files (multipart field name must be 'files')" });
+  }
+
+  const summary = await ingestDashboardUploadFiles({
+    firmId,
+    files,
+    source,
+  });
+
+  if (summary.documentIds.length === 0) {
+    const firstError = summary.errors[0]?.error ?? "Upload failed";
+    return res.status(uploadFailureStatus(firstError)).json({
+      ok: false,
+      error: firstError,
+      errors: summary.errors,
+    });
+  }
+
+  return res.json({
+    ok: true,
+    documentIds: summary.documentIds,
+    duplicatesDetected: summary.duplicatesDetected,
+    duplicateIndices: summary.duplicateIndices,
+    errors: summary.errors.length > 0 ? summary.errors : undefined,
+  });
 });
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4000;
@@ -6647,6 +6790,31 @@ app.get("/metrics/ops/weekly-report", auth, requireRole(Role.FIRM_ADMIN), async 
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
+});
+
+app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err instanceof multer.MulterError) {
+    const requestId = getRequestId(req);
+    if (err.code === "LIMIT_FILE_SIZE") {
+      sendUploadTooLarge(res, requestId);
+      return;
+    }
+    if (err.code === "LIMIT_FILE_COUNT") {
+      sendSafeError(
+        res,
+        413,
+        `Too many files in one upload. Max ${MAX_DOCUMENT_UPLOAD_FILES} files per request.`,
+        "PAYLOAD_TOO_LARGE",
+        requestId
+      );
+      return;
+    }
+    if (err.code === "LIMIT_UNEXPECTED_FILE") {
+      sendSafeError(res, 400, "Unexpected file field in upload", "VALIDATION_ERROR", requestId);
+      return;
+    }
+  }
+  next(err);
 });
 
 app.use(errorLogMiddleware);
