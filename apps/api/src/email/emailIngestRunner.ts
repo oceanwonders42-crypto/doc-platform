@@ -1,7 +1,13 @@
 import "dotenv/config";
 import { pollImapSinceUid, sha256 } from "./imapPoller";
 import { pgPool } from "../db/pg";
+import { prisma } from "../db/prisma";
 import { createNotification } from "../services/notifications";
+import {
+  extractEmailAutomationSnapshot,
+  setDocumentEmailAutomation,
+} from "../services/emailAutomation";
+import { isEmailAutomationAllowedForFirm } from "../services/featureCompatibility";
 import type { EmailMessage } from "./imapPoller";
 
 type MailboxRow = {
@@ -177,6 +183,14 @@ async function handleImapMailbox(mb: MailboxRow) {
     `[email] imap returned messages=${messages.length} highestUid=${highestUid ?? "null"} lastUidWas=${lastUid ?? "null"}`
   );
 
+  const firm = await prisma.firm.findUnique({
+    where: { id: mb.firm_id },
+    select: { id: true, plan: true },
+  });
+  const emailAutomationAllowed = firm
+    ? isEmailAutomationAllowedForFirm(firm)
+    : false;
+
   // Store metadata: sender (from_email), subject, receivedDate (received_at).
   // Also store is_fax and client_name_extracted for routing/display.
   for (const m of messages) {
@@ -217,6 +231,7 @@ async function handleImapMailbox(mb: MailboxRow) {
 
     // Process all non-inline attachments (extract all; send only PDFs to ingest pipeline)
     const attachments = m.attachments ?? [];
+    const attachmentNames = attachments.map((attachment) => attachment.filename);
 
     for (const a of attachments) {
       if (!a?.content || !a.filename) continue;
@@ -262,6 +277,18 @@ async function handleImapMailbox(mb: MailboxRow) {
         });
         docId = ingest?.documentId || ingest?.id || null;
         console.log(`[email] ingested PDF -> documentId=${docId || "?"}`);
+
+        if (docId && emailAutomationAllowed) {
+          const snapshot = extractEmailAutomationSnapshot({
+            fromEmail: m.fromEmail,
+            subject: m.subject,
+            attachmentFileName: a.filename,
+            attachmentNames,
+          });
+          if (snapshot) {
+            await setDocumentEmailAutomation(mb.firm_id, docId, snapshot);
+          }
+        }
       }
 
       const r = await pgPool.query(

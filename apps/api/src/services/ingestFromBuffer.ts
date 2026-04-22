@@ -21,6 +21,7 @@ export type IngestFromBufferInput = {
   mimeType: string;
   source: string;
   externalId?: string | null;
+  metaJsonPatch?: Record<string, unknown> | null;
 };
 
 export type IngestFromBufferResult =
@@ -184,7 +185,7 @@ export function buildDuplicateDocumentCreateData(params: {
 }
 
 export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Promise<IngestFromBufferResult> {
-  const { firmId, buffer, originalName, mimeType, source, externalId } = input;
+  const { firmId, buffer, originalName, mimeType, source, externalId, metaJsonPatch } = input;
 
   if (!buffer || !Buffer.isBuffer(buffer) || buffer.length === 0) {
     logIntakeFailure({ stage: "validation", error: "Empty or missing buffer", code: "INVALID_FILE", firmId, fileName: originalName, sizeBytes: 0 });
@@ -265,11 +266,14 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
         where: { id: existing.id },
         data: { duplicateMatchCount: { increment: 1 } },
       });
-      const meta = buildOriginalMetadata({
-        originalFilename: originalName,
-        sizeBytes: buffer.length,
-        mimeType: mimeType || "application/octet-stream",
-      });
+      const meta = {
+        ...buildOriginalMetadata({
+          originalFilename: originalName,
+          sizeBytes: buffer.length,
+          mimeType: mimeType || "application/octet-stream",
+        }),
+        ...(metaJsonPatch ?? {}),
+      };
       const doc = await createDuplicateDocumentFromExisting({
         firmId,
         source,
@@ -290,11 +294,14 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
 
   await putObject(key, buffer, mimeType);
 
-  const originalMeta = buildOriginalMetadata({
-    originalFilename: originalName,
-    sizeBytes: buffer.length,
-    mimeType: mimeType || "application/octet-stream",
-  });
+  const originalMeta = {
+    ...buildOriginalMetadata({
+      originalFilename: originalName,
+      sizeBytes: buffer.length,
+      mimeType: mimeType || "application/octet-stream",
+    }),
+    ...(metaJsonPatch ?? {}),
+  };
 
   const doc = await prisma.document.create({
     data: {

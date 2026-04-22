@@ -7,6 +7,8 @@ import { prisma } from "../db/prisma";
 import { decryptSecret } from "./credentialEncryption";
 import { pollImapSinceUid } from "../email/imapPoller";
 import { ingestDocumentFromBuffer } from "./ingestFromBuffer";
+import { extractEmailAutomationSnapshot } from "./emailAutomation";
+import { isEmailAutomationAllowedForFirm } from "./featureCompatibility";
 import { createNotification } from "./notifications";
 import type { MailboxConnection } from "@prisma/client";
 import type { FirmIntegration } from "@prisma/client";
@@ -100,12 +102,28 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
   }
 
   let attachmentsIngested = 0;
+  const firm = await prisma.firm.findUnique({
+    where: { id: firmId },
+    select: { id: true, plan: true },
+  });
+  const emailAutomationAllowed = firm
+    ? isEmailAutomationAllowedForFirm(firm)
+    : false;
   for (const m of messages) {
+    const attachmentNames = (m.attachments ?? []).map((attachment) => attachment.filename);
     for (const a of m.attachments ?? []) {
       if (!a?.content || !a.filename) continue;
       if (!isIngestibleAttachment(a.filename, a.mimeType)) continue;
       const externalId = `integration:${mailboxId}:${m.uid}:${a.filename}`;
       const content = Buffer.isBuffer(a.content) ? a.content : Buffer.from(a.content as ArrayBuffer);
+      const emailAutomation = emailAutomationAllowed
+        ? extractEmailAutomationSnapshot({
+            fromEmail: m.fromEmail,
+            subject: m.subject,
+            attachmentFileName: a.filename,
+            attachmentNames,
+          })
+        : null;
       const result = await ingestDocumentFromBuffer({
         firmId,
         buffer: content,
@@ -113,6 +131,7 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
         mimeType: a.mimeType || "application/pdf",
         source: "email",
         externalId,
+        metaJsonPatch: emailAutomation ? { emailAutomation } : undefined,
       });
       if (result.ok) {
         attachmentsIngested++;
