@@ -302,9 +302,14 @@ async function processQuickbooksInvoiceSync(syncId: string, requestId?: string |
     throw new InternalOrderSyncError(failed.lastSyncError ?? "Billing email is required.", 409, sync.id);
   }
 
-  const customerRequestId = buildQuickbooksRequestId(sync.dedupeKey, "customer");
-  const invoiceRequestId = buildQuickbooksRequestId(sync.dedupeKey, "invoice");
-  const sendRequestId = buildQuickbooksRequestId(sync.dedupeKey, "send");
+  const requestKey =
+    sync.invoiceStatus === QuickbooksInvoiceStatus.FAILED && requestId?.trim()
+      ? `${crypto.createHash("sha256").update(requestId.trim()).digest("hex").slice(0, 12)}-${sync.dedupeKey}`
+      : sync.dedupeKey;
+
+  const customerRequestId = buildQuickbooksRequestId(requestKey, "customer");
+  const invoiceRequestId = buildQuickbooksRequestId(requestKey, "invoice");
+  const sendRequestId = buildQuickbooksRequestId(requestKey, "send");
 
   try {
     let customer = await findQuickbooksCustomerByEmailOrName({
@@ -397,6 +402,38 @@ async function processQuickbooksInvoiceSync(syncId: string, requestId?: string |
   }
 }
 
+async function retryQuickbooksInvoiceSync(params: {
+  row: NonNullable<Awaited<ReturnType<typeof getExistingInvoiceSync>>>;
+  requestId?: string | null;
+}) {
+  const row = params.row;
+
+  if (!row.billingEmail?.trim()) {
+    const failed = await persistFailedSync(row.id, "Billing email is required before sending a QuickBooks invoice.");
+    throw new InternalOrderSyncError(failed.lastSyncError ?? "Billing email is required.", 409, row.id);
+  }
+
+  if (!row.qboInvoiceId) {
+    return processQuickbooksInvoiceSync(row.id, params.requestId);
+  }
+
+  await sendQuickbooksInvoice({
+    firmId: row.firmId,
+    invoiceId: row.qboInvoiceId,
+    billingEmail: row.billingEmail,
+    requestId: buildQuickbooksRequestId(row.dedupeKey, "resend"),
+  });
+
+  return prisma.quickbooksInvoiceSync.update({
+    where: { id: row.id },
+    data: {
+      invoiceStatus: QuickbooksInvoiceStatus.EMAILED,
+      invoiceEmailedAt: new Date(),
+      lastSyncError: null,
+    },
+  });
+}
+
 export async function handleInternalOrderSync(params: {
   firmId: string;
   payload: unknown;
@@ -407,6 +444,16 @@ export async function handleInternalOrderSync(params: {
 
   const existing = await getExistingInvoiceSync(params.firmId, validated.internalSource, validated.internalOrderId);
   if (existing) {
+    if (existing.invoiceStatus === QuickbooksInvoiceStatus.FAILED) {
+      const retried = await retryQuickbooksInvoiceSync({
+        row: existing,
+        requestId: params.requestId,
+      });
+      return {
+        created: false,
+        sync: serializeSyncRow(retried),
+      };
+    }
     return {
       created: false,
       sync: serializeSyncRow(existing),
@@ -474,27 +521,9 @@ export async function resendQuickbooksInvoiceSync(params: {
   if (!row) {
     throw new InternalOrderSyncError("QuickBooks invoice sync record not found.", 404);
   }
-  if (!row.qboInvoiceId) {
-    throw new InternalOrderSyncError("No QuickBooks invoice exists yet for this order sync.", 409, row.id);
-  }
-  if (!row.billingEmail?.trim()) {
-    const failed = await persistFailedSync(row.id, "Billing email is required before resending a QuickBooks invoice.");
-    throw new InternalOrderSyncError(failed.lastSyncError ?? "Billing email is required.", 409, row.id);
-  }
-
-  await sendQuickbooksInvoice({
-    firmId: params.firmId,
-    invoiceId: row.qboInvoiceId,
-    billingEmail: row.billingEmail,
-    requestId: buildQuickbooksRequestId(row.dedupeKey, "resend"),
-  });
-  const updated = await prisma.quickbooksInvoiceSync.update({
-    where: { id: row.id },
-    data: {
-      invoiceStatus: QuickbooksInvoiceStatus.EMAILED,
-      invoiceEmailedAt: new Date(),
-      lastSyncError: null,
-    },
+  const updated = await retryQuickbooksInvoiceSync({
+    row,
+    requestId: params.requestId,
   });
   return serializeSyncRow(updated);
 }
