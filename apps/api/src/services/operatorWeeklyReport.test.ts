@@ -385,9 +385,6 @@ async function main() {
         queueDepth: 1,
         oldestJobAgeMs: 500,
         retriedQueuedCount: 0,
-        byFirm: {
-          [firmA]: { queued: 1, running: 0 },
-        },
         byType: {
           ocr: { queued: 1, oldestAgeMs: 500, retriedQueuedCount: 0, maxAttempt: 1 },
           classification: { queued: 0, oldestAgeMs: null, retriedQueuedCount: 0, maxAttempt: 0 },
