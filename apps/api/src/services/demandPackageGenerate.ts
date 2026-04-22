@@ -7,9 +7,28 @@ import { buildDemandPackagePdf } from "./demandPackagePdf";
 import { createNotification } from "./notifications";
 import { logActivity } from "./activityFeed";
 import { logSystemError } from "./errorLog";
+import { getMonthlyDemandUsage, recordGeneratedDemandOutput } from "./usageMetering";
+import { getDemandMonthlyCap } from "./planPolicy";
 import crypto from "crypto";
 
 const SECTION_KEYS = ["summary", "liability", "treatment", "damages", "future_care", "settlement"] as const;
+
+type DemandPackageGenerationResult =
+  | { ok: true; documentId: string }
+  | { ok: false; error: string; message?: string };
+
+class DemandCapExceededError extends Error {
+  readonly payload: { error: "DEMAND_CAP_EXCEEDED"; message: string };
+
+  constructor(message = "Monthly demand limit reached for this plan") {
+    super(message);
+    this.name = "DemandCapExceededError";
+    this.payload = {
+      error: "DEMAND_CAP_EXCEEDED",
+      message,
+    };
+  }
+}
 
 function formatDate(d: Date | null): string {
   if (!d) return "—";
@@ -20,7 +39,10 @@ function formatDate(d: Date | null): string {
   }
 }
 
-export async function generateDemandPackage(packageId: string, firmId: string): Promise<{ ok: true; documentId: string } | { ok: false; error: string }> {
+export async function generateDemandPackage(
+  packageId: string,
+  firmId: string
+): Promise<DemandPackageGenerationResult> {
   const pkg = await prisma.demandPackage.findFirst({
     where: { id: packageId, firmId },
     include: { case: true },
@@ -28,6 +50,24 @@ export async function generateDemandPackage(packageId: string, firmId: string): 
   if (!pkg) return { ok: false, error: "Demand package not found" };
 
   try {
+    if (pkg.generatedAt == null) {
+      const firm = await prisma.firm.findUnique({
+        where: { id: firmId },
+        select: { plan: true },
+      });
+      if (!firm) {
+        return { ok: false, error: "Firm not found" };
+      }
+
+      const cap = getDemandMonthlyCap(firm.plan);
+      if (cap != null) {
+        const usage = await getMonthlyDemandUsage(firmId);
+        if (usage.demandCount >= cap) {
+          throw new DemandCapExceededError();
+        }
+      }
+    }
+
     await prisma.demandPackage.update({
       where: { id: packageId },
       data: { status: "generating" },
@@ -145,9 +185,12 @@ export async function generateDemandPackage(packageId: string, firmId: string): 
       },
     });
 
-    await prisma.demandPackage.update({
-      where: { id: packageId },
-      data: { status: "ready", generatedDocId: doc.id, generatedAt: generatedDate },
+    await recordGeneratedDemandOutput({
+      demandPackageId: packageId,
+      firmId,
+      generatedDocId: doc.id,
+      generatedAt: generatedDate,
+      status: "ready",
     });
 
     createNotification(firmId, "demand_package_ready", "Demand package ready", `Demand package "${pkg.title}" has been generated.`, { caseId, demandPackageId: packageId, documentId: doc.id }).catch(() => {});
@@ -161,6 +204,14 @@ export async function generateDemandPackage(packageId: string, firmId: string): 
 
     return { ok: true, documentId: doc.id };
   } catch (e: any) {
+    if (e instanceof DemandCapExceededError) {
+      return {
+        ok: false,
+        error: e.payload.error,
+        message: e.payload.message,
+      };
+    }
+
     const errMsg = e?.message ?? String(e);
     await prisma.demandPackage.update({
       where: { id: packageId },
