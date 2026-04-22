@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   appendDeployRecord,
   fetchVersionInfo,
+  inspectDeploySource,
   printFail,
   printPass,
   printWarn,
@@ -18,6 +19,7 @@ const allowDirty = rawArgs.has("--allow-dirty");
 const allowStaleMeta = rawArgs.has("--allow-stale-meta");
 
 const gitState = resolveGitState();
+const deploySource = inspectDeploySource(gitState);
 const buildMeta = {
   sha: gitState.sha,
   shortSha: gitState.shortSha,
@@ -498,6 +500,21 @@ async function verifyLiveVersions() {
 
 async function main() {
   logStep("resolved deploy metadata", buildMeta);
+
+  if (!deploySource.ok) {
+    throw new Error(`deploy blocked: ${deploySource.failures.join(" | ")}`);
+  }
+
+  for (const warning of deploySource.warnings) {
+    printWarn(`deploy source warning: ${warning}`);
+  }
+
+  logStep("verified git-backed deploy source", {
+    commit: gitState.sha,
+    branch: gitState.branch,
+    dirty: gitState.dirty,
+    bundleDetected: deploySource.bundleDetected,
+  });
 
   if (!dryRun && buildMeta.sha === "unknown") {
     throw new Error("Unable to resolve build SHA. Fix git resolution before deploying.");

@@ -2607,7 +2607,7 @@ app.get("/me/documents", auth, requireRole(Role.STAFF), async (req, res) => {
     recognition: recognitionByDoc.get(d.id) ?? null,
   }));
 
-  res.json({ items, nextCursor });
+  res.json({ ok: true, success: true, items, documents: items, nextCursor });
 });
 
 // Review queue: documents with recognition data for UI (cursor pagination)

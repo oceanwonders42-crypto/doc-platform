@@ -161,6 +161,7 @@ console.log("[startup] version", {
   buildMetaPath: build.buildMetaPath,
   cwd,
 });
+console.log(`[startup] Running commit: ${build.sha}`);
 
 const startupGuards = collectStartupGuards(service, build);
 startupGuards.warnings.forEach((warning) => {
@@ -168,6 +169,9 @@ startupGuards.warnings.forEach((warning) => {
 });
 
 if (startupGuards.errors.length > 0) {
+  startupGuards.errors.forEach((error) => {
+    console.error(`[startup] FATAL ${error}`);
+  });
   console.error("[startup] refusing to start", {
     service,
     errors: startupGuards.errors,

@@ -13,6 +13,7 @@
     "deploy:production": "node scripts/deploy-production.mjs",
     "deploy:status": "node scripts/deploy-status.mjs",
     "deploy:history": "node scripts/deploy-history.mjs",
+    "smoke:upload": "node scripts/production-upload-smoke.mjs",
     "test": "echo \"Error: no test specified\" && exit 1",
     "snapshot": "bash scripts/snapshot.sh",
     "smoke": "bash scripts/smoke_test.sh",

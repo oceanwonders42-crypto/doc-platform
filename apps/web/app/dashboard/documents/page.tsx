@@ -19,7 +19,14 @@ type Doc = {
   duplicateMatchCount?: number;
 };
 
-type DocumentsListResponse = { ok?: boolean; items?: Doc[] };
+type DocumentsListResponse = {
+  ok?: boolean;
+  success?: boolean;
+  items?: Doc[];
+  documents?: Doc[];
+  error?: string;
+  code?: string;
+};
 type UploadResponse = {
   ok?: boolean;
   error?: string;
@@ -32,6 +39,12 @@ type UploadResponse = {
 
 function isDocumentsListResponse(res: unknown): res is DocumentsListResponse {
   return typeof res === "object" && res !== null;
+}
+
+function extractDocumentItems(res: DocumentsListResponse): Doc[] | null {
+  if (Array.isArray((res as { items?: Doc[] }).items)) return (res as { items: Doc[] }).items;
+  if (Array.isArray((res as { documents?: Doc[] }).documents)) return (res as { documents: Doc[] }).documents;
+  return null;
 }
 
 function formatUploadError(params: {
@@ -97,18 +110,53 @@ export default function DocumentsPage() {
     params.set("limit", "50");
     if (filterStatus) params.set("status", filterStatus);
     if (filterCaseId) params.set("caseId", filterCaseId);
-    fetch(`${base}/me/documents?${params.toString()}`, { headers: getAuthHeader(), ...getFetchOptions() })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
-        if (isDocumentsListResponse(res) && res.ok && res.items) {
-          setItems(res.items);
-          setError(null);
-        } else {
-          setError("We couldn't load your documents. Please try again.");
+    const query = params.toString();
+    const headers = getAuthHeader();
+    const requestInit = { headers, ...getFetchOptions() };
+    const directUrl = base ? `${base}/me/documents?${query}` : `/api/documents?${query}`;
+
+    fetch(directUrl, requestInit)
+      .then(async (response) => {
+        try {
+          return await parseJsonResponse(response);
+        } catch (error) {
+          const shouldTryProxy =
+            directUrl !== `/api/documents?${query}` &&
+            error instanceof Error &&
+            error.message.includes("Server returned HTML instead of JSON");
+
+          if (!shouldTryProxy) {
+            throw error;
+          }
+
+          const proxyResponse = await fetch(`/api/documents?${query}`, requestInit);
+          return parseJsonResponse(proxyResponse);
         }
       })
-      .catch(() => {
-        setError("We couldn't load your documents. Please check your connection and try again.");
+      .then((res: unknown) => {
+        if (isDocumentsListResponse(res)) {
+          const docs = extractDocumentItems(res);
+          if (docs) {
+            setItems(docs);
+            setError(null);
+            return;
+          }
+          if (typeof res.error === "string" && res.error.trim()) {
+            setItems([]);
+            setError(res.error);
+            return;
+          }
+        }
+        setItems([]);
+        setError("We couldn't load your documents. Please try again.");
+      })
+      .catch((error) => {
+        setError(
+          formatApiClientError(error, "We couldn't load your documents. Please check your connection and try again.", {
+            deploymentMessage:
+              "The documents API target returned HTML instead of JSON. Check NEXT_PUBLIC_API_URL, API routing, and whether the latest web build or cached asset is still serving an older configuration.",
+          })
+        );
       })
       .finally(() => setLoading(false));
   }, [filterStatus, filterCaseId]);

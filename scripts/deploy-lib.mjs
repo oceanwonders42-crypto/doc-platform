@@ -60,6 +60,53 @@ export function resolveGitState() {
   };
 }
 
+export function gitCommitExists(commitish) {
+  const commit = readString(commitish);
+  if (!commit) return false;
+  const result = runGit(["cat-file", "-e", `${commit}^{commit}`]);
+  return result.status === 0;
+}
+
+export function gitCommitInHistory(commitish) {
+  const commit = readString(commitish);
+  if (!commit) return false;
+  const result = runGit(["rev-list", "--all", "--max-count=1", commit]);
+  return result.status === 0 && result.stdout.trim().length > 0;
+}
+
+export function inspectDeploySource(gitState = resolveGitState()) {
+  const failures = [];
+  const warnings = [];
+
+  if (gitState.sha === "unknown") {
+    failures.push("git rev-parse HEAD failed; this checkout is missing commit metadata.");
+  }
+
+  if (gitState.branch === "unknown") {
+    failures.push("git branch could not be resolved; this looks like a bundle-style checkout rather than a tracked release.");
+  }
+
+  if (gitState.sha !== "unknown" && !gitCommitExists(gitState.sha)) {
+    failures.push(`commit ${gitState.sha} is not present as a git commit object in this checkout.`);
+  }
+
+  if (gitState.sha !== "unknown" && !gitCommitInHistory(gitState.sha)) {
+    failures.push(`commit ${gitState.sha} is not reachable from local git history.`);
+  }
+
+  if (gitState.dirty) {
+    warnings.push(`git status is dirty (${gitState.dirtyEntries.length} entries).`);
+  }
+
+  return {
+    ok: failures.length === 0,
+    failures,
+    warnings,
+    gitState,
+    bundleDetected: failures.some((entry) => /bundle-style checkout|missing commit metadata/.test(entry)),
+  };
+}
+
 export async function readJson(filePath) {
   try {
     const raw = await readFile(filePath, "utf8");

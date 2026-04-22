@@ -3,7 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { printFail, printPass, printWarn, readBuildMeta, repoRoot } from "./deploy-lib.mjs";
+import { inspectDeploySource, printFail, printPass, printWarn, readBuildMeta, repoRoot } from "./deploy-lib.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -140,6 +140,14 @@ export async function verifyDeployConfig(options = {}) {
   const failures = [];
   const warnings = [];
   const passes = [];
+
+  const deploySource = inspectDeploySource();
+  if (!deploySource.ok) {
+    failures.push(...deploySource.failures);
+  } else {
+    passes.push(`git-backed deploy source verified at commit ${deploySource.gitState.sha}`);
+  }
+  warnings.push(...deploySource.warnings);
 
   const ecosystemPath = path.join(repoRoot, "ecosystem.config.cjs");
   const apiPackagePath = path.join(repoRoot, "apps", "api", "package.json");
