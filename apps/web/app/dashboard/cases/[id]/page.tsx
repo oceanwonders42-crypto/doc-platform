@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
+import { getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DashboardCard } from "@/components/dashboard/DashboardCard";
 import { Timeline, TimelineItem } from "@/components/dashboard/Timeline";
@@ -94,6 +94,7 @@ export default function CaseDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const id = typeof params?.id === "string" ? params.id : "";
+  const caseApiBase = id ? `/api/cases/${encodeURIComponent(id)}` : "";
 
   const [caseData, setCaseData] = useState<CaseItem | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
@@ -190,17 +191,16 @@ export default function CaseDetailPage() {
 
   useEffect(() => {
     if (!id) return;
-    const base = getApiBase();
     const headers = getAuthHeader();
     const acceptJson = { Accept: "application/json" };
     Promise.all([
-      fetch(`${base}/cases/${id}`, { headers: { ...headers, ...acceptJson } }).then(parseJsonResponse),
-      fetch(`${base}/cases/${id}/timeline`, { headers }).then(parseJsonResponse),
-      fetch(`${base}/cases/${id}/providers`, { headers }).then(parseJsonResponse),
-      fetch(`${base}/cases/${id}/documents?includeProvider=true`, { headers }).then(parseJsonResponse),
-      fetch(`${base}/cases/${id}/financial`, { headers }).then(parseJsonResponse),
-      fetch(`${base}/cases/${id}/bill-line-items`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
-      fetch(`${base}/cases/${id}/insights`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
+      fetch(caseApiBase, { headers: { ...headers, ...acceptJson } }).then(parseJsonResponse),
+      fetch(`${caseApiBase}/timeline`, { headers }).then(parseJsonResponse),
+      fetch(`${caseApiBase}/providers`, { headers }).then(parseJsonResponse),
+      fetch(`${caseApiBase}/documents?includeProvider=true`, { headers }).then(parseJsonResponse),
+      fetch(`${caseApiBase}/financial`, { headers }).then(parseJsonResponse),
+      fetch(`${caseApiBase}/bill-line-items`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
+      fetch(`${caseApiBase}/insights`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
     ])
       .then(([caseRes, timelineRes, providersRes, docsRes, finRes, billRes, insightsRes]) => {
         const c = caseRes as { ok?: boolean; item?: CaseItem };
@@ -221,12 +221,11 @@ export default function CaseDetailPage() {
       })
       .catch((e) => setError(e?.message ?? "Request failed"))
       .finally(() => setLoading(false));
-  }, [id]);
+  }, [caseApiBase, id]);
 
   const refreshCaseSummary = useCallback(() => {
     if (!id) return Promise.resolve();
-    const base = getApiBase();
-    return fetch(`${base}/cases/${id}`, {
+    return fetch(caseApiBase, {
       headers: { ...getAuthHeader(), Accept: "application/json" },
       ...getFetchOptions(),
     })
@@ -240,9 +239,8 @@ export default function CaseDetailPage() {
 
   const rebuildChronology = useCallback(() => {
     if (!id) return;
-    const base = getApiBase();
     setChronologyRebuilding(true);
-    fetch(`${base}/cases/${id}/timeline/rebuild`, {
+    fetch(`${caseApiBase}/timeline/rebuild`, {
       method: "POST",
       headers: getAuthHeader(),
       ...getFetchOptions(),
@@ -251,7 +249,7 @@ export default function CaseDetailPage() {
       .then((res: unknown) => {
         const r = res as { ok?: boolean; error?: string };
         if (r.ok) {
-          return fetch(`${base}/cases/${id}/timeline`, { headers: getAuthHeader() })
+          return fetch(`${caseApiBase}/timeline`, { headers: getAuthHeader() })
             .then(parseJsonResponse)
             .then((tRes: unknown) => {
               const t = tRes as { ok?: boolean; items?: TimelineEvent[] };
@@ -262,15 +260,14 @@ export default function CaseDetailPage() {
       })
       .catch((e) => setError(e?.message ?? "Request failed"))
       .finally(() => setChronologyRebuilding(false));
-  }, [id]);
+  }, [caseApiBase, id]);
 
   const runSummarize = useCallback(() => {
     if (!id) return;
-    const base = getApiBase();
     setSummarizeError(null);
     setSummarizeResult(null);
     setSummarizeLoading(true);
-    fetch(`${base}/cases/${id}/summarize`, {
+    fetch(`${caseApiBase}/summarize`, {
       method: "POST",
       headers: getAuthHeader(),
       ...getFetchOptions(),
@@ -297,15 +294,14 @@ export default function CaseDetailPage() {
       })
       .catch((e) => setSummarizeError(e?.message ?? "Request failed"))
       .finally(() => setSummarizeLoading(false));
-  }, [id]);
+  }, [caseApiBase, id]);
 
   const runExtract = useCallback(() => {
     if (!id) return;
-    const base = getApiBase();
     setExtractError(null);
     setExtractResult(null);
     setExtractLoading(true);
-    fetch(`${base}/cases/${id}/extract-entities`, {
+    fetch(`${caseApiBase}/extract-entities`, {
       method: "POST",
       headers: getAuthHeader(),
       ...getFetchOptions(),
@@ -326,15 +322,14 @@ export default function CaseDetailPage() {
       })
       .catch((e) => setExtractError(e?.message ?? "Request failed"))
       .finally(() => setExtractLoading(false));
-  }, [id]);
+  }, [caseApiBase, id]);
 
   const runMissingRecords = useCallback(() => {
     if (!id) return;
-    const base = getApiBase();
     setMissingError(null);
     setMissingResult(null);
     setMissingLoading(true);
-    fetch(`${base}/cases/${id}/identify-missing-records`, {
+    fetch(`${caseApiBase}/identify-missing-records`, {
       method: "POST",
       headers: getAuthHeader(),
       ...getFetchOptions(),
@@ -366,15 +361,14 @@ export default function CaseDetailPage() {
       })
       .catch((e) => setMissingError(e?.message ?? "Request failed"))
       .finally(() => setMissingLoading(false));
-  }, [id]);
+  }, [caseApiBase, id]);
 
   const runCompare = useCallback(() => {
     if (!id) return;
-    const base = getApiBase();
     setCompareError(null);
     setCompareResult(null);
     setCompareLoading(true);
-    fetch(`${base}/cases/${id}/compare-bills-treatment`, {
+    fetch(`${caseApiBase}/compare-bills-treatment`, {
       method: "POST",
       headers: getAuthHeader(),
       ...getFetchOptions(),
@@ -407,17 +401,16 @@ export default function CaseDetailPage() {
       })
       .catch((e) => setCompareError(e?.message ?? "Request failed"))
       .finally(() => setCompareLoading(false));
-  }, [id]);
+  }, [caseApiBase, id]);
 
   const runDraft = useCallback(
     (sectionKey?: string) => {
       if (!id) return;
-      const base = getApiBase();
       const key = sectionKey ?? draftSectionKey;
       setDraftError(null);
       setDraftResult(null);
       setDraftLoading(true);
-      fetch(`${base}/cases/${id}/draft-demand-section`, {
+      fetch(`${caseApiBase}/draft-demand-section`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeader() },
         ...getFetchOptions(),
@@ -447,18 +440,17 @@ export default function CaseDetailPage() {
         .catch((e) => setDraftError(e?.message ?? "Request failed"))
         .finally(() => setDraftLoading(false));
     },
-    [id, draftSectionKey]
+    [caseApiBase, id, draftSectionKey]
   );
 
   const runAnswerQuestion = useCallback(() => {
     if (!id) return;
     const q = questionInput.trim();
     if (!q) return;
-    const base = getApiBase();
     setAnswerError(null);
     setAnswerResult(null);
     setAnswerLoading(true);
-    fetch(`${base}/cases/${id}/answer-question`, {
+    fetch(`${caseApiBase}/answer-question`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       ...getFetchOptions(),
@@ -485,7 +477,7 @@ export default function CaseDetailPage() {
       })
       .catch((e) => setAnswerError(e?.message ?? "Request failed"))
       .finally(() => setAnswerLoading(false));
-  }, [id, questionInput]);
+  }, [caseApiBase, id, questionInput]);
 
   const startCaseFileExport = useCallback(
     async (kind: "contacts" | "matters" | "offers") => {
@@ -496,27 +488,27 @@ export default function CaseDetailPage() {
           ? {
               actionLabel: "contacts CSV",
               fallbackFileName: "case-contact.csv",
-              endpoint: `/cases/${id}/exports/clio/contacts.csv`,
+              endpoint: `${caseApiBase}/exports/clio/contacts.csv`,
               successMessage: "Contacts CSV download started.",
             }
           : kind === "matters"
             ? {
                 actionLabel: "matters CSV",
                 fallbackFileName: "case-matter.csv",
-                endpoint: `/cases/${id}/exports/clio/matters.csv`,
+                endpoint: `${caseApiBase}/exports/clio/matters.csv`,
                 successMessage: "Matters CSV download started.",
               }
             : {
                 actionLabel: "offers PDF",
                 fallbackFileName: `offers-${id}.pdf`,
-                endpoint: `/cases/${id}/offers/export-pdf`,
+                endpoint: `${caseApiBase}/offers/export-pdf`,
                 successMessage: "Offers PDF download started.",
               };
 
       setExportMessage(null);
       setExporting(kind);
       try {
-        const response = await fetch(`${getApiBase()}${config.endpoint}`, {
+        const response = await fetch(config.endpoint, {
           headers: {
             ...getAuthHeader(),
             ...(isClioExport ? { "Idempotency-Key": createClioIdempotencyKey() } : {}),
@@ -546,7 +538,7 @@ export default function CaseDetailPage() {
         setExporting(null);
       }
     },
-    [allowClioReexport, id, refreshCaseSummary]
+    [allowClioReexport, caseApiBase, id, refreshCaseSummary]
   );
 
   const startPacketExport = useCallback(async () => {
@@ -555,7 +547,7 @@ export default function CaseDetailPage() {
     setExportMessage(null);
     setExporting("packet");
     try {
-      const response = await fetch(`${getApiBase()}/cases/${id}/exports/packet`, {
+      const response = await fetch(`${caseApiBase}/exports/packet`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeader() },
         ...getFetchOptions(),
@@ -594,7 +586,7 @@ export default function CaseDetailPage() {
     } finally {
       setExporting(null);
     }
-  }, [id, packetType]);
+  }, [caseApiBase, id, packetType]);
 
   const startChronologyExport = useCallback(async (format: "pdf" | "docx") => {
     if (!id) return;
@@ -602,7 +594,7 @@ export default function CaseDetailPage() {
     setExportMessage(null);
     setChronologyExporting(format);
     try {
-      const response = await fetch(`${getApiBase()}/cases/${id}/timeline/export?format=${format}`, {
+      const response = await fetch(`${caseApiBase}/timeline/export?format=${format}`, {
         headers: getAuthHeader(),
         ...getFetchOptions(),
       });
@@ -626,7 +618,7 @@ export default function CaseDetailPage() {
     } finally {
       setChronologyExporting(null);
     }
-  }, [id]);
+  }, [caseApiBase, id]);
 
   const timelineItems: TimelineItem[] = (() => {
     let list = timeline;

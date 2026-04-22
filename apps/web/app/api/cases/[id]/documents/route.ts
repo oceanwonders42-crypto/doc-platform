@@ -1,63 +1,31 @@
-import { NextRequest, NextResponse } from "next/server";
+import { proxyJsonUpstream, readJsonRequestBody } from "@/lib/upstreamJsonProxy";
+
+export const dynamic = "force-dynamic";
 
 export async function GET(
-  _req: NextRequest,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const base = process.env.DOC_API_URL;
-  const key = process.env.DOC_API_KEY;
   const { id } = await params;
-
-  if (!base || !key) {
-    return NextResponse.json({ ok: false, error: "Missing DOC_API_URL or DOC_API_KEY" }, { status: 500 });
-  }
-
-  const url = new URL(`${base}/cases/${id}/documents`);
-  const firmId = _req.nextUrl.searchParams.get("firmId");
-  if (firmId) url.searchParams.set("firmId", firmId);
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${key}` },
-    cache: "no-store",
-  }).catch(() => null);
-
-  if (!res) {
-    return NextResponse.json({ ok: false, error: "Upstream request failed" }, { status: 502 });
-  }
-
-  const body = await res.text();
-  return new NextResponse(body, {
-    status: res.status,
-    headers: { "Content-Type": res.headers.get("Content-Type") || "application/json" },
+  const { searchParams } = new URL(request.url);
+  return proxyJsonUpstream({
+    request,
+    path: `/cases/${encodeURIComponent(id)}/documents`,
+    query: searchParams,
+    proxyName: "case_documents_proxy",
   });
 }
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const base = process.env.DOC_API_URL;
-  const key = process.env.DOC_API_KEY;
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
   const { id } = await params;
-
-  if (!base || !key) {
-    return NextResponse.json({ ok: false, error: "Missing DOC_API_URL or DOC_API_KEY" }, { status: 500 });
-  }
-
-  const json = await req.json().catch(() => ({}));
-
-  const res = await fetch(`${base}/cases/${id}/documents/attach`, {
+  return proxyJsonUpstream({
+    request,
+    path: `/cases/${encodeURIComponent(id)}/documents/attach`,
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(json),
-  }).catch(() => null);
-
-  if (!res) {
-    return NextResponse.json({ ok: false, error: "Upstream request failed" }, { status: 502 });
-  }
-
-  const body = await res.text();
-  return new NextResponse(body, {
-    status: res.status,
-    headers: { "Content-Type": res.headers.get("Content-Type") || "application/json" },
+    jsonBody: await readJsonRequestBody(request),
+    proxyName: "case_documents_attach_proxy",
   });
 }
