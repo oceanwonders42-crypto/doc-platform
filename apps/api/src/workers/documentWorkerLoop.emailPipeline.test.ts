@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   getWorkerCaseMatchSkipReason,
+  getPostRouteClioAutoUpdateGateSource,
   isWorkerReviewFallbackRecorded,
   shouldWorkerDeferCaseMatchUntilAfterExtraction,
   shouldWorkerQueueCaseMatchAfterExtraction,
@@ -89,6 +90,31 @@ async function main() {
     }),
     false,
     "Expected in-flight documents to remain eligible for case matching."
+  );
+
+  assert.equal(
+    getPostRouteClioAutoUpdateGateSource({
+      clioAutoUpdateEnabled: true,
+      legacyClioSyncEnabled: false,
+    }),
+    "entitlement",
+    "Expected monetized entitlement to allow the post-route Clio seam without the legacy flag."
+  );
+  assert.equal(
+    getPostRouteClioAutoUpdateGateSource({
+      clioAutoUpdateEnabled: false,
+      legacyClioSyncEnabled: true,
+    }),
+    "legacy_flag",
+    "Expected the legacy crm_sync fallback to keep the post-route Clio seam enabled temporarily."
+  );
+  assert.equal(
+    getPostRouteClioAutoUpdateGateSource({
+      clioAutoUpdateEnabled: false,
+      legacyClioSyncEnabled: false,
+    }),
+    null,
+    "Expected the post-route Clio seam to stay disabled when neither entitlement nor legacy fallback is present."
   );
 
   assert.equal(

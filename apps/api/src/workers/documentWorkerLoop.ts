@@ -39,6 +39,7 @@ import { matchDocumentToCase } from "../services/caseMatching";
 import { routeDocument } from "../services/documentRouting";
 import { getExtractedForRouting } from "../services/routingScorer";
 import { hasFeature } from "../services/featureFlags";
+import { canUseClioAutoUpdate } from "../services/planPolicy";
 import { rebuildCaseTimeline } from "../services/caseTimeline";
 import { pushCaseIntelligenceToCrm } from "../integrations/crm/pushService";
 import { createNotification } from "../services/notifications";
@@ -396,6 +397,21 @@ function shouldPushDocumentToClio(action: string): boolean {
   return action !== "approved";
 }
 
+export function getPostRouteClioAutoUpdateGateSource(options: {
+  clioAutoUpdateEnabled: boolean;
+  legacyClioSyncEnabled: boolean;
+}): "entitlement" | "legacy_flag" | null {
+  if (options.clioAutoUpdateEnabled) {
+    return "entitlement";
+  }
+
+  if (options.legacyClioSyncEnabled) {
+    return "legacy_flag";
+  }
+
+  return null;
+}
+
 async function handlePostRouteSyncJob(
   documentId: string,
   firmId: string,
@@ -414,19 +430,24 @@ async function handlePostRouteSyncJob(
   console.log("Processing post-route sync job:", { documentId, firmId, caseId, action });
 
   const crmAction = getPostRouteCrmAction(action);
-  const [crmSyncEnabled, firm, doc] = await Promise.all([
+  const [legacyClioSyncEnabled, firm, doc] = await Promise.all([
     hasFeature(firmId, "crm_sync"),
     prisma.firm.findUnique({
       where: { id: firmId },
-      select: { settings: true },
+      select: { settings: true, plan: true },
     }),
     prisma.document.findFirst({
       where: { id: documentId, firmId },
       select: { spacesKey: true, originalName: true },
     }),
   ]);
+  const clioAutoUpdateEnabled = canUseClioAutoUpdate(firm?.plan);
+  const clioAutoUpdateGateSource = getPostRouteClioAutoUpdateGateSource({
+    clioAutoUpdateEnabled,
+    legacyClioSyncEnabled,
+  });
 
-  if (doc?.spacesKey && crmSyncEnabled && shouldPushDocumentToClio(action)) {
+  if (doc?.spacesKey && clioAutoUpdateGateSource && shouldPushDocumentToClio(action)) {
     const settings = (firm?.settings as Record<string, unknown> | null | undefined) ?? {};
     if (settings.crm === "clio") {
       try {
@@ -436,6 +457,7 @@ async function handlePostRouteSyncJob(
           documentId,
           firmId,
           caseId,
+          gateSource: clioAutoUpdateGateSource,
         });
         const fileUrl = await getPresignedGetUrl(doc.spacesKey);
         const pushResult = await pushDocumentToClio({
@@ -470,6 +492,7 @@ async function handlePostRouteSyncJob(
             currentClaimNumber: writeBackResult.currentClaimNumber ?? null,
             noteError: writeBackResult.noteError ?? null,
             claimNumberError: writeBackResult.claimNumberError ?? null,
+            gateSource: clioAutoUpdateGateSource,
           });
         }
         logInfo("transfer_fast_path_async", {
@@ -480,6 +503,7 @@ async function handlePostRouteSyncJob(
           caseId,
           ok: pushResult.ok,
           error: pushResult.ok ? null : pushError,
+          gateSource: clioAutoUpdateGateSource,
         });
       } catch (e) {
         console.warn("[worker] post-route Clio sync error", { caseId, documentId, err: e });
