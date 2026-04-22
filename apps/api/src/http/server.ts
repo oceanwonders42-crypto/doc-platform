@@ -65,6 +65,7 @@ import { getPresignedGetUrl } from "../services/storage";
 import { hasFeature, isEmailAutomationEnabled } from "../services/featureFlags";
 import { getDocumentEmailAutomation } from "../services/emailAutomation";
 import { getComposedFeatures } from "../services/featureCompatibility";
+import { getClioAutoUpdateGateState } from "../services/clioAutoUpdateGate";
 import {
   canMarkDocumentExportReady,
   getEffectiveDocumentReviewState,
@@ -579,7 +580,7 @@ app.get("/admin/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res
   try {
     const [firms, docCounts, userCounts, usageAgg] = await Promise.all([
       prisma.firm.findMany({
-        select: { id: true, name: true, status: true, plan: true, pageLimitMonthly: true, createdAt: true },
+        select: { id: true, name: true, status: true, plan: true, pageLimitMonthly: true, createdAt: true, features: true },
         orderBy: { createdAt: "desc" },
       }),
       prisma.document.groupBy({
@@ -610,8 +611,13 @@ app.get("/admin/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res
     );
 
     const body = firms.map((f) => ({
+      ...getClioAutoUpdateGateState({
+        plan: f.plan,
+        features: f.features,
+      }),
       firmId: f.id,
       firmName: f.name,
+      planSlug: f.plan,
       status: f.status,
       plan: f.plan,
       pageLimitMonthly: f.pageLimitMonthly,
