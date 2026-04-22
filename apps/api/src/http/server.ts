@@ -60,6 +60,7 @@ import { pushCaseIntelligenceToCrm, pushCrmWebhook } from "../integrations/crm/p
 import { buildOffersSummaryPdf } from "../services/offersSummaryPdf";
 import { getPresignedGetUrl } from "../services/storage";
 import { hasFeature } from "../services/featureFlags";
+import { getComposedFeatures } from "../services/featureCompatibility";
 import {
   canMarkDocumentExportReady,
   getEffectiveDocumentReviewState,
@@ -2752,20 +2753,18 @@ app.get("/me/search", auth, requireRole(Role.STAFF), async (req, res) => {
   }
 });
 
-// Feature flags for add-ons (insurance_extraction, court_extraction, demand_narratives)
+// Feature flags for add-ons plus plan-aware compatibility composition.
 app.get("/me/features", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
-    const [insurance_extraction, court_extraction, demand_narratives, duplicates_detection, crm_sync, crm_push, case_insights] = await Promise.all([
-      hasFeature(firmId, "insurance_extraction"),
-      hasFeature(firmId, "court_extraction"),
-      hasFeature(firmId, "demand_narratives"),
-      hasFeature(firmId, "duplicates_detection"),
-      hasFeature(firmId, "crm_sync"),
-      hasFeature(firmId, "crm_push"),
-      hasFeature(firmId, "case_insights"),
-    ]);
-    res.json({ insurance_extraction, court_extraction, demand_narratives, duplicates_detection, crm_sync, crm_push, case_insights });
+    const firm = await prisma.firm.findUnique({
+      where: { id: firmId },
+      select: { id: true, plan: true },
+    });
+    if (!firm) {
+      return res.status(404).json({ ok: false, error: "Firm not found" });
+    }
+    res.json(await getComposedFeatures(firm));
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
