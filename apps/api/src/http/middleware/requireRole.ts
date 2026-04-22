@@ -12,9 +12,24 @@ const ROLE_RANK: Record<Role, number> = {
   [Role.STAFF]: 1,
 };
 
+const ROLE_ALIAS_RANK: Record<string, number> = {
+  OWNER: ROLE_RANK[Role.FIRM_ADMIN],
+  ADMIN: ROLE_RANK[Role.FIRM_ADMIN],
+  ATTORNEY: ROLE_RANK[Role.STAFF],
+  LEGAL_ASSISTANT: ROLE_RANK[Role.PARALEGAL],
+  DOC_REVIEWER: ROLE_RANK[Role.STAFF],
+  READ_ONLY: 0,
+};
+
 function getRank(role: Role | string | null | undefined): number {
-  if (!role || !(role in ROLE_RANK)) return 0;
-  return ROLE_RANK[role as Role];
+  if (role && role in ROLE_RANK) {
+    return ROLE_RANK[role as Role];
+  }
+  if (typeof role === "string") {
+    const normalized = role.trim().toUpperCase();
+    return ROLE_ALIAS_RANK[normalized] ?? 0;
+  }
+  return 0;
 }
 
 /**

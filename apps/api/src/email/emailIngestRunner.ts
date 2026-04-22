@@ -2,7 +2,13 @@ import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { pollImapSinceUid, sha256 } from "./imapPoller";
 import { pgPool } from "../db/pg";
+import { prisma } from "../db/prisma";
 import { createNotification } from "../services/notifications";
+import {
+  extractEmailAutomationSnapshot,
+  setDocumentEmailAutomation,
+} from "../services/emailAutomation";
+import { isEmailAutomationAllowedForFirm } from "../services/featureCompatibility";
 import type { EmailMessage } from "./imapPoller";
 
 type MailboxRow = {
@@ -16,9 +22,54 @@ type MailboxRow = {
   imap_password_enc?: string | null;
   imap_password?: string | null;
   folder: string | null;
-  last_uid: string | null; // bigint comes back as string in pg
+  last_uid: string | null;
   status: "active" | "paused" | "error";
 };
+
+function decryptMaybePlaintext(value: string) {
+  return value;
+}
+
+function isFaxEmail(message: EmailMessage): boolean {
+  const subject = (message.subject || "").toLowerCase();
+  const from = (message.fromEmail || "").toLowerCase();
+  const faxIndicators = [
+    "fax",
+    "efax",
+    "ringcentral",
+    "rcfax",
+    "myfax",
+    "faxburner",
+    "gotfreefax",
+    "tpc.int",
+    "faxaway",
+  ];
+  const text = `${subject} ${from}`;
+  return faxIndicators.some((value) => text.includes(value));
+}
+
+function shouldIngestAttachment(filename: string, mimeType?: string | null): boolean {
+  const lower = (filename || "").toLowerCase();
+  if (lower.endsWith(".pdf")) return true;
+  const mt = (mimeType || "").toLowerCase();
+  return mt === "application/pdf" || mt.startsWith("application/pdf;");
+}
+
+function extractClientNameFromSubject(subject: string | undefined): string | null {
+  if (!subject || !subject.trim()) return null;
+  const trimmed = subject.trim();
+  const reMatch = trimmed.match(/^re:\s*(.+?)(?:\s*[-–—|].*)?$/i);
+  if (reMatch) return reMatch[1].trim() || null;
+  const fwdMatch = trimmed.match(/^fwd?:\s*(.+?)(?:\s*[-–—|].*)?$/i);
+  if (fwdMatch) return fwdMatch[1].trim() || null;
+  const clientMatch = trimmed.match(/client\s*[:\-]\s*(.+?)(?:\s*[-–—|].*)?$/i);
+  if (clientMatch) return clientMatch[1].trim() || null;
+  return null;
+}
+
+function makeRawEmailId(prefix: string): string {
+  return `${prefix}_${randomUUID()}`;
+}
 
 export type RawEmailStructuredField = {
   value: string;
@@ -35,106 +86,16 @@ export type RawEmailStructuredExtraction = {
   insuranceCarrier: RawEmailStructuredField;
 };
 
-export type EmailAutomationField = {
-  value: string;
-  confidence: number;
-  sources: string[];
-};
-
-export type EmailAutomationSnapshot = {
-  version: "email_automation_v1";
-  extractedAt: string;
-  source: {
-    fromEmail: string | null;
-    subject: string | null;
-    attachmentFileName: string | null;
-    attachmentNames: string[];
+function normalizeFieldConfidence(
+  field: RawEmailStructuredField,
+  minimumConfidence: number
+): RawEmailStructuredField {
+  if (!field) return null;
+  if (!field.sources.includes("body")) return field;
+  return {
+    ...field,
+    confidence: Math.max(field.confidence, minimumConfidence),
   };
-  fields: {
-    clientName: EmailAutomationField | null;
-    dateOfLoss: EmailAutomationField | null;
-    claimNumber: EmailAutomationField | null;
-    policyNumber: EmailAutomationField | null;
-    insuranceCarrier: EmailAutomationField | null;
-  };
-  matchSignals: {
-    caseNumberCandidates: string[];
-    clientNameCandidates: string[];
-    supportingSignals: string[];
-  };
-};
-
-type Candidate = {
-  value: string;
-  confidence: number;
-  source: string;
-};
-
-const BOOLEAN_FALSE_VALUES = new Set(["0", "false", "off", "no"]);
-const BOOLEAN_TRUE_VALUES = new Set(["1", "true", "on", "yes"]);
-const CARRIER_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
-  { pattern: /\bstate\s+farm\b/i, label: "State Farm" },
-  { pattern: /\bgeico\b/i, label: "GEICO" },
-  { pattern: /\bprogressive\b/i, label: "Progressive" },
-  { pattern: /\ballstate\b/i, label: "Allstate" },
-  { pattern: /\bliberty\s+mutual\b/i, label: "Liberty Mutual" },
-  { pattern: /\bnationwide\b/i, label: "Nationwide" },
-  { pattern: /\btravelers\b/i, label: "Travelers" },
-  { pattern: /\bfarmers\b/i, label: "Farmers" },
-  { pattern: /\busaa\b/i, label: "USAA" },
-  { pattern: /\bmercury\b/i, label: "Mercury" },
-];
-
-function decryptMaybePlaintext(value: string) {
-  return value;
-}
-
-function makeRawEmailId(prefix: string): string {
-  return `${prefix}_${randomUUID()}`;
-}
-
-function readEmailAutomationFlag(): boolean {
-  const rawValue = process.env.EMAIL_AUTOMATION_ENABLED;
-  if (rawValue == null) return true;
-  const normalizedValue = rawValue.trim().toLowerCase();
-  if (BOOLEAN_TRUE_VALUES.has(normalizedValue)) return true;
-  if (BOOLEAN_FALSE_VALUES.has(normalizedValue)) return false;
-  return true;
-}
-
-function normalizeWhitespace(value: string | null | undefined): string {
-  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-}
-
-function normalizeFieldValue(value: string | null | undefined): string | null {
-  const normalized = normalizeWhitespace(value);
-  return normalized.length > 0 ? normalized : null;
-}
-
-function dedupeStrings(values: Array<string | null | undefined>): string[] {
-  const seen = new Set<string>();
-  const output: string[] = [];
-  for (const value of values) {
-    const normalized = normalizeFieldValue(value);
-    if (!normalized) continue;
-    const key = normalized.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    output.push(normalized);
-  }
-  return output;
-}
-
-function titleCaseName(value: string): string {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase())
-    .join(" ");
-}
-
-function normalizeIdentifier(value: string): string {
-  return value.trim().replace(/[^\w\-/.]/g, "").slice(0, 120);
 }
 
 function normalizeDateValue(value: string | null | undefined): string | null {
@@ -156,310 +117,31 @@ function normalizeDateValue(value: string | null | undefined): string | null {
   return `${year.toString().padStart(4, "0")}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
 }
 
-function scoreField(candidates: Candidate[]): EmailAutomationField | null {
-  if (!candidates.length) return null;
-  const sorted = [...candidates].sort((left, right) => right.confidence - left.confidence);
-  const best = sorted[0]!;
-  return {
-    value: best.value,
-    confidence: Number(best.confidence.toFixed(2)),
-    sources: dedupeStrings(sorted.map((candidate) => candidate.source)),
-  };
-}
-
-function collectCandidates(
-  source: string,
-  text: string,
-  regex: RegExp,
-  confidence: number,
-  normalize: (value: string) => string | null = normalizeFieldValue
-): Candidate[] {
-  const matches = [...text.matchAll(regex)];
-  return matches
-    .map((match) => normalize(match[1] ?? ""))
-    .filter((value): value is string => typeof value === "string" && value.length > 0)
-    .map((value) => ({ value, confidence, source }));
-}
-
-function extractClientNameCandidates(message: EmailMessage): Candidate[] {
-  const candidates: Candidate[] = [];
-  const subject = normalizeWhitespace(message.subject);
-  const bodyText = normalizeWhitespace(message.bodyText);
-  const attachmentNames = dedupeStrings((message.attachments ?? []).map((attachment) => attachment.filename));
-  const fromEmail = normalizeWhitespace(message.fromEmail);
-
-  if (subject) {
-    const subjectPatterns = [
-      { regex: /\bclient\s*[:\-]\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3})/g, confidence: 0.83 },
-      { regex: /\binsured\s*[:\-]\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3})/g, confidence: 0.8 },
-      { regex: /^re:\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3})/gi, confidence: 0.68 },
-      { regex: /^fwd?:\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3})/gi, confidence: 0.66 },
-    ];
-    for (const entry of subjectPatterns) {
-      candidates.push(
-        ...collectCandidates("subject", subject, entry.regex, entry.confidence, (value) => {
-          const normalized = normalizeFieldValue(value);
-          return normalized ? titleCaseName(normalized.replace(/^[,.\-]+|[,.\-]+$/g, "")) : null;
-        })
-      );
-    }
-  }
-
-  if (bodyText) {
-    candidates.push(
-      ...collectCandidates(
-        "body",
-        bodyText,
-        /\b(?:client|claimant|insured|patient)\s*[:\-]\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3}?)(?=\s+(?:date\s+of\s+loss|loss\s+date|claim(?:\s+number)?|claim\s*#|policy(?:\s+number)?|policy\s*#|insurance\s+carrier|carrier)\b|$)/gi,
-        0.9,
-        (value) => {
-          const normalized = normalizeFieldValue(value);
-          return normalized ? titleCaseName(normalized.replace(/^[,.\-]+|[,.\-]+$/g, "")) : null;
-        }
-      )
-    );
-  }
-
-  for (const attachmentName of attachmentNames) {
-    const baseName = attachmentName.replace(/\.[a-z0-9]+$/i, " ");
-    const normalizedName = baseName.replace(/[_-]+/g, " ");
-    candidates.push(
-      ...collectCandidates(
-        "attachment",
-        normalizedName,
-        /\b([A-Z][A-Za-z']+(?:\s+[A-Z][A-Za-z']+){1,2})\b/g,
-        0.55,
-        (value) => {
-          const normalized = normalizeFieldValue(value);
-          if (!normalized) return null;
-          if (/\b(invoice|records|medical|document|claim|policy)\b/i.test(normalized)) return null;
-          return titleCaseName(normalized);
-        }
-      )
-    );
-  }
-
-  if (fromEmail) {
-    const localPart = fromEmail.split("@")[0] ?? "";
-    const senderName = normalizeWhitespace(localPart.replace(/[._-]+/g, " "));
-    if (/^[a-z]{2,}\s+[a-z]{2,}$/.test(senderName)) {
-      candidates.push({
-        value: titleCaseName(senderName),
-        confidence: 0.42,
-        source: "sender",
-      });
-    }
-  }
-
-  return candidates;
-}
-
-function extractCarrierCandidates(message: EmailMessage): Candidate[] {
-  const candidates: Candidate[] = [];
-  const attachmentNames = dedupeStrings((message.attachments ?? []).map((attachment) => attachment.filename));
-  const textSources = [
-    { source: "subject", text: normalizeWhitespace(message.subject), confidence: 0.68 },
-    { source: "body", text: normalizeWhitespace(message.bodyText), confidence: 0.86 },
-    { source: "attachment", text: attachmentNames.join(" "), confidence: 0.55 },
-    { source: "sender", text: normalizeWhitespace(message.fromEmail), confidence: 0.5 },
-  ];
-
-  for (const entry of textSources) {
-    if (!entry.text) continue;
-    candidates.push(
-      ...collectCandidates(
-        entry.source,
-        entry.text,
-        /\b(?:carrier|insurance carrier|insurer|insurance company)\s*[:\-]\s*([A-Za-z0-9&.,' -]{3,80})/gi,
-        entry.confidence,
-        (value) => normalizeFieldValue(value)?.replace(/[;,]+$/, "") ?? null
-      )
-    );
-    for (const carrier of CARRIER_PATTERNS) {
-      if (carrier.pattern.test(entry.text)) {
-        candidates.push({
-          value: carrier.label,
-          confidence: entry.confidence,
-          source: entry.source,
-        });
-      }
-    }
-  }
-
-  return candidates;
-}
-
-function normalizeFieldConfidence(
-  field: RawEmailStructuredField,
-  minimumConfidence: number
-): RawEmailStructuredField {
-  if (!field) return null;
-  if (!field.sources.includes("body")) return field;
-  return {
-    ...field,
-    confidence: Math.max(field.confidence, minimumConfidence),
-  };
-}
-
 export function extractStructuredEmailData(message: EmailMessage): RawEmailStructuredExtraction {
-  const attachmentNames = dedupeStrings((message.attachments ?? []).map((attachment) => attachment.filename));
-
-  const clientName = scoreField(extractClientNameCandidates(message));
-  const dateOfLossRaw = scoreField([
-    ...collectCandidates(
-      "subject",
-      normalizeWhitespace(message.subject),
-      /\b(?:date of loss|dol|incident date|accident date)\s*[:#-]?\s*([A-Za-z0-9,/-]{6,30})/gi,
-      0.74
-    ),
-    ...collectCandidates(
-      "body",
-      normalizeWhitespace(message.bodyText),
-      /\b(?:date of loss|dol|incident date|accident date)\s*[:#-]?\s*([A-Za-z0-9,/-]{6,30})/gi,
-      0.9
-    ),
-  ]);
-  const claimNumber = scoreField([
-    ...collectCandidates(
-      "subject",
-      normalizeWhitespace(message.subject),
-      /\b(?:claim(?:\s+number)?|claim\s*#|file\s+number|reference\s+number)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\-/.]{3,})/gi,
-      0.8,
-      (value) => normalizeFieldValue(normalizeIdentifier(value))
-    ),
-    ...collectCandidates(
-      "body",
-      normalizeWhitespace(message.bodyText),
-      /\b(?:claim(?:\s+number)?|claim\s*#|file\s+number|reference\s+number)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\-/.]{3,})/gi,
-      0.92,
-      (value) => normalizeFieldValue(normalizeIdentifier(value))
-    ),
-    ...collectCandidates(
-      "attachment",
-      attachmentNames.join(" "),
-      /\b(?:claim(?:\s+number)?|claim\s*#|file\s+number|reference\s+number)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\-/.]{3,})/gi,
-      0.58,
-      (value) => normalizeFieldValue(normalizeIdentifier(value))
-    ),
-  ]);
-  const policyNumber = scoreField([
-    ...collectCandidates(
-      "subject",
-      normalizeWhitespace(message.subject),
-      /\b(?:policy(?:\s+number)?|policy\s*#)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\-/.]{3,})/gi,
-      0.78,
-      (value) => normalizeFieldValue(normalizeIdentifier(value))
-    ),
-    ...collectCandidates(
-      "body",
-      normalizeWhitespace(message.bodyText),
-      /\b(?:policy(?:\s+number)?|policy\s*#)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\-/.]{3,})/gi,
-      0.9,
-      (value) => normalizeFieldValue(normalizeIdentifier(value))
-    ),
-  ]);
-  const insuranceCarrier = scoreField(extractCarrierCandidates(message));
+  const snapshot = extractEmailAutomationSnapshot({
+    fromEmail: message.fromEmail,
+    subject: message.subject,
+    bodyText: message.bodyText,
+    attachmentFileName: message.attachments?.[0]?.filename ?? null,
+    attachmentNames: message.attachments?.map((attachment) => attachment.filename) ?? [],
+  });
 
   return {
     version: "raw-email-extraction-v1",
-    clientName,
-    dateOfLoss: dateOfLossRaw
+    clientName: snapshot?.fields.clientName ?? null,
+    dateOfLoss: snapshot?.fields.dateOfLoss
       ? normalizeFieldConfidence(
           {
-            ...dateOfLossRaw,
-            value: normalizeDateValue(dateOfLossRaw.value) ?? dateOfLossRaw.value,
+            ...snapshot.fields.dateOfLoss,
+            value: normalizeDateValue(snapshot.fields.dateOfLoss.value) ?? snapshot.fields.dateOfLoss.value,
           },
           0.95
         )
       : null,
-    claimNumber: normalizeFieldConfidence(claimNumber, 0.95),
-    policyNumber: normalizeFieldConfidence(policyNumber, 0.95),
-    insuranceCarrier,
+    claimNumber: normalizeFieldConfidence(snapshot?.fields.claimNumber ?? null, 0.95),
+    policyNumber: normalizeFieldConfidence(snapshot?.fields.policyNumber ?? null, 0.95),
+    insuranceCarrier: snapshot?.fields.insuranceCarrier ?? null,
   };
-}
-
-export function buildEmailAutomationSnapshot(message: EmailMessage, attachmentFileName?: string | null): EmailAutomationSnapshot | null {
-  const extraction = extractStructuredEmailData(message);
-  const attachmentNames = dedupeStrings((message.attachments ?? []).map((attachment) => attachment.filename));
-  const fields = {
-    clientName: extraction.clientName,
-    dateOfLoss: extraction.dateOfLoss,
-    claimNumber: extraction.claimNumber,
-    policyNumber: extraction.policyNumber,
-    insuranceCarrier: extraction.insuranceCarrier,
-  };
-  const supportingSignals = dedupeStrings([
-    fields.claimNumber ? `claim number (${Math.round(fields.claimNumber.confidence * 100)}%)` : null,
-    fields.policyNumber ? `policy number (${Math.round(fields.policyNumber.confidence * 100)}%)` : null,
-    fields.clientName ? `client name (${Math.round(fields.clientName.confidence * 100)}%)` : null,
-    fields.dateOfLoss ? `date of loss (${Math.round(fields.dateOfLoss.confidence * 100)}%)` : null,
-    fields.insuranceCarrier ? `insurance carrier (${Math.round(fields.insuranceCarrier.confidence * 100)}%)` : null,
-  ]);
-
-  if (!supportingSignals.length) {
-    return null;
-  }
-
-  return {
-    version: "email_automation_v1",
-    extractedAt: new Date().toISOString(),
-    source: {
-      fromEmail: normalizeFieldValue(message.fromEmail),
-      subject: normalizeFieldValue(message.subject),
-      attachmentFileName: normalizeFieldValue(attachmentFileName ?? null),
-      attachmentNames,
-    },
-    fields,
-    matchSignals: {
-      caseNumberCandidates: dedupeStrings([fields.claimNumber?.value, fields.policyNumber?.value]),
-      clientNameCandidates: dedupeStrings([fields.clientName?.value]),
-      supportingSignals,
-    },
-  };
-}
-
-/** Heuristic: treat as fax when subject or sender suggests fax-to-email (e.g. efax, ringcentral, fax). */
-function isFaxEmail(m: EmailMessage): boolean {
-  const subject = (m.subject || "").toLowerCase();
-  const from = (m.fromEmail || "").toLowerCase();
-  const faxIndicators = [
-    "fax",
-    "efax",
-    "ringcentral",
-    "rcfax",
-    "myfax",
-    "faxburner",
-    "gotfreefax",
-    "tpc.int",
-    "faxaway",
-  ];
-  const text = `${subject} ${from}`;
-  return faxIndicators.some((word) => text.includes(word));
-}
-
-/** Whether this attachment should be sent to the document ingest pipeline (PDFs only). */
-function shouldIngestAttachment(filename: string, mimeType?: string | null): boolean {
-  const lower = (filename || "").toLowerCase();
-  if (lower.endsWith(".pdf")) return true;
-  const mt = (mimeType || "").toLowerCase();
-  if (mt === "application/pdf" || mt.startsWith("application/pdf;")) return true;
-  return false;
-}
-
-/** Extract a possible client name from subject (e.g. "Re: John Smith" or "Client: Jane Doe" or "Fwd: Smith, John"). */
-function extractClientNameFromSubject(subject: string | undefined): string | null {
-  if (!subject || !subject.trim()) return null;
-  const s = subject.trim();
-  // Re: Name or RE: Name
-  const reMatch = s.match(/^re:\s*(.+?)(?:\s*[-–—|].*)?$/i);
-  if (reMatch) return reMatch[1].trim() || null;
-  // Fwd: Name or FWD: Name
-  const fwdMatch = s.match(/^fwd?:\s*(.+?)(?:\s*[-–—|].*)?$/i);
-  if (fwdMatch) return fwdMatch[1].trim() || null;
-  // Client: Name or Client - Name
-  const clientMatch = s.match(/client\s*[:\-]\s*(.+?)(?:\s*[-–—|].*)?$/i);
-  if (clientMatch) return clientMatch[1].trim() || null;
-  return null;
 }
 
 export async function ensureEmailMessageExtractionStorage(): Promise<void> {
@@ -474,7 +156,6 @@ export async function upsertEmailMessageRecord(input: {
   extraction?: RawEmailStructuredExtraction | null;
 }): Promise<{ id: string }> {
   await ensureEmailMessageExtractionStorage();
-
   const receivedAt = input.message.receivedAt ?? input.message.sentAt ?? new Date();
   const isFax = isFaxEmail(input.message);
   const extraction = input.extraction ?? extractStructuredEmailData(input.message);
@@ -517,45 +198,6 @@ export async function upsertEmailMessageRecord(input: {
   return { id: emailMessageId };
 }
 
-async function setDocumentEmailAutomation(
-  firmId: string,
-  documentId: string,
-  snapshot: EmailAutomationSnapshot
-): Promise<void> {
-  const modulePath = "../services/" + "emailAutomation";
-  try {
-    const loaded = (await import(modulePath)) as {
-      setDocumentEmailAutomation?: (
-        firmId: string,
-        documentId: string,
-        snapshot: EmailAutomationSnapshot
-      ) => Promise<void>;
-    };
-    if (typeof loaded.setDocumentEmailAutomation === "function") {
-      await loaded.setDocumentEmailAutomation(firmId, documentId, snapshot);
-      return;
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/emailAutomation/i.test(message) && !/Cannot find module/i.test(message)) {
-      throw error;
-    }
-  }
-
-  const { rows } = await pgPool.query<{ meta_json: unknown }>(
-    `select "metaJson" as meta_json from "Document" where id = $1 and "firmId" = $2 limit 1`,
-    [documentId, firmId]
-  );
-  const existingMeta =
-    rows[0]?.meta_json != null && typeof rows[0].meta_json === "object" && !Array.isArray(rows[0].meta_json)
-      ? (rows[0].meta_json as Record<string, unknown>)
-      : {};
-  await pgPool.query(
-    `update "Document" set "metaJson" = $3::jsonb where id = $1 and "firmId" = $2`,
-    [documentId, firmId, JSON.stringify({ ...existingMeta, emailAutomation: snapshot })]
-  );
-}
-
 export async function runEmailPollOnce() {
   const { rows: mailboxes } = await pgPool.query<MailboxRow>(
     `select * from mailbox_connections where status='active'`
@@ -563,14 +205,14 @@ export async function runEmailPollOnce() {
 
   console.log(`[email] runEmailPollOnce: active mailboxes=${mailboxes.length}`);
 
-  for (const mb of mailboxes) {
+  for (const mailbox of mailboxes) {
     console.log(
-      `[email] polling mailbox id=${mb.id} provider=${mb.provider} user=${mb.imap_username} host=${mb.imap_host}`
+      `[email] polling mailbox id=${mailbox.id} provider=${mailbox.provider} user=${mailbox.imap_username} host=${mailbox.imap_host}`
     );
 
     try {
-      if (mb.provider === "imap") {
-        await handleImapMailbox(mb);
+      if (mailbox.provider === "imap") {
+        await handleImapMailbox(mailbox);
       } else {
         console.log("[email] gmail provider not implemented yet");
       }
@@ -579,83 +221,84 @@ export async function runEmailPollOnce() {
         `update mailbox_connections
          set last_sync_at=now(), last_error=null, status='active', updated_at=now()
          where id=$1`,
-        [mb.id]
+        [mailbox.id]
       );
-    } catch (err: any) {
-      const msg = String(err?.stack || err?.message || err);
-
+    } catch (error: any) {
+      const message = String(error?.stack || error?.message || error);
       await pgPool.query(
         `update mailbox_connections
          set last_error=$2, status='active', updated_at=now()
          where id=$1`,
-        [mb.id, msg]
+        [mailbox.id, message]
       );
 
-      console.error(`[email] mailbox ${mb.id} error:`, msg);
+      console.error(`[email] mailbox ${mailbox.id} error:`, message);
       createNotification(
-        mb.firm_id,
+        mailbox.firm_id,
         "mailbox_poll_failed",
         "Mailbox poll failed",
-        `Poll failed for mailbox ${mb.imap_username ?? mb.id}: ${msg.slice(0, 200)}`,
-        { mailboxId: mb.id }
-      ).catch((e) => console.warn("[notifications] mailbox_poll_failed failed", e));
+        `Poll failed for mailbox ${mailbox.imap_username ?? mailbox.id}: ${message.slice(0, 200)}`,
+        { mailboxId: mailbox.id }
+      ).catch((notificationError) =>
+        console.warn("[notifications] mailbox_poll_failed failed", notificationError)
+      );
     }
   }
 }
 
-/** Poll a single mailbox by id (used by poll-now). Ignores status; polls even if paused. */
 export async function runEmailPollForMailbox(mailboxId: string) {
   const { rows } = await pgPool.query<MailboxRow>(
     `select * from mailbox_connections where id = $1 limit 1`,
     [mailboxId]
   );
-  const mb = rows[0];
-  if (!mb) throw new Error("mailbox not found");
+  const mailbox = rows[0];
+  if (!mailbox) throw new Error("mailbox not found");
 
   try {
-    if (mb.provider === "imap") {
-      await handleImapMailbox(mb);
+    if (mailbox.provider === "imap") {
+      await handleImapMailbox(mailbox);
     } else {
       throw new Error("gmail provider not implemented");
     }
     await pgPool.query(
       `update mailbox_connections set last_sync_at=now(), last_error=null, status='active', updated_at=now() where id=$1`,
-      [mb.id]
+      [mailbox.id]
     );
-  } catch (err: any) {
-    const msg = String(err?.stack || err?.message || err);
+  } catch (error: any) {
+    const message = String(error?.stack || error?.message || error);
     await pgPool.query(
       `update mailbox_connections set last_error=$2, updated_at=now() where id=$1`,
-      [mb.id, msg]
+      [mailbox.id, message]
     );
-    console.error(`[email] mailbox ${mb.id} poll-now error:`, msg);
+    console.error(`[email] mailbox ${mailbox.id} poll-now error:`, message);
     createNotification(
-      mb.firm_id,
+      mailbox.firm_id,
       "mailbox_poll_failed",
       "Mailbox poll failed",
-      `Poll failed for mailbox ${mb.imap_username ?? mb.id}: ${msg.slice(0, 200)}`,
-      { mailboxId: mb.id }
-    ).catch((e) => console.warn("[notifications] mailbox_poll_failed failed", e));
-    throw err;
+      `Poll failed for mailbox ${mailbox.imap_username ?? mailbox.id}: ${message.slice(0, 200)}`,
+      { mailboxId: mailbox.id }
+    ).catch((notificationError) =>
+      console.warn("[notifications] mailbox_poll_failed failed", notificationError)
+    );
+    throw error;
   }
 }
 
-async function handleImapMailbox(mb: MailboxRow) {
-  const passRaw = mb.imap_password_enc ?? mb.imap_password;
-  if (!mb.imap_host || !mb.imap_username || !passRaw) {
+async function handleImapMailbox(mailbox: MailboxRow) {
+  const passwordRaw = mailbox.imap_password_enc ?? mailbox.imap_password;
+  if (!mailbox.imap_host || !mailbox.imap_username || !passwordRaw) {
     throw new Error("Mailbox missing imap_host/imap_username/imap_password");
   }
 
-  const pass = decryptMaybePlaintext(passRaw);
-  const lastUid = mb.last_uid ? Number(mb.last_uid) : null;
-
+  const password = decryptMaybePlaintext(passwordRaw);
+  const lastUid = mailbox.last_uid ? Number(mailbox.last_uid) : null;
   const { messages, highestUid } = await pollImapSinceUid(
     {
-      host: mb.imap_host,
-      port: mb.imap_port || 993,
-      secure: mb.imap_secure ?? true,
-      auth: { user: mb.imap_username, pass },
-      mailbox: mb.folder || "INBOX",
+      host: mailbox.imap_host,
+      port: mailbox.imap_port || 993,
+      secure: mailbox.imap_secure ?? true,
+      auth: { user: mailbox.imap_username, pass: password },
+      mailbox: mailbox.folder || "INBOX",
     },
     lastUid,
     25
@@ -664,119 +307,121 @@ async function handleImapMailbox(mb: MailboxRow) {
   console.log(
     `[email] imap returned messages=${messages.length} highestUid=${highestUid ?? "null"} lastUidWas=${lastUid ?? "null"}`
   );
-  const emailAutomationEnabled = readEmailAutomationFlag();
+
+  const firm = await prisma.firm.findUnique({
+    where: { id: mailbox.firm_id },
+    select: { id: true, plan: true },
+  });
+  const emailAutomationAllowed = firm
+    ? isEmailAutomationAllowedForFirm(firm)
+    : false;
   await ensureEmailMessageExtractionStorage();
 
-  // Store metadata: sender (from_email), subject, receivedDate (received_at).
-  // Also store is_fax and client_name_extracted for routing/display.
-  for (const m of messages) {
-    const extraction = extractStructuredEmailData(m);
+  for (const message of messages) {
+    const extraction = extractStructuredEmailData(message);
     const { id: emailMessageId } = await upsertEmailMessageRecord({
-      mailboxConnectionId: mb.id,
-      message: m,
+      mailboxConnectionId: mailbox.id,
+      message,
       extraction,
     });
 
-    // Process all non-inline attachments (extract all; send only PDFs to ingest pipeline)
-    const attachments = m.attachments ?? [];
+    const attachments = message.attachments ?? [];
     const attachmentNames = attachments.map((attachment) => attachment.filename);
 
-    for (const a of attachments) {
-      if (!a?.content || !a.filename) continue;
+    for (const attachment of attachments) {
+      if (!attachment?.content || !attachment.filename) continue;
 
-      const hash = sha256(a.content);
-      const externalId = `imap:${mb.id}:${String(m.uid)}:${a.filename}:${hash.slice(0, 12)}`;
-      const isPdf = shouldIngestAttachment(a.filename, a.mimeType);
+      const hash = sha256(attachment.content);
+      const externalId = `imap:${mailbox.id}:${String(message.uid)}:${attachment.filename}:${hash.slice(0, 12)}`;
+      const isPdf = shouldIngestAttachment(attachment.filename, attachment.mimeType);
 
       if (isPdf) {
         console.log(
-          `[email] ingesting PDF ${a.filename} subject=${JSON.stringify(m.subject || "")} from=${m.fromEmail || ""}`
+          `[email] ingesting PDF ${attachment.filename} subject=${JSON.stringify(message.subject || "")} from=${message.fromEmail || ""}`
         );
       }
 
-      // Skip ingest call if already recorded for this email message (by sha256)
-      let docId: string | null = null;
       const exists = await pgPool.query(
         `select 1 from email_attachments where email_message_id=$1 and sha256=$2 limit 1`,
         [emailMessageId, hash]
       );
-
       if ((exists.rowCount ?? 0) > 0) {
         if (isPdf) {
           console.log("[email] attachment already ingested, skipping", {
             emailMessageId,
-            filename: a.filename,
+            filename: attachment.filename,
             sha256: hash,
           });
         }
         continue;
       }
 
+      let documentId: string | null = null;
       if (isPdf) {
         const ingest = await callIngest({
-          firmId: mb.firm_id,
-          filename: a.filename,
-          mimeType: a.mimeType,
-          content: a.content,
+          firmId: mailbox.firm_id,
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          content: attachment.content,
           source: "email",
           externalId,
-          fromEmail: m.fromEmail,
-          subject: m.subject,
+          fromEmail: message.fromEmail,
+          subject: message.subject,
         });
-        docId = ingest?.documentId || ingest?.id || null;
-        console.log(`[email] ingested PDF -> documentId=${docId || "?"}`);
+        documentId = ingest?.documentId || ingest?.id || null;
+        console.log(`[email] ingested PDF -> documentId=${documentId || "?"}`);
 
-        if (docId && emailAutomationEnabled) {
-          const snapshot = buildEmailAutomationSnapshot(m, a.filename);
+        if (documentId && emailAutomationAllowed) {
+          const snapshot = extractEmailAutomationSnapshot({
+            fromEmail: message.fromEmail,
+            subject: message.subject,
+            bodyText: message.bodyText,
+            attachmentFileName: attachment.filename,
+            attachmentNames,
+          });
           if (snapshot) {
-            snapshot.source.attachmentNames = attachmentNames;
-            await setDocumentEmailAutomation(mb.firm_id, docId, snapshot);
+            await setDocumentEmailAutomation(mailbox.firm_id, documentId, snapshot);
           }
         }
       }
 
-      const r = await pgPool.query(
+      const insertResult = await pgPool.query(
         `
         insert into email_attachments
-          (id, email_message_id, filename, mime_type, size_bytes, sha256, ingest_document_id)
+          (email_message_id, filename, mime_type, size_bytes, sha256, ingest_document_id)
         values
-          ($1,$2,$3,$4,$5,$6,$7)
+          ($1,$2,$3,$4,$5,$6)
         on conflict (email_message_id, sha256) do nothing
         returning id
         `,
         [
-          makeRawEmailId("emailatt"),
           emailMessageId,
-          a.filename || null,
-          a.mimeType || null,
-          a.content.length,
+          attachment.filename || null,
+          attachment.mimeType || null,
+          attachment.content.length,
           hash,
-          docId,
+          documentId,
         ]
       );
 
-      if (r.rowCount === 0) {
-        if (isPdf) {
-          console.log("[email] attachment already ingested, skipping", {
-            emailMessageId,
-            filename: a.filename,
-            sha256: hash,
-          });
-        }
-        continue;
+      if (insertResult.rowCount === 0 && isPdf) {
+        console.log("[email] attachment already ingested, skipping", {
+          emailMessageId,
+          filename: attachment.filename,
+          sha256: hash,
+        });
       }
     }
   }
 
-  // ✅ Save cursor ONCE at end so next poll only fetches new emails
   if (highestUid && (lastUid === null || highestUid > lastUid)) {
     await pgPool.query(
       `update mailbox_connections set last_uid=$2, updated_at=now() where id=$1`,
-      [mb.id, String(highestUid)]
+      [mailbox.id, String(highestUid)]
     );
 
     console.log("[email] updated mailbox cursor", {
-      mailboxId: mb.id,
+      mailboxId: mailbox.id,
       lastUid: highestUid,
     });
   }
@@ -809,13 +454,13 @@ async function callIngest(args: {
   });
   form.append("file", blob, args.filename);
 
-  const res = await fetch(ingestUrl, {
+  const response = await fetch(ingestUrl, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}` },
     body: form,
   });
 
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Ingest failed ${res.status}: ${text}`);
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Ingest failed ${response.status}: ${text}`);
   return JSON.parse(text);
 }

@@ -16,7 +16,7 @@ const ALLOWED_MIME_PREFIXES = [
   "application/vnd.openxmlformats-officedocument.",
 ];
 
-export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100MB
+export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25MB
 
 export function validateFileType(originalName: string, mimeType: string | null): FileScanResult {
   const name = (originalName || "").trim();

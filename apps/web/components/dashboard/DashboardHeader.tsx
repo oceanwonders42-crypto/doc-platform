@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { getApiBase, getFetchOptions, clearAuthToken } from "@/lib/api";
+import { isTrafficFeatureEnabled } from "@/lib/devFeatures";
 import { useTheme, type ThemeId } from "@/contexts/ThemeContext";
 import { useI18n } from "@/contexts/I18nContext";
 import { useDashboardAuth } from "@/contexts/DashboardAuthContext";
@@ -21,7 +22,6 @@ const NAV_ITEMS: { href: string; labelKey: string }[] = [
   { href: "/dashboard/audit", labelKey: "nav.audit" },
   { href: "/dashboard/usage", labelKey: "nav.usage" },
   { href: "/dashboard/integrations", labelKey: "nav.integrations" },
-  { href: "/dashboard/control-tower", labelKey: "nav.controlTower" },
   { href: "/dashboard/support/report", labelKey: "nav.support" },
   { href: "/dashboard/settings", labelKey: "nav.settings" },
 ];
@@ -34,6 +34,10 @@ export function DashboardHeader() {
   const { user } = useDashboardAuth();
   const { theme, setTheme } = useTheme();
   const { t, locale, setLocale } = useI18n();
+  const trafficEnabled = isTrafficFeatureEnabled();
+  const mobileNavItems = NAV_ITEMS.filter(
+    (item) => item.href !== "/dashboard/traffic" || trafficEnabled
+  );
 
   const handleLogout = () => {
     const base = getApiBase();
@@ -398,7 +402,7 @@ export function DashboardHeader() {
             }}
           >
             <nav style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-              {NAV_ITEMS.map((item) => {
+              {mobileNavItems.map((item) => {
                 const isActive =
                   item.href === "/dashboard"
                     ? pathname === "/dashboard"

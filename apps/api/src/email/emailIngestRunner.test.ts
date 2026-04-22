@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import { pgPool } from "../db/pg";
 import { prisma } from "../db/prisma";
 import {
-  buildEmailAutomationSnapshot,
   ensureEmailMessageExtractionStorage,
   extractStructuredEmailData,
   upsertEmailMessageRecord,
@@ -35,6 +34,7 @@ function buildMessage(overrides: Partial<EmailMessage> = {}): EmailMessage {
     uid: 101,
     providerMessageId: "imap-uid:101",
     fromEmail: "bodilyinjury@progressive.com",
+    fromName: "Progressive Claims",
     subject: "Claim Update for Jane Doe",
     bodyText: [
       "Client: Jane Doe",
@@ -58,9 +58,7 @@ function buildMessage(overrides: Partial<EmailMessage> = {}): EmailMessage {
 }
 
 function runExtractionShapeTest() {
-  const message = buildMessage();
-  const extraction = extractStructuredEmailData(message);
-  const automation = buildEmailAutomationSnapshot(message, message.attachments?.[0]?.filename);
+  const extraction = extractStructuredEmailData(buildMessage());
 
   assert.equal(extraction.version, "raw-email-extraction-v1");
   assert.equal(extraction.clientName?.value, "Jane Doe");
@@ -82,10 +80,6 @@ function runExtractionShapeTest() {
   assert.equal(extraction.insuranceCarrier?.value, "Progressive");
   assert.ok((extraction.insuranceCarrier?.confidence ?? 0) >= 0.82);
   assert.ok(extraction.insuranceCarrier?.sources.includes("body"));
-
-  assert.equal(automation?.version, "email_automation_v1");
-  assert.equal(automation?.fields.clientName?.value, "Jane Doe");
-  assert.deepEqual(automation?.matchSignals.caseNumberCandidates, ["CLM-445566", "PL-778899"]);
 }
 
 async function runPersistenceTest() {
@@ -177,10 +171,7 @@ async function runPersistenceTest() {
     );
     assert.equal(count.rows[0]?.count, 1, "Expected one raw email_messages row after upsert");
   } finally {
-    await pgPool.query(
-      `delete from email_attachments where email_message_id in (select id from email_messages where mailbox_connection_id = $1)`,
-      [mailboxId]
-    );
+    await pgPool.query(`delete from email_attachments where email_message_id in (select id from email_messages where mailbox_connection_id = $1)`, [mailboxId]);
     await pgPool.query(`delete from email_messages where mailbox_connection_id = $1`, [mailboxId]);
     await pgPool.query(`delete from mailbox_connections where id = $1`, [mailboxId]);
     await prisma.firm.deleteMany({ where: { id: firmId } });

@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { PDFDocument } from "pdf-lib";
 import { prisma } from "../db/prisma";
 import { getObjectBuffer, putObject } from "./storage";
+import { buildDocumentStorageKey } from "./documentStorageKeys";
 
 export type MergeDocumentsInput = {
   firmId: string;
@@ -29,7 +30,7 @@ export async function mergeDocuments(input: MergeDocumentsInput): Promise<MergeD
 
   const docs = await prisma.document.findMany({
     where: { id: { in: documentIds }, firmId },
-    select: { id: true, spacesKey: true, originalName: true, mimeType: true },
+    select: { id: true, spacesKey: true, originalName: true, mimeType: true, routedCaseId: true },
     orderBy: { id: "asc" },
   });
 
@@ -70,17 +71,28 @@ export async function mergeDocuments(input: MergeDocumentsInput): Promise<MergeD
   }
 
   const mergedBuffer = Buffer.from(await mergedPdf.save());
-  const key = `${firmId}/merged/${Date.now()}_${crypto.randomUUID().replace(/-/g, "")}.pdf`;
-  await putObject(key, mergedBuffer, pdfMime);
+  const documentId = crypto.randomUUID();
 
   const baseName = orderedDocs[0]?.originalName || "document";
   const ext = (baseName || "").split(".").pop()?.toLowerCase();
   const mergedName =
     (ext === "pdf" ? baseName.replace(/\.pdf$/i, "") : baseName) + `-merged-${orderedDocs.length}.pdf`;
+  const sharedCaseId =
+    orderedDocs.length > 0 && orderedDocs.every((doc) => doc.routedCaseId === orderedDocs[0]?.routedCaseId)
+      ? orderedDocs[0]?.routedCaseId ?? null
+      : null;
+  const key = buildDocumentStorageKey({
+    firmId,
+    caseId: sharedCaseId,
+    documentId,
+    originalName: mergedName,
+  });
+  await putObject(key, mergedBuffer, pdfMime);
 
   const fileSha256 = crypto.createHash("sha256").update(mergedBuffer).digest("hex");
   const doc = await prisma.document.create({
     data: {
+      id: documentId,
       firmId,
       source: "merge",
       spacesKey: key,

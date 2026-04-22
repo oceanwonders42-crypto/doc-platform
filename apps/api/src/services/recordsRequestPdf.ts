@@ -8,6 +8,7 @@ import { prisma } from "../db/prisma";
 import { putObject } from "./storage";
 import { buildRecordsRequestLetterPdf } from "./recordsLetterPdf";
 import { buildFirmWhere } from "../lib/tenant";
+import { buildDocumentStorageKey } from "./documentStorageKeys";
 
 export type GenerateRecordsRequestLetterInput = {
   recordsRequestId: string;
@@ -66,12 +67,19 @@ export async function generateAndStoreRecordsRequestLetter(
   const safeName = req.providerName.replace(/[^a-zA-Z0-9\-_\s]/g, "").replace(/\s+/g, " ").trim().slice(0, 60) || "Records Request";
   const originalName = `Records Request - ${safeName}.pdf`;
   const fileSha256 = crypto.createHash("sha256").update(pdfBuffer).digest("hex");
-  const storageKey = `${firmId}/records_request/${Date.now()}_${crypto.randomBytes(6).toString("hex")}.pdf`;
+  const documentId = crypto.randomUUID();
+  const storageKey = buildDocumentStorageKey({
+    firmId,
+    caseId: req.caseId,
+    documentId,
+    originalName,
+  });
 
   await putObject(storageKey, pdfBuffer, "application/pdf");
 
   const doc = await prisma.document.create({
     data: {
+      id: documentId,
       firmId,
       source: "records_request",
       spacesKey: storageKey,

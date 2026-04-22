@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { formatApiClientError, getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
 
 const NARRATIVE_TYPES = [
   { value: "treatment_summary", label: "Treatment summary" },
@@ -20,6 +21,45 @@ const TONES = [
 ] as const;
 
 type UsedEvent = { eventDate: string | null; eventType: string | null; documentId: string };
+type DemandApiStatus =
+  | "draft_generated"
+  | "pending_dev_review"
+  | "dev_approved"
+  | "approved"
+  | "released"
+  | "released_to_requester";
+type NormalizedDemandStatus = "pending_dev_review" | "approved" | "released";
+type DemandReviewItem = {
+  id: string;
+  status: DemandApiStatus;
+  canViewText: boolean;
+  text: string | null;
+  warnings: string[];
+  usedEvents: UsedEvent[];
+  generatedAt: string;
+  approvedAt: string | null;
+  releasedAt: string | null;
+  narrativeType: string;
+  tone: string;
+};
+
+type AuthMeResponse = {
+  ok?: boolean;
+  role?: string;
+  isPlatformAdmin?: boolean;
+};
+
+const STATUS_LABELS: Record<NormalizedDemandStatus, string> = {
+  pending_dev_review: "Pending internal review",
+  approved: "Approved",
+  released: "Released",
+};
+
+function normalizeDemandStatus(status: DemandApiStatus): NormalizedDemandStatus {
+  if (status === "dev_approved" || status === "approved") return "approved";
+  if (status === "released_to_requester" || status === "released") return "released";
+  return "pending_dev_review";
+}
 
 export default function NarrativePageClient({
   caseId,
@@ -38,17 +78,86 @@ export default function NarrativePageClient({
   const [currentDemandAmount, setCurrentDemandAmount] = useState("");
   const [keyLiabilityFacts, setKeyLiabilityFacts] = useState("");
   const [loading, setLoading] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isPlatformReviewer, setIsPlatformReviewer] = useState(false);
+  const [draftItems, setDraftItems] = useState<DemandReviewItem[]>([]);
+  const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [actionDraftId, setActionDraftId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [text, setText] = useState("");
-  const [usedEvents, setUsedEvents] = useState<UsedEvent[]>([]);
-  const [warnings, setWarnings] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
+  const visibleDraftItems = useMemo(() => {
+    if (isPlatformReviewer) return draftItems;
+    return draftItems.filter((item) => normalizeDemandStatus(item.status) === "released");
+  }, [draftItems, isPlatformReviewer]);
+  const selectedDraft = useMemo(() => {
+    if (visibleDraftItems.length === 0) return null;
+    return visibleDraftItems.find((item) => item.id === selectedDraftId) ?? visibleDraftItems[0];
+  }, [visibleDraftItems, selectedDraftId]);
+  const selectedDraftStatus = selectedDraft ? normalizeDemandStatus(selectedDraft.status) : null;
+  const hasHiddenUnreleasedDrafts =
+    !isPlatformReviewer && draftItems.length > 0 && visibleDraftItems.length === 0;
+  const visibleText = selectedDraft?.text ?? "";
+  const warnings = selectedDraft?.warnings ?? [];
+  const usedEvents = selectedDraft?.usedEvents ?? [];
+
+  async function loadAuthState() {
+    try {
+      const response = await fetch(`${getApiBase()}/auth/me`, {
+        headers: getAuthHeader(),
+        ...getFetchOptions(),
+      });
+      if (!response.ok) {
+        setIsPlatformReviewer(false);
+        return;
+      }
+      const data = (await parseJsonResponse(response)) as AuthMeResponse;
+      const platformAdmin = data.isPlatformAdmin === true || data.role === "PLATFORM_ADMIN";
+      setIsPlatformReviewer(platformAdmin);
+    } catch {
+      setIsPlatformReviewer(false);
+    } finally {
+      setAuthChecked(true);
+    }
+  }
+
+  async function loadDrafts(preferredDraftId?: string | null) {
+    try {
+      const response = await fetch(`${getApiBase()}/cases/${encodeURIComponent(caseId)}/demand-narratives`, {
+        headers: getAuthHeader(),
+        ...getFetchOptions(),
+      });
+      const data = (await parseJsonResponse(response)) as {
+        ok?: boolean;
+        items?: DemandReviewItem[];
+        error?: string;
+      };
+      if (!response.ok) {
+        setError(data.error ?? "Failed to load demand review status.");
+        return;
+      }
+      const items = Array.isArray(data.items) ? data.items : [];
+      setDraftItems(items);
+      setSelectedDraftId(preferredDraftId ?? items[0]?.id ?? null);
+    } catch (err) {
+      setError(formatApiClientError(err, "Failed to load demand review status."));
+    }
+  }
+
+  useEffect(() => {
+    if (!enabled) {
+      setAuthChecked(true);
+      return;
+    }
+    void loadAuthState();
+    void loadDrafts();
+  }, [caseId, enabled]);
 
   async function handleGenerate() {
     if (!enabled) return;
     setLoading(true);
     setError(null);
-    setWarnings([]);
+    setStatusMessage(null);
     try {
       const questionnairePayload =
         mainInjuries.trim() ||
@@ -68,9 +177,10 @@ export default function NarrativePageClient({
             }
           : undefined;
 
-      const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/narrative`, {
+      const res = await fetch(`${getApiBase()}/cases/${encodeURIComponent(caseId)}/narrative`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeader() },
+        ...getFetchOptions(),
         body: JSON.stringify({
           type,
           tone,
@@ -78,30 +188,93 @@ export default function NarrativePageClient({
           questionnaire: questionnairePayload,
         }),
       });
-      const data = (await res.json().catch(() => ({}))) as {
+      const data = (await parseJsonResponse(res)) as {
         ok?: boolean;
-        text?: string;
-        usedEvents?: UsedEvent[];
-        warnings?: string[];
+        item?: DemandReviewItem;
+        message?: string;
         error?: string;
       };
       if (!res.ok) {
         setError(data.error ?? `Request failed (${res.status})`);
         return;
       }
-      setText(data.text ?? "");
-      setUsedEvents(Array.isArray(data.usedEvents) ? data.usedEvents : []);
-      setWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      setStatusMessage(
+        data.message ??
+          "Demand draft generated and queued for mandatory internal developer review."
+      );
+      await loadDrafts(data.item?.id ?? null);
     } catch (e) {
-      setError(String(e));
+      setError(formatApiClientError(e, "Failed to generate demand draft."));
     } finally {
       setLoading(false);
     }
   }
 
+  async function handleApprove(draftId: string) {
+    setActionDraftId(draftId);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      const response = await fetch(
+        `${getApiBase()}/cases/${encodeURIComponent(caseId)}/demand-narratives/${encodeURIComponent(draftId)}/approve`,
+        {
+          method: "POST",
+          headers: getAuthHeader(),
+          ...getFetchOptions(),
+        }
+      );
+      const data = (await parseJsonResponse(response)) as {
+        ok?: boolean;
+        item?: DemandReviewItem;
+        error?: string;
+      };
+      if (!response.ok) {
+        setError(data.error ?? "Failed to approve demand draft.");
+        return;
+      }
+      setStatusMessage("Demand draft approved and ready for release.");
+      await loadDrafts(data.item?.id ?? draftId);
+    } catch (err) {
+      setError(formatApiClientError(err, "Failed to approve demand draft."));
+    } finally {
+      setActionDraftId(null);
+    }
+  }
+
+  async function handleRelease(draftId: string) {
+    setActionDraftId(draftId);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      const response = await fetch(
+        `${getApiBase()}/cases/${encodeURIComponent(caseId)}/demand-narratives/${encodeURIComponent(draftId)}/release`,
+        {
+          method: "POST",
+          headers: getAuthHeader(),
+          ...getFetchOptions(),
+        }
+      );
+      const data = (await parseJsonResponse(response)) as {
+        ok?: boolean;
+        item?: DemandReviewItem;
+        error?: string;
+      };
+      if (!response.ok) {
+        setError(data.error ?? "Failed to release demand draft.");
+        return;
+      }
+      setStatusMessage("Demand draft released to the requesting team.");
+      await loadDrafts(data.item?.id ?? draftId);
+    } catch (err) {
+      setError(formatApiClientError(err, "Failed to release demand draft."));
+    } finally {
+      setActionDraftId(null);
+    }
+  }
+
   function handleCopy() {
-    if (!text) return;
-    navigator.clipboard.writeText(text).then(
+    if (!visibleText) return;
+    navigator.clipboard.writeText(visibleText).then(
       () => {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
@@ -122,7 +295,7 @@ export default function NarrativePageClient({
       </div>
 
       <p style={{ color: "#666", fontSize: 14, marginBottom: 20 }}>
-        Generate draft narrative sections from case timeline and extracted fields. Copy and edit as needed.
+        Generate draft narrative sections from case timeline and extracted fields. Every generated demand stays blocked in internal developer review until a platform reviewer approves and releases it.
       </p>
 
       {!enabled && (
@@ -335,24 +508,144 @@ export default function NarrativePageClient({
       <button
         type="button"
         onClick={handleGenerate}
-        disabled={loading || !enabled}
+        disabled={loading || !enabled || !authChecked}
         style={{
           padding: "10px 20px",
           fontSize: 14,
           fontWeight: 600,
           border: "1px solid #111",
           borderRadius: 8,
-          background: loading || !enabled ? "#ccc" : "#111",
+          background: loading || !enabled || !authChecked ? "#ccc" : "#111",
           color: "#fff",
-          cursor: loading || !enabled ? "not-allowed" : "pointer",
+          cursor: loading || !enabled || !authChecked ? "not-allowed" : "pointer",
         }}
       >
         {loading ? "Generating…" : "Generate draft"}
       </button>
 
+      {statusMessage && (
+        <p style={{ marginTop: 12, color: "#0f5132", fontSize: 14 }}>{statusMessage}</p>
+      )}
+
       {error && (
         <p style={{ marginTop: 12, color: "#c00", fontSize: 14 }}>{error}</p>
       )}
+
+      <section style={{ marginTop: 24, padding: 16, border: "1px solid #ddd", borderRadius: 10, background: "#fafafa" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12 }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Demand review status</h2>
+            <p style={{ margin: "6px 0 0", fontSize: 13, color: "#666" }}>
+              {isPlatformReviewer
+                ? "Generated drafts stay hidden from the requesting team until approval and release."
+                : "Only released demand narratives appear here."}
+            </p>
+          </div>
+          {isPlatformReviewer && (
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#0b5394" }}>Platform reviewer view</span>
+          )}
+        </div>
+
+        {visibleDraftItems.length === 0 ? (
+          <p style={{ margin: 0, fontSize: 14, color: "#666" }}>
+            {hasHiddenUnreleasedDrafts
+              ? "Your draft is in review. It will appear here after a platform reviewer releases it."
+              : isPlatformReviewer
+                ? "No generated demand drafts yet."
+                : "No released demand drafts yet."}
+          </p>
+        ) : (
+          <div style={{ display: "grid", gap: 12 }}>
+            {visibleDraftItems.map((item) => {
+              const isSelected = selectedDraft?.id === item.id;
+              const normalizedStatus = normalizeDemandStatus(item.status);
+              return (
+                <div
+                  key={item.id}
+                  style={{
+                    padding: 12,
+                    borderRadius: 8,
+                    border: isSelected ? "1px solid #111" : "1px solid #ddd",
+                    background: "#fff",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+                    <div>
+                      <p style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>{STATUS_LABELS[normalizedStatus]}</p>
+                      <p style={{ margin: "4px 0 0", fontSize: 12, color: "#666" }}>
+                        Generated {new Date(item.generatedAt).toLocaleString()} · {item.narrativeType.replace(/_/g, " ")} · {item.tone}
+                      </p>
+                      {item.approvedAt && (
+                        <p style={{ margin: "4px 0 0", fontSize: 12, color: "#666" }}>
+                          Approved {new Date(item.approvedAt).toLocaleString()}
+                        </p>
+                      )}
+                      {item.releasedAt && (
+                        <p style={{ margin: "4px 0 0", fontSize: 12, color: "#666" }}>
+                          Released {new Date(item.releasedAt).toLocaleString()}
+                        </p>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedDraftId(item.id)}
+                        style={{
+                          padding: "6px 12px",
+                          fontSize: 12,
+                          border: "1px solid #111",
+                          borderRadius: 6,
+                          background: isSelected ? "#111" : "#fff",
+                          color: isSelected ? "#fff" : "#111",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {isSelected ? "Selected" : "Open"}
+                      </button>
+                      {isPlatformReviewer && normalizedStatus === "pending_dev_review" && (
+                        <button
+                          type="button"
+                          onClick={() => handleApprove(item.id)}
+                          disabled={actionDraftId === item.id}
+                          style={{
+                            padding: "6px 12px",
+                            fontSize: 12,
+                            border: "1px solid #0f5132",
+                            borderRadius: 6,
+                            background: "#fff",
+                            color: "#0f5132",
+                            cursor: actionDraftId === item.id ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          {actionDraftId === item.id ? "Approving..." : "Approve"}
+                        </button>
+                      )}
+                      {isPlatformReviewer && normalizedStatus === "approved" && (
+                        <button
+                          type="button"
+                          onClick={() => handleRelease(item.id)}
+                          disabled={actionDraftId === item.id}
+                          style={{
+                            padding: "6px 12px",
+                            fontSize: 12,
+                            border: "1px solid #0b5394",
+                            borderRadius: 6,
+                            background: "#fff",
+                            color: "#0b5394",
+                            cursor: actionDraftId === item.id ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          {actionDraftId === item.id ? "Releasing..." : "Release"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {warnings.length > 0 && (
         <div style={{ marginTop: 16, padding: 12, background: "#fff8e6", border: "1px solid #e6d68a", borderRadius: 8 }}>
@@ -365,11 +658,21 @@ export default function NarrativePageClient({
         </div>
       )}
 
-      {text && (
+      {selectedDraft && !selectedDraft.canViewText && (
+        <div style={{ marginTop: 24, padding: 16, background: "#f8f9fa", border: "1px solid #d0d7de", borderRadius: 8 }}>
+          <p style={{ margin: 0, fontSize: 14, color: "#555" }}>
+            This draft is currently <strong>{STATUS_LABELS[selectedDraftStatus ?? "pending_dev_review"].toLowerCase()}</strong>. The requesting team cannot view the generated demand text until a platform reviewer releases it.
+          </p>
+        </div>
+      )}
+
+      {visibleText && (
         <>
           <section style={{ marginTop: 24 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-              <label style={{ fontSize: 13, fontWeight: 600 }}>Draft output</label>
+              <label style={{ fontSize: 13, fontWeight: 600 }}>
+                {selectedDraftStatus === "released" ? "Released demand output" : "Internal draft output"}
+              </label>
               <button
                 type="button"
                 onClick={handleCopy}
@@ -387,9 +690,8 @@ export default function NarrativePageClient({
               </button>
             </div>
             <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              readOnly={false}
+              value={visibleText}
+              readOnly
               rows={14}
               style={{
                 width: "100%",

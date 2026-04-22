@@ -1,36 +1,30 @@
-import {
-  methodNotAllowedResponse,
-  proxyUploadJson,
-  readUploadFormData,
-  resolveApiBase,
-  resolveUpstreamAuth,
-} from "./shared";
-
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  const base = resolveApiBase();
-  if (typeof base !== "string") return base;
+  const base = process.env.DOC_API_URL;
+  const key = process.env.DOC_API_KEY;
 
-  const auth = resolveUpstreamAuth(req, process.env.DOC_API_KEY);
-  if (!auth.ok) return auth.response;
+  if (!base) return new Response("Missing DOC_API_URL", { status: 500 });
+  if (!key) return new Response("Missing DOC_API_KEY", { status: 500 });
 
-  const formResult = await readUploadFormData(req, "file", { maxFiles: 1 });
-  if (!formResult.ok) return formResult.response;
+  const incoming = await req.formData();
 
-  if (!formResult.formData.get("source")) {
-    formResult.formData.set("source", "web");
-  }
+  // Optional: default source if not provided
+  if (!incoming.get("source")) incoming.set("source", "web");
 
-  const upstreamPath = auth.mode === "user" ? "/me/ingest" : "/ingest";
-  return proxyUploadJson(`${base}${upstreamPath}`, {
+  const upstream = await fetch(`${base}/ingest`, {
     method: "POST",
-    headers: auth.headers,
-    body: formResult.formData,
+    headers: {
+      Authorization: `Bearer ${key}`,
+      // DO NOT set Content-Type; fetch will set multipart boundary automatically
+    },
+    body: incoming,
+    cache: "no-store",
+  });
+
+  const text = await upstream.text();
+  return new Response(text, {
+    status: upstream.status,
+    headers: { "Content-Type": upstream.headers.get("content-type") ?? "application/json" },
   });
 }
-
-export const GET = methodNotAllowedResponse;
-export const PUT = methodNotAllowedResponse;
-export const PATCH = methodNotAllowedResponse;
-export const DELETE = methodNotAllowedResponse;

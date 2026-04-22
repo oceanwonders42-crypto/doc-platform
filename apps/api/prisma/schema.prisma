@@ -66,8 +66,8 @@ enum MigrationBatchStatus {
 model Firm {
   id                String    @id @default(cuid())
   name              String
-  plan              String    @default("starter")
-  pageLimitMonthly  Int       @default(5000)
+  plan              String    @default("essential")
+  pageLimitMonthly  Int       @default(1500)
   retentionDays     Int       @default(7)
   status            String    @default("active")
   billingCustomerId String?
@@ -93,6 +93,7 @@ model Firm {
   webhookEndpoints            WebhookEndpoint[]
   trafficMatters              TrafficMatter[]
   firmIntegrations            FirmIntegration[]
+  quickbooksInvoiceSyncs      QuickbooksInvoiceSync[]
   mailboxConnections          MailboxConnection[]
   activityFeedItems           ActivityFeedItem[]
   caseFinancials              CaseFinancial[]
@@ -104,6 +105,7 @@ model Firm {
   migrationBatchHandoffs      MigrationBatchClioHandoff[]
   appBugReports               AppBugReport[]
   demandPackages              DemandPackage[]
+  demandNarrativeDrafts       DemandNarrativeDraft[]
   reviewQueueEvents           ReviewQueueEvent[]
   demandPackageSectionSources DemandPackageSectionSource[]
 }
@@ -227,7 +229,8 @@ model User {
   passwordHash String?
   createdAt    DateTime @default(now())
 
-  firm Firm @relation(fields: [firmId], references: [id])
+  firm          Firm        @relation(fields: [firmId], references: [id])
+  assignedCases LegalCase[] @relation("CaseAssignedUser")
 }
 
 model ApiKey {
@@ -262,6 +265,7 @@ model ClioHandoffExport {
   actorLabel       String?
   actorRole        String?
   archiveFileName  String?
+  archiveStorageKey String?
   contactsFileName String?
   mattersFileName  String?
   manifestFileName String?
@@ -630,32 +634,40 @@ model RecordsRequestAttempt {
 }
 
 model LegalCase {
-  id              String    @id @default(cuid())
-  firmId          String
-  title           String?
-  caseNumber      String?
-  clientName      String?
-  clientContactId String?
-  incidentDate    DateTime?
-  status          String    @default("open")
-  notes           String?   @db.Text
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                          String    @id @default(cuid())
+  firmId                      String
+  title                       String?
+  caseNumber                  String?
+  clientName                  String?
+  clientContactId             String?
+  assignedUserId              String?
+  incidentDate                DateTime?
+  status                      String    @default("open")
+  notes                       String?   @db.Text
+  clioResponsibleAttorneyId   String?
+  clioResponsibleAttorneyEmail String?
+  clioAssignmentSyncedAt      DateTime?
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
 
-  firm              Firm               @relation(fields: [firmId], references: [id])
-  clientContact     Contact?           @relation("CaseClientContact", fields: [clientContactId], references: [id], onDelete: SetNull)
-  caseProviders     CaseProvider[]
-  caseNotes         CaseNote[]
-  caseTasks         CaseTask[]
-  caseFinancial     CaseFinancial?
-  caseSummary       CaseSummary?
-  casePacketExports CasePacketExport[]
-  demandPackages    DemandPackage[]
-  activityFeedItems ActivityFeedItem[]
+  firm                 Firm               @relation(fields: [firmId], references: [id])
+  clientContact        Contact?           @relation("CaseClientContact", fields: [clientContactId], references: [id], onDelete: SetNull)
+  assignedUser         User?              @relation("CaseAssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  caseProviders        CaseProvider[]
+  caseNotes            CaseNote[]
+  caseTasks            CaseTask[]
+  caseFinancial        CaseFinancial?
+  caseSummary          CaseSummary?
+  casePacketExports    CasePacketExport[]
+  demandPackages       DemandPackage[]
+  demandNarrativeDrafts DemandNarrativeDraft[]
+  activityFeedItems    ActivityFeedItem[]
 
   @@index([firmId])
   @@index([clientContactId])
   @@index([firmId, status])
+  @@index([firmId, assignedUserId])
+  @@index([firmId, clioResponsibleAttorneyEmail])
   @@map("Case")
 }
 
@@ -921,6 +933,39 @@ model DemandPackage {
   @@index([firmId, caseId])
 }
 
+enum DemandReviewStatus {
+  DRAFT_GENERATED
+  PENDING_DEV_REVIEW
+  DEV_APPROVED
+  RELEASED_TO_REQUESTER
+}
+
+model DemandNarrativeDraft {
+  id                String             @id @default(cuid())
+  firmId            String
+  caseId            String
+  narrativeType     String
+  tone              String
+  status            DemandReviewStatus @default(PENDING_DEV_REVIEW)
+  generatedText     String             @db.Text
+  warningsJson      Json?
+  usedEventsJson    Json?
+  generatedByUserId String?
+  approvedByUserId  String?
+  releasedByUserId  String?
+  generatedAt       DateTime           @default(now())
+  approvedAt        DateTime?
+  releasedAt        DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  firm Firm      @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  case LegalCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([firmId, caseId, createdAt])
+  @@index([firmId, caseId, status, createdAt])
+}
+
 model DemandPackageSectionSource {
   id              String   @id @default(cuid())
   firmId          String
@@ -1095,12 +1140,20 @@ enum IntegrationProvider {
   CLIO
   FILEVINE
   GENERIC
+  QUICKBOOKS
 }
 
 enum IntegrationStatus {
   CONNECTED
   ERROR
   DISCONNECTED
+}
+
+enum QuickbooksInvoiceStatus {
+  PENDING
+  INVOICE_CREATED
+  EMAILED
+  FAILED
 }
 
 enum MailboxProvider {
@@ -1122,6 +1175,7 @@ model FirmIntegration {
   credentials        IntegrationCredential[]
   mailboxConnections MailboxConnection[]
   syncLogs           IntegrationSyncLog[]
+  quickbooksInvoiceSyncs QuickbooksInvoiceSync[]
   fieldMappings      FieldMapping[]
 
   @@index([firmId])
@@ -1177,6 +1231,40 @@ model IntegrationSyncLog {
   @@index([firmId])
   @@index([integrationId])
   @@index([createdAt])
+}
+
+model QuickbooksInvoiceSync {
+  id                  String                  @id @default(cuid())
+  firmId              String
+  integrationId       String?
+  sourceSystem        String
+  sourceOrderId       String
+  sourceOrderNumber   String
+  billingEmail        String?
+  customerFirstName   String?
+  customerLastName    String?
+  totalAmount         Decimal                 @db.Decimal(12, 2)
+  currency            String
+  sanitizedPayload    Json
+  dedupeKey           String
+  qboCustomerId       String?
+  qboInvoiceId        String?
+  qboInvoiceDocNumber String?
+  invoiceStatus       QuickbooksInvoiceStatus @default(PENDING)
+  invoiceEmailedAt    DateTime?
+  lastSyncError       String?                 @db.Text
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+
+  firm        Firm             @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  integration FirmIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+
+  @@unique([firmId, sourceSystem, sourceOrderId])
+  @@unique([firmId, dedupeKey])
+  @@index([firmId, createdAt])
+  @@index([firmId, invoiceStatus, createdAt])
+  @@index([firmId, billingEmail])
+  @@index([integrationId])
 }
 
 model FieldMapping {

@@ -385,6 +385,9 @@ async function main() {
         queueDepth: 1,
         oldestJobAgeMs: 500,
         retriedQueuedCount: 0,
+        byFirm: {
+          [firmA]: { queued: 1, running: 0 },
+        },
         byType: {
           ocr: { queued: 1, oldestAgeMs: 500, retriedQueuedCount: 0, maxAttempt: 1 },
           classification: { queued: 0, oldestAgeMs: null, retriedQueuedCount: 0, maxAttempt: 0 },
@@ -415,22 +418,34 @@ async function main() {
     assert.equal(report.queue.ocr.current?.avgWaitMs, 2000);
     assert(report.anomalies.some((entry) => entry.code === "ocr_wait_regression"));
     assert(report.anomalies.some((entry) => entry.code === "ocr_runtime_regression"));
-    assert(
-      report.anomalies.some((entry) => entry.code === "clio_handoff_replay_rejected_legacy"),
-      "Expected repeated legacy Clio failure anomaly."
+    const legacyAnomaly = report.anomalies.find((entry) => entry.code === "clio_handoff_replay_rejected_legacy");
+    assert(legacyAnomaly !== undefined, "Expected repeated legacy Clio failure anomaly.");
+    assert.equal(
+      legacyAnomaly.recommendation,
+      "Legacy export cannot be safely replayed; use allowReexport=true for a fresh export only if intended."
     );
-    assert(
-      report.anomalies.some((entry) => entry.code === "clio_handoff_replay_rejected_data_changed"),
-      "Expected repeated data-changed Clio failure anomaly."
+
+    const changedAnomaly = report.anomalies.find((entry) => entry.code === "clio_handoff_replay_rejected_data_changed");
+    assert(changedAnomaly !== undefined, "Expected repeated data-changed Clio failure anomaly.");
+    assert.equal(
+      changedAnomaly.recommendation,
+      "Exported data changed since the last successful run; review batch and case edits before retrying."
     );
-    assert(
-      report.anomalies.some((entry) => entry.code === "clio_handoff_forced_reexport"),
-      "Expected repeated forced re-export Clio failure anomaly."
+
+    const forcedAnomaly = report.anomalies.find((entry) => entry.code === "clio_handoff_forced_reexport");
+    assert(forcedAnomaly !== undefined, "Expected repeated forced re-export Clio failure anomaly.");
+    assert.equal(
+      forcedAnomaly.recommendation,
+      "Check repeated forced re-export usage for operator workflow confusion and avoid unnecessary repeat exports."
     );
     const clioSpike = report.anomalies.find((entry) => entry.code === "clio_handoff_firm_failure_spike");
     assert(clioSpike !== undefined, "Expected clio handoff failure spike anomaly.");
     assert.equal(clioSpike?.evidence.currentFailureCount, 10);
     assert.equal(clioSpike?.evidence.previousFailureCount, 1);
+    assert.equal(
+      clioSpike?.recommendation,
+      "Review this firm's recent Clio audit rows (including batchId samples) before taking more retry actions."
+    );
 
     console.log("operator weekly report tests passed", {
       topDocument: report.cost.topDocuments[0],

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useI18n } from "@/contexts/I18nContext";
+import { isTrafficFeatureEnabled } from "@/lib/devFeatures";
 import {
   useDashboardAuth,
   canAccessTeam,
@@ -139,13 +140,6 @@ const IconSettings = () => (
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
   </svg>
 );
-const IconLayers = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="m12 2 9 5-9 5-9-5 9-5Z" />
-    <path d="m3 12 9 5 9-5" />
-    <path d="m3 17 9 5 9-5" />
-  </svg>
-);
 const IconSupport = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
     <circle cx="12" cy="12" r="10" />
@@ -158,12 +152,6 @@ const IconUsers = () => (
     <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
     <circle cx="9" cy="7" r="4" />
     <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
-  </svg>
-);
-const IconCreditCard = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
-    <line x1="1" y1="10" x2="23" y2="10" />
   </svg>
 );
 type NavItem = { href: string; labelKey: string; icon: React.ReactNode; teamOnly?: boolean; billingOnly?: boolean; firmSettingsOnly?: boolean; integrationsOnly?: boolean; auditOnly?: boolean; analyticsUsageOnly?: boolean; staffOnly?: boolean; platformAdminOnly?: boolean };
@@ -180,14 +168,12 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard/analytics", labelKey: "nav.reports", icon: <IconChart />, analyticsUsageOnly: true },
   { href: "/dashboard/traffic", labelKey: "nav.traffic", icon: <IconTraffic />, staffOnly: true },
   { href: "/dashboard/providers", labelKey: "nav.providers", icon: <IconBuilding />, staffOnly: true },
-  { href: "/dashboard/control-tower", labelKey: "nav.controlTower", icon: <IconLayers />, staffOnly: true },
   { href: "/dashboard/audit", labelKey: "nav.audit", icon: <IconScroll />, auditOnly: true },
   { href: "/dashboard/usage", labelKey: "nav.usage", icon: <IconPie />, analyticsUsageOnly: true },
   { href: "/dashboard/team", labelKey: "nav.team", icon: <IconUsers />, teamOnly: true },
   { href: "/dashboard/integrations", labelKey: "nav.integrations", icon: <IconPlug />, integrationsOnly: true },
   { href: "/dashboard/support/report", labelKey: "nav.support", icon: <IconSupport /> },
   { href: "/dashboard/settings", labelKey: "nav.settings", icon: <IconSettings /> },
-  { href: "/dashboard/billing", labelKey: "nav.billing", icon: <IconCreditCard />, billingOnly: true },
   { href: "/dashboard/settings/firm", labelKey: "nav.firmSettings", icon: <IconSettings />, firmSettingsOnly: true },
 ];
 
@@ -197,8 +183,10 @@ export function DashboardSidebar() {
   const pathname = usePathname() ?? "";
   const { t } = useI18n();
   const { role, isPlatformAdmin } = useDashboardAuth();
+  const trafficEnabled = isTrafficFeatureEnabled();
 
   const visibleItems = NAV_ITEMS.filter((item) => {
+    if (item.href === "/dashboard/traffic" && !trafficEnabled) return false;
     if (item.teamOnly && !canAccessTeam(role)) return false;
     if (item.billingOnly && !canAccessBilling(role)) return false;
     if (item.firmSettingsOnly && !canAccessFirmSettings(role)) return false;
@@ -380,7 +368,7 @@ export function DashboardSidebar() {
               color: "var(--onyx-sidebar-muted)",
             }}
           >
-            Review, migration, and exports stay visible from intake through delivery.
+            Review, migration, chronology, and Clio handoff stay visible from intake through delivery.
           </p>
         </div>
       </div>

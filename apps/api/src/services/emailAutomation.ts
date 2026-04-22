@@ -5,6 +5,7 @@ type EmailAutomationFieldKey =
   | "clientName"
   | "dateOfLoss"
   | "claimNumber"
+  | "policyNumber"
   | "insuranceCarrier";
 
 export type EmailAutomationField = {
@@ -26,6 +27,7 @@ export type EmailAutomationSnapshot = {
     clientName: EmailAutomationField | null;
     dateOfLoss: EmailAutomationField | null;
     claimNumber: EmailAutomationField | null;
+    policyNumber: EmailAutomationField | null;
     insuranceCarrier: EmailAutomationField | null;
   };
   matchSignals: {
@@ -35,7 +37,7 @@ export type EmailAutomationSnapshot = {
   };
 };
 
-export type EmailAutomationInput = {
+type EmailAutomationInput = {
   fromEmail?: string | null;
   subject?: string | null;
   bodyText?: string | null;
@@ -50,11 +52,11 @@ type Candidate = {
 };
 
 const CARRIER_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
-  { pattern: /\bstate\s*farm\b/i, label: "State Farm" },
+  { pattern: /\bstate\s+farm\b/i, label: "State Farm" },
   { pattern: /\bgeico\b/i, label: "GEICO" },
   { pattern: /\bprogressive\b/i, label: "Progressive" },
   { pattern: /\ballstate\b/i, label: "Allstate" },
-  { pattern: /\bliberty\s*mutual\b/i, label: "Liberty Mutual" },
+  { pattern: /\bliberty\s+mutual\b/i, label: "Liberty Mutual" },
   { pattern: /\bnationwide\b/i, label: "Nationwide" },
   { pattern: /\btravelers\b/i, label: "Travelers" },
   { pattern: /\bfarmers\b/i, label: "Farmers" },
@@ -83,12 +85,6 @@ function normalizeIdentifier(value: string): string {
   return value.trim().replace(/[^\w\-/.]/g, "").slice(0, 120);
 }
 
-function normalizeCaseIdentifier(value: string): string | null {
-  const normalized = normalizeFieldValue(normalizeIdentifier(value));
-  if (!normalized) return null;
-  return /\d/.test(normalized) ? normalized : null;
-}
-
 function dedupeStrings(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -107,10 +103,11 @@ function scoreField(candidates: Candidate[]): EmailAutomationField | null {
   if (!candidates.length) return null;
   const sorted = [...candidates].sort((left, right) => right.confidence - left.confidence);
   const best = sorted[0]!;
+  const sources = dedupeStrings(sorted.map((candidate) => candidate.source));
   return {
     value: best.value,
     confidence: Number(best.confidence.toFixed(2)),
-    sources: dedupeStrings(sorted.map((candidate) => candidate.source)),
+    sources,
   };
 }
 
@@ -137,22 +134,10 @@ function extractClientNameCandidates(input: EmailAutomationInput): Candidate[] {
 
   if (subject) {
     const subjectPatterns = [
-      {
-        regex: /\bclient\s*[:\-]\s*([A-Z][A-Za-z'.]+(?:-[A-Z][A-Za-z'.]+)?(?:\s+[A-Z][A-Za-z'.]+(?:-[A-Z][A-Za-z'.]+)?){1,3})(?=\s*(?:-|(?:claim(?:\s+number)?|claim\s*#|date\s+of\s+loss|dol|insurance\s+carrier|carrier)\b)|$)/gi,
-        confidence: 0.84,
-      },
-      {
-        regex: /\binsured\s*[:\-]\s*([A-Z][A-Za-z'.]+(?:-[A-Z][A-Za-z'.]+)?(?:\s+[A-Z][A-Za-z'.]+(?:-[A-Z][A-Za-z'.]+)?){1,3})(?=\s*(?:-|(?:claim(?:\s+number)?|claim\s*#|date\s+of\s+loss|dol|insurance\s+carrier|carrier)\b)|$)/gi,
-        confidence: 0.8,
-      },
-      {
-        regex: /^re:\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3})/gi,
-        confidence: 0.66,
-      },
-      {
-        regex: /^fwd?:\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3})/gi,
-        confidence: 0.64,
-      },
+      { regex: /\bclient\s*[:\-]\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3})/g, confidence: 0.83 },
+      { regex: /\binsured\s*[:\-]\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3})/g, confidence: 0.8 },
+      { regex: /^re:\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3})/gi, confidence: 0.68 },
+      { regex: /^fwd?:\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3})/gi, confidence: 0.66 },
     ];
     for (const entry of subjectPatterns) {
       candidates.push(
@@ -169,7 +154,7 @@ function extractClientNameCandidates(input: EmailAutomationInput): Candidate[] {
       ...collectCandidates(
         "body",
         bodyText,
-        /\b(?:client|claimant|insured|patient)\s*[:\-]\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3}?)(?=\s+(?:date\s+of\s+loss|loss\s+date|dol|claim(?:\s+number)?|claim\s*#|insurance\s+carrier|carrier)\b|$)/gi,
+        /\b(?:client|claimant|insured|patient)\s*[:\-]\s*([A-Z][A-Za-z'.,-]+(?:\s+[A-Z][A-Za-z'.,-]+){1,3}?)(?=\s+(?:date\s+of\s+loss|loss\s+date|claim(?:\s+number)?|claim\s*#|policy(?:\s+number)?|policy\s*#|insurance\s+carrier|carrier)\b|$)/gi,
         0.9,
         (value) => {
           const normalized = normalizeFieldValue(value);
@@ -180,7 +165,8 @@ function extractClientNameCandidates(input: EmailAutomationInput): Candidate[] {
   }
 
   for (const attachmentName of attachmentNames) {
-    const normalizedName = attachmentName.replace(/\.[a-z0-9]+$/i, " ").replace(/[_-]+/g, " ");
+    const baseName = attachmentName.replace(/\.[a-z0-9]+$/i, " ");
+    const normalizedName = baseName.replace(/[_-]+/g, " ");
     candidates.push(
       ...collectCandidates(
         "attachment",
@@ -190,14 +176,8 @@ function extractClientNameCandidates(input: EmailAutomationInput): Candidate[] {
         (value) => {
           const normalized = normalizeFieldValue(value);
           if (!normalized) return null;
-          const trimmed = normalizeWhitespace(
-            normalized.replace(/\b(?:dol|claim|policy|carrier|insurance)\b.*$/i, "")
-          );
-          if (!trimmed) return null;
-          if (/\b(invoice|records|medical|document|claim|carrier|insurance|summary)\b/i.test(trimmed)) {
-            return null;
-          }
-          return titleCaseName(trimmed);
+          if (/\b(invoice|records|medical|document|claim|policy)\b/i.test(normalized)) return null;
+          return titleCaseName(normalized);
         }
       )
     );
@@ -206,7 +186,7 @@ function extractClientNameCandidates(input: EmailAutomationInput): Candidate[] {
   if (fromEmail) {
     const localPart = fromEmail.split("@")[0] ?? "";
     const senderName = normalizeWhitespace(localPart.replace(/[._-]+/g, " "));
-    if (/^[a-z]{2,}\s+[a-z]{2,}(?:\s+[a-z]{2,})?$/.test(senderName)) {
+    if (/^[a-z]{2,}\s+[a-z]{2,}$/.test(senderName)) {
       candidates.push({
         value: titleCaseName(senderName),
         confidence: 0.42,
@@ -264,9 +244,6 @@ export function extractEmailAutomationSnapshot(
   const fromEmail = normalizeFieldValue(input.fromEmail);
   const attachmentFileName = normalizeFieldValue(input.attachmentFileName);
   const attachmentNames = dedupeStrings(input.attachmentNames ?? []);
-  const attachmentSearchText = attachmentNames
-    .map((name) => name.replace(/\.[a-z0-9]+$/i, " ").replace(/_+/g, " "))
-    .join(" ");
 
   if (!subject && !bodyText && !fromEmail && attachmentNames.length === 0) {
     return null;
@@ -278,21 +255,38 @@ export function extractEmailAutomationSnapshot(
       subject ?? "",
       /\b(?:claim(?:\s+number)?|claim\s*#|file\s+number|reference\s+number)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\-/.]{3,})/gi,
       0.8,
-      normalizeCaseIdentifier
+      (value) => normalizeFieldValue(normalizeIdentifier(value))
     ),
     ...collectCandidates(
       "body",
       bodyText,
       /\b(?:claim(?:\s+number)?|claim\s*#|file\s+number|reference\s+number)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\-/.]{3,})/gi,
       0.92,
-      normalizeCaseIdentifier
+      (value) => normalizeFieldValue(normalizeIdentifier(value))
     ),
     ...collectCandidates(
       "attachment",
-      attachmentSearchText,
+      attachmentNames.join(" "),
       /\b(?:claim(?:\s+number)?|claim\s*#|file\s+number|reference\s+number)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\-/.]{3,})/gi,
       0.58,
-      normalizeCaseIdentifier
+      (value) => normalizeFieldValue(normalizeIdentifier(value))
+    ),
+  ]);
+
+  const policyNumber = scoreField([
+    ...collectCandidates(
+      "subject",
+      subject ?? "",
+      /\b(?:policy(?:\s+number)?|policy\s*#)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\-/.]{3,})/gi,
+      0.78,
+      (value) => normalizeFieldValue(normalizeIdentifier(value))
+    ),
+    ...collectCandidates(
+      "body",
+      bodyText,
+      /\b(?:policy(?:\s+number)?|policy\s*#)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\-/.]{3,})/gi,
+      0.9,
+      (value) => normalizeFieldValue(normalizeIdentifier(value))
     ),
   ]);
 
@@ -309,12 +303,6 @@ export function extractEmailAutomationSnapshot(
       /\b(?:date of loss|dol|incident date|accident date)\s*[:#-]?\s*([A-Za-z0-9,/-]{6,30})/gi,
       0.9
     ),
-    ...collectCandidates(
-      "attachment",
-      attachmentSearchText,
-      /\b(?:date of loss|dol|incident date|accident date)\s*[:#-]?\s*([A-Za-z0-9,/-]{6,30})/gi,
-      0.56
-    ),
   ]);
 
   const clientName = scoreField(extractClientNameCandidates(input));
@@ -324,11 +312,13 @@ export function extractEmailAutomationSnapshot(
     clientName,
     dateOfLoss,
     claimNumber,
+    policyNumber,
     insuranceCarrier,
   };
 
   const supportingSignals = dedupeStrings([
     claimNumber ? `claim number (${Math.round(claimNumber.confidence * 100)}%)` : null,
+    policyNumber ? `policy number (${Math.round(policyNumber.confidence * 100)}%)` : null,
     clientName ? `client name (${Math.round(clientName.confidence * 100)}%)` : null,
     dateOfLoss ? `date of loss (${Math.round(dateOfLoss.confidence * 100)}%)` : null,
     insuranceCarrier ? `insurance carrier (${Math.round(insuranceCarrier.confidence * 100)}%)` : null,
@@ -349,7 +339,7 @@ export function extractEmailAutomationSnapshot(
     },
     fields,
     matchSignals: {
-      caseNumberCandidates: dedupeStrings([claimNumber?.value]),
+      caseNumberCandidates: dedupeStrings([claimNumber?.value, policyNumber?.value]),
       clientNameCandidates: dedupeStrings([clientName?.value]),
       supportingSignals,
     },
@@ -366,7 +356,6 @@ export function getDocumentEmailAutomation(metaJson: unknown): EmailAutomationSn
   const meta = asRecord(metaJson);
   const raw = asRecord(meta?.emailAutomation);
   if (!raw) return null;
-
   const source = asRecord(raw.source);
   const fields = asRecord(raw.fields);
   const matchSignals = asRecord(raw.matchSignals);
@@ -382,7 +371,11 @@ export function getDocumentEmailAutomation(metaJson: unknown): EmailAutomationSn
       ? field.sources.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
       : [];
     if (!value || confidence == null) return null;
-    return { value, confidence, sources };
+    return {
+      value,
+      confidence,
+      sources,
+    };
   };
 
   const supportingSignals = Array.isArray(matchSignals?.supportingSignals)
@@ -423,6 +416,7 @@ export function getDocumentEmailAutomation(metaJson: unknown): EmailAutomationSn
       clientName: parseField("clientName"),
       dateOfLoss: parseField("dateOfLoss"),
       claimNumber: parseField("claimNumber"),
+      policyNumber: parseField("policyNumber"),
       insuranceCarrier: parseField("insuranceCarrier"),
     },
     matchSignals: {
@@ -440,13 +434,13 @@ export async function setDocumentEmailAutomation(
 ): Promise<void> {
   const doc = await prisma.document.findFirst({
     where: { id: documentId, firmId },
-    select: { id: true, metaJson: true },
+    select: { metaJson: true },
   });
   if (!doc) return;
 
   const meta = asRecord(doc.metaJson) ?? {};
   await prisma.document.update({
-    where: { id: doc.id },
+    where: { id: documentId, firmId },
     data: {
       metaJson: {
         ...meta,

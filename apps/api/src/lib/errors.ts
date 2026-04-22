@@ -10,7 +10,6 @@ const IS_DEV = process.env.NODE_ENV !== "production";
 export type ErrorCode =
   | "UNAUTHORIZED"
   | "FORBIDDEN"
-  | "METHOD_NOT_ALLOWED"
   | "NOT_FOUND"
   | "VALIDATION_ERROR"
   | "RATE_LIMITED"

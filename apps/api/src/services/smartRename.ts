@@ -5,6 +5,7 @@
 import { prisma } from "../db/prisma";
 import { pgPool } from "../db/pg";
 import { getObjectBuffer, putObject, deleteObject, objectExists } from "./storage";
+import { buildDocumentStorageKey, buildDocumentStoragePrefix } from "./documentStorageKeys";
 import { logWarn } from "../lib/logger";
 
 const ILLEGAL_CHARS = /[<>:"/\\|?*\x00-\x1f]/g;
@@ -130,9 +131,9 @@ export type RenameResult =
  * Does not break references: updates document.spacesKey and document.originalName atomically after copy.
  */
 export async function renameDocumentInStorage(documentId: string, firmId: string): Promise<RenameResult> {
-  const doc = await prisma.document.findUnique({
-    where: { id: documentId },
-    select: { spacesKey: true, originalName: true, mimeType: true, ingestedAt: true, duplicateOfId: true },
+  const doc = await prisma.document.findFirst({
+    where: { id: documentId, firmId },
+    select: { spacesKey: true, originalName: true, mimeType: true, ingestedAt: true, duplicateOfId: true, routedCaseId: true },
   });
   if (!doc?.spacesKey) return { ok: false, error: "Document or spacesKey missing" };
   if (doc.duplicateOfId) return { ok: true, newSpacesKey: doc.spacesKey, newOriginalName: doc.originalName ?? "" };
@@ -170,10 +171,19 @@ export async function renameDocumentInStorage(documentId: string, firmId: string
 
   const baseName = hasUsefulMetadata ? buildSmartFileNameBase(ctx) : buildFallbackFileNameBase(ctx);
   const ext = getExtension(doc.originalName, doc.mimeType);
-  const keyPrefix = firmId;
+  const keyPrefix = buildDocumentStoragePrefix({
+    firmId,
+    caseId: doc.routedCaseId ?? null,
+    documentId,
+  });
 
   const fileName = await resolveCollision(firmId, baseName, ext, keyPrefix);
-  const newSpacesKey = `${keyPrefix}/${fileName}`;
+  const newSpacesKey = buildDocumentStorageKey({
+    firmId,
+    caseId: doc.routedCaseId ?? null,
+    documentId,
+    originalName: fileName,
+  });
 
   if (newSpacesKey === doc.spacesKey) {
     const name: string = (doc.originalName ?? fileName ?? "").toString();
@@ -192,7 +202,7 @@ export async function renameDocumentInStorage(documentId: string, firmId: string
 
   try {
     await prisma.document.update({
-      where: { id: documentId },
+      where: { id: documentId, firmId },
       data: { spacesKey: newSpacesKey, originalName: fileName },
     });
   } catch (e) {

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DashboardCard } from "@/components/dashboard/DashboardCard";
+import type { MigrationBatchListItem, MigrationBatchesResponse } from "../migration/types";
 
 type ExportAction = {
   id: "contacts" | "matters";
@@ -78,6 +79,27 @@ type ClioHandoffHistoryResponse = {
   ok?: boolean;
   items?: ClioHandoffHistoryItem[];
 };
+
+function getBatchLabel(item: { id: string; label: string | null }): string {
+  const trimmed = item.label?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : `Batch ${item.id.slice(-8)}`;
+}
+
+function isMigrationBatchReady(item: MigrationBatchListItem): boolean {
+  return item.status === "READY_FOR_EXPORT" || item.status === "EXPORTED";
+}
+
+function getBatchDetailHref(batchId: string): string {
+  return `/dashboard/migration/${batchId}`;
+}
+
+function getBatchReviewHref(item: MigrationBatchListItem): string {
+  const params = new URLSearchParams();
+  params.set("migrationBatchId", item.id);
+  params.set("batchLabel", getBatchLabel(item));
+  params.set("returnTo", getBatchDetailHref(item.id));
+  return `/dashboard/review?${params.toString()}`;
+}
 
 const EXPORT_ACTIONS: ExportAction[] = [
   {
@@ -175,6 +197,9 @@ export default function ExportsPage() {
   const [history, setHistory] = useState<ClioHandoffHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [migrationBatches, setMigrationBatches] = useState<MigrationBatchListItem[]>([]);
+  const [migrationBatchesLoading, setMigrationBatchesLoading] = useState(true);
+  const [migrationBatchesError, setMigrationBatchesError] = useState<string | null>(null);
 
   const loadCases = useCallback(() => {
     setCasesLoading(true);
@@ -229,6 +254,32 @@ export default function ExportsPage() {
   useEffect(() => {
     loadHistory();
   }, [loadHistory]);
+
+  const loadMigrationBatches = useCallback(() => {
+    setMigrationBatchesLoading(true);
+    setMigrationBatchesError(null);
+    fetch(`${getApiBase()}/migration/batches`, {
+      headers: getAuthHeader(),
+      ...getFetchOptions(),
+    })
+      .then(parseJsonResponse)
+      .then((response: unknown) => {
+        const data = response as MigrationBatchesResponse;
+        if (!data.ok || !Array.isArray(data.items)) {
+          setMigrationBatchesError("Failed to load migration batches.");
+          return;
+        }
+        setMigrationBatches(data.items);
+      })
+      .catch((err) => {
+        setMigrationBatchesError(err instanceof Error ? err.message : "Failed to load migration batches.");
+      })
+      .finally(() => setMigrationBatchesLoading(false));
+  }, []);
+
+  useEffect(() => {
+    loadMigrationBatches();
+  }, [loadMigrationBatches]);
 
   async function handleDownload(action: ExportAction) {
     setDownloading(action.id);
@@ -300,6 +351,24 @@ export default function ExportsPage() {
         )
         .map((item) => item.id),
     [cases, includeReexports]
+  );
+  const exportOperationBatches = useMemo(() => {
+    const ranked = [...migrationBatches].sort((left, right) => {
+      const leftNeedsReview = left.unresolvedReviewCount > 0 ? 1 : 0;
+      const rightNeedsReview = right.unresolvedReviewCount > 0 ? 1 : 0;
+      if (leftNeedsReview !== rightNeedsReview) return rightNeedsReview - leftNeedsReview;
+      const leftReady = isMigrationBatchReady(left) ? 1 : 0;
+      const rightReady = isMigrationBatchReady(right) ? 1 : 0;
+      if (leftReady !== rightReady) return rightReady - leftReady;
+      return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+    });
+    return ranked.slice(0, 5);
+  }, [migrationBatches]);
+  const readyBatchCount = migrationBatches.filter(isMigrationBatchReady).length;
+  const blockedBatchCount = migrationBatches.filter((item) => item.unresolvedReviewCount > 0).length;
+  const reviewBlockedDocumentCount = migrationBatches.reduce(
+    (total, item) => total + (item.unresolvedReviewCount ?? 0),
+    0
   );
 
   function toggleCaseSelection(caseId: string) {
@@ -649,6 +718,99 @@ export default function ExportsPage() {
               : `${selectedCaseIds.length} case${selectedCaseIds.length === 1 ? "" : "s"} selected: ${eligibleSelectedCount} first-time, ${reexportSelectedCount} re-export, ${potentiallySkippedSelectedCount} potentially skipped.`}
           </p>
         </div>
+      </DashboardCard>
+
+      <DashboardCard title="Migration batch exports and review" style={{ marginBottom: "1rem" }}>
+        <p style={{ margin: "0 0 1rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
+          Keep migration-driven export work in the same lane as Clio handoff. Export-ready batches stay visible here, and review-blocked batches link directly into the review queue for release.
+        </p>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+            gap: "0.75rem",
+            marginBottom: "1rem",
+          }}
+        >
+          <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
+            <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              Ready batches
+            </p>
+            <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600, color: "var(--onyx-success)" }}>{readyBatchCount}</p>
+          </div>
+          <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
+            <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              Blocked batches
+            </p>
+            <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600, color: "#b45309" }}>{blockedBatchCount}</p>
+          </div>
+          <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
+            <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              Review-blocked docs
+            </p>
+            <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600 }}>{reviewBlockedDocumentCount}</p>
+          </div>
+        </div>
+
+        {migrationBatchesError && (
+          <div className="onyx-card" style={{ padding: "1rem", marginBottom: "1rem", borderColor: "var(--onyx-error)" }}>
+            <p style={{ margin: 0, color: "var(--onyx-error)", fontSize: "0.875rem" }}>{migrationBatchesError}</p>
+          </div>
+        )}
+
+        {migrationBatchesLoading ? (
+          <p style={{ margin: 0, color: "var(--onyx-text-muted)" }}>Loading migration export work…</p>
+        ) : exportOperationBatches.length === 0 ? (
+          <p style={{ margin: 0, color: "var(--onyx-text-muted)" }}>No migration batches are available yet.</p>
+        ) : (
+          <div style={{ display: "grid", gap: "0.75rem" }}>
+            {exportOperationBatches.map((item) => {
+              const needsReview = (item.unresolvedReviewCount ?? 0) > 0;
+              const ready = isMigrationBatchReady(item);
+              return (
+                <div
+                  key={item.id}
+                  style={{
+                    border: "1px solid var(--onyx-border-subtle)",
+                    borderRadius: "var(--onyx-radius-md)",
+                    padding: "0.95rem 1rem",
+                    background: "var(--onyx-background-surface)",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
+                    <div style={{ display: "grid", gap: "0.25rem" }}>
+                      <strong style={{ fontSize: "0.95rem" }}>{getBatchLabel(item)}</strong>
+                      <p style={{ margin: 0, fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+                        Status: {item.status.replace(/_/g, " ").toLowerCase()} · Documents: {item.totalDocuments} · Routed cases: {item.routedCaseCount}
+                      </p>
+                      <p style={{ margin: 0, fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+                        {needsReview
+                          ? `${item.unresolvedReviewCount} document${item.unresolvedReviewCount === 1 ? "" : "s"} still need review before export.`
+                          : ready
+                            ? "Batch is ready for export or already handed off."
+                            : "Open the batch to continue processing and handoff work."}
+                      </p>
+                    </div>
+                    <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
+                      <span className={needsReview ? "onyx-badge onyx-badge-warning" : ready ? "onyx-badge onyx-badge-success" : "onyx-badge onyx-badge-neutral"}>
+                        {needsReview ? "Needs review" : ready ? "Ready for export" : "In progress"}
+                      </span>
+                      <Link href={getBatchDetailHref(item.id)} className="onyx-link">
+                        Open batch
+                      </Link>
+                      {needsReview && (
+                        <Link href={getBatchReviewHref(item)} className="onyx-link">
+                          Open review queue
+                        </Link>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </DashboardCard>
 
       <DashboardCard title="Recent Clio handoff history" style={{ marginBottom: "1rem" }}>

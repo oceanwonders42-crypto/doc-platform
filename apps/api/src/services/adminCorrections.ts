@@ -137,7 +137,7 @@ export async function setExportOverrides(
   };
 
   await prisma.document.update({
-    where: { id: documentId },
+    where: { id: documentId, firmId },
     data: { metaJson: next as object },
   });
 

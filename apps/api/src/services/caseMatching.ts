@@ -4,6 +4,7 @@
  * depending on Prisma model drift.
  */
 import { pgPool } from "../db/pg";
+import { getDocumentEmailAutomation } from "./emailAutomation";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -83,25 +84,6 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
     unique.push(trimmed);
   }
   return unique;
-}
-
-type EmailAutomationField = {
-  value?: unknown;
-};
-
-type EmailAutomationSnapshot = {
-  fields?: {
-    clientName?: EmailAutomationField | null;
-    claimNumber?: EmailAutomationField | null;
-    policyNumber?: EmailAutomationField | null;
-  } | null;
-};
-
-function getDocumentEmailAutomation(metaJson: unknown): EmailAutomationSnapshot | null {
-  const meta = asRecord(metaJson);
-  const snapshot = asRecord(meta?.emailAutomation);
-  if (!snapshot) return null;
-  return snapshot as unknown as EmailAutomationSnapshot;
 }
 
 export type MatchSignals = {
@@ -461,12 +443,9 @@ export async function getStoredMatchSignalsForDocument(
       readString(courtFields?.caseNumber)
     ),
     documentClientName: readString(extractedFields?.clientName),
-    emailClientName: firstNonEmpty(
-      readString(emailAutomation?.fields?.clientName),
-      emailClientName
-    ),
-    emailClaimNumber: readString(emailAutomation?.fields?.claimNumber),
-    emailPolicyNumber: readString(emailAutomation?.fields?.policyNumber),
+    emailClientName: firstNonEmpty(emailAutomation?.fields.clientName?.value, emailClientName),
+    emailClaimNumber: emailAutomation?.fields.claimNumber?.value ?? null,
+    emailPolicyNumber: emailAutomation?.fields.policyNumber?.value ?? null,
     courtPartyNames: uniqueStrings([readString(parties?.plaintiff), readString(parties?.defendant)]),
   };
 }

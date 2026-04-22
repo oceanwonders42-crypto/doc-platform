@@ -108,6 +108,7 @@ export default function CaseDetailPage() {
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [allowClioReexport, setAllowClioReexport] = useState(false);
   const [chronologyRebuilding, setChronologyRebuilding] = useState(false);
+  const [chronologyExporting, setChronologyExporting] = useState<"pdf" | "docx" | null>(null);
   const [summarizeLoading, setSummarizeLoading] = useState(false);
   const [summarizeResult, setSummarizeResult] = useState<{
     body: string;
@@ -595,6 +596,38 @@ export default function CaseDetailPage() {
     }
   }, [id, packetType]);
 
+  const startChronologyExport = useCallback(async (format: "pdf" | "docx") => {
+    if (!id) return;
+
+    setExportMessage(null);
+    setChronologyExporting(format);
+    try {
+      const response = await fetch(`${getApiBase()}/cases/${id}/timeline/export?format=${format}`, {
+        headers: getAuthHeader(),
+        ...getFetchOptions(),
+      });
+      if (!response.ok) {
+        setExportMessage(await readErrorMessage(response, `Failed to export chronology ${format.toUpperCase()}.`));
+        return;
+      }
+
+      const blob = await response.blob();
+      const anchor = document.createElement("a");
+      anchor.href = window.URL.createObjectURL(blob);
+      anchor.download = parseFileName(
+        response.headers.get("content-disposition"),
+        `case-chronology.${format}`
+      );
+      anchor.click();
+      window.URL.revokeObjectURL(anchor.href);
+      setExportMessage(`Chronology ${format.toUpperCase()} download started.`);
+    } catch (e) {
+      setExportMessage((e as Error)?.message ?? `Failed to export chronology ${format.toUpperCase()}.`);
+    } finally {
+      setChronologyExporting(null);
+    }
+  }, [id]);
+
   const timelineItems: TimelineItem[] = (() => {
     let list = timeline;
     if (trackFilter && trackFilter !== "all") list = list.filter((e) => e.track === trackFilter);
@@ -614,6 +647,7 @@ export default function CaseDetailPage() {
       dateUncertain: (e.eventDate == null || (e.metadataJson && (e.metadataJson as { dateUncertain?: boolean }).dateUncertain)) ?? undefined,
     }));
   })();
+  const chronologyPreviewItems = timelineItems.slice(0, 5);
 
   const uniqueTimelineProviders = Array.from(new Set(timeline.map((e) => e.provider).filter(Boolean))) as string[];
   const totalDocumentCount = documents.length;
@@ -1253,6 +1287,77 @@ export default function CaseDetailPage() {
       )}
 
       {activeTab === "demands" && (
+        <>
+        <DashboardCard title="Chronology for demand drafting" style={{ marginBottom: "1rem" }}>
+          <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+            Keep chronology work inside the demand flow. Rebuild the case timeline, preview the latest chronology events, and export a staff-ready chronology without leaving this tab.
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", marginBottom: "0.9rem" }}>
+            <div className="onyx-card" style={{ padding: "0.8rem 0.9rem", minWidth: 150 }}>
+              <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Timeline events</p>
+              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{timelineItems.length}</p>
+            </div>
+            <div className="onyx-card" style={{ padding: "0.8rem 0.9rem", minWidth: 150 }}>
+              <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Providers in chronology</p>
+              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{uniqueTimelineProviders.length}</p>
+            </div>
+            <div className="onyx-card" style={{ padding: "0.8rem 0.9rem", minWidth: 150 }}>
+              <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Last timeline event</p>
+              <p style={{ margin: 0, fontSize: "0.95rem", fontWeight: 600 }}>
+                {timelineItems[timelineItems.length - 1]?.date ?? "Not built yet"}
+              </p>
+            </div>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "1rem" }}>
+            <button
+              type="button"
+              className="onyx-btn-secondary"
+              onClick={() => rebuildChronology()}
+              disabled={chronologyRebuilding}
+            >
+              {chronologyRebuilding ? "Rebuilding…" : "Rebuild chronology"}
+            </button>
+            <button
+              type="button"
+              className="onyx-btn-primary"
+              onClick={() => startChronologyExport("pdf")}
+              disabled={chronologyExporting !== null || timelineItems.length === 0}
+            >
+              {chronologyExporting === "pdf" ? "Preparing PDF…" : "Export chronology PDF"}
+            </button>
+            <button
+              type="button"
+              className="onyx-btn-secondary"
+              onClick={() => startChronologyExport("docx")}
+              disabled={chronologyExporting !== null || timelineItems.length === 0}
+            >
+              {chronologyExporting === "docx" ? "Preparing DOCX…" : "Export chronology DOCX"}
+            </button>
+            <button
+              type="button"
+              className="onyx-link"
+              onClick={() => setActiveTab("chronology")}
+              style={{ background: "none", border: "none", cursor: "pointer", padding: "0.35rem 0" }}
+            >
+              Open full chronology
+            </button>
+          </div>
+          {chronologyPreviewItems.length === 0 ? (
+            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+              No chronology events yet. Rebuild chronology before drafting or exporting demand support materials.
+            </p>
+          ) : (
+            <>
+              <Timeline items={chronologyPreviewItems} />
+              {timelineItems.length > chronologyPreviewItems.length && (
+                <p style={{ margin: "0.75rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+                  Showing the first {chronologyPreviewItems.length} of {timelineItems.length} chronology events.
+                </p>
+              )}
+            </>
+          )}
+        </DashboardCard>
+
         <DashboardCard title="Demands">
           <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
             Generate a draft section from case data. Run Summarize, Extract, and Build chronology first for better drafts. Outputs are for review only.
@@ -1307,6 +1412,7 @@ export default function CaseDetailPage() {
             <p style={{ margin: 0, fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>Choose a section and click Generate draft to create an editable first draft from case data.</p>
           )}
         </DashboardCard>
+        </>
       )}
 
       {activeTab === "tasks" && (

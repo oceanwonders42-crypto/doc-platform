@@ -7,6 +7,7 @@ import {
 
 import { prisma as db } from "../db/prisma";
 import type { BatchClioHandoffExportResult } from "./batchClioHandoffExport";
+import { deleteObject, getObjectBuffer, putObject } from "./storage";
 
 type ClioHandoffActorContext = {
   firmId: string;
@@ -54,6 +55,22 @@ type BatchRecordInput = {
   reExportOverride?: boolean;
   reExportReason?: string | null;
   batchResult: BatchClioHandoffExportResult;
+};
+
+type ClioHandoffAuditOutcomeType =
+  | "replay_success"
+  | "replay_rejected_legacy"
+  | "replay_rejected_data_changed"
+  | "forced_reexport";
+
+type ClioHandoffAuditEventInput = {
+  firmId: string;
+  batchId: string;
+  handoffExportId?: string | null;
+  hasIdempotencyKey: boolean;
+  outcomeType: ClioHandoffAuditOutcomeType;
+  reason?: string | null;
+  requestFingerprint?: string | null;
 };
 
 export type ClioHandoffCaseSummary = {
@@ -125,6 +142,8 @@ type ExportWithMemberships = Prisma.ClioHandoffExportGetPayload<{
   };
 }>;
 
+const CLIO_HANDOFF_ARCHIVE_CONTENT_TYPE = "application/zip";
+
 function toExportTypeLabel(value: ClioHandoffExportType): "single_case" | "batch" {
   return value === ClioHandoffExportType.BATCH ? "batch" : "single_case";
 }
@@ -135,6 +154,24 @@ function toExportSubtypeLabel(
   if (value === ClioHandoffExportSubtype.CONTACTS) return "contacts";
   if (value === ClioHandoffExportSubtype.MATTERS) return "matters";
   return "combined_batch";
+}
+
+function sanitizeStorageFileName(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  if (!trimmed) return "clio-handoff-batch.zip";
+  const safe = trimmed.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-");
+  return safe.length > 0 ? safe : "clio-handoff-batch.zip";
+}
+
+function buildClioHandoffArchiveStorageKey(params: {
+  firmId: string;
+  exportId: string;
+  exportedAt: Date;
+  archiveFileName: string | null;
+}): string {
+  const datePart = params.exportedAt.toISOString().slice(0, 10);
+  const safeFileName = sanitizeStorageFileName(params.archiveFileName);
+  return `clio-handoffs/${params.firmId}/${datePart}/${params.exportId}/${safeFileName}`;
 }
 
 function serializeHistoryItem(item: ExportWithMemberships): ClioHandoffHistoryItem {
@@ -176,6 +213,37 @@ function serializeHistoryItem(item: ExportWithMemberships): ClioHandoffHistoryIt
     includedCases,
     skippedCases,
   };
+}
+
+export async function recordClioHandoffAuditEvent(input: ClioHandoffAuditEventInput): Promise<void> {
+  try {
+    await db.systemErrorLog.create({
+      data: {
+        firmId: input.firmId,
+        service: "api",
+        area: "clio_handoff_audit",
+        route: "/migration/batches/:batchId/exports/clio/handoff",
+        method: "POST",
+        severity: "INFO",
+        message: `Clio handoff outcome: ${input.outcomeType}`,
+        metaJson: {
+          batchId: input.batchId,
+          handoffExportId: input.handoffExportId ?? null,
+          hasIdempotencyKey: input.hasIdempotencyKey,
+          outcomeType: input.outcomeType,
+          requestFingerprint: input.requestFingerprint ?? null,
+          reason: input.reason ?? null,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("[clio handoff audit] failed to persist audit event", {
+      outcomeType: input.outcomeType,
+      batchId: input.batchId,
+      handoffExportId: input.handoffExportId,
+      error: String((error as Error)?.message ?? error),
+    });
+  }
 }
 
 export async function resolveClioHandoffActorSnapshot(
@@ -306,7 +374,7 @@ export async function recordBatchClioHandoff(input: BatchRecordInput) {
     }
   }
 
-  return db.clioHandoffExport.create({
+  const exportRecord = await db.clioHandoffExport.create({
     data: {
       firmId: input.firmId,
       exportType: ClioHandoffExportType.BATCH,
@@ -358,6 +426,29 @@ export async function recordBatchClioHandoff(input: BatchRecordInput) {
       },
     },
   });
+
+  const archiveStorageKey = buildClioHandoffArchiveStorageKey({
+    firmId: input.firmId,
+    exportId: exportRecord.id,
+    exportedAt,
+    archiveFileName: exportRecord.archiveFileName,
+  });
+
+  try {
+    await putObject(
+      archiveStorageKey,
+      input.batchResult.zipBuffer,
+      CLIO_HANDOFF_ARCHIVE_CONTENT_TYPE
+    );
+    return await db.clioHandoffExport.update({
+      where: { id: exportRecord.id },
+      data: { archiveStorageKey },
+    });
+  } catch (error) {
+    await deleteObject(archiveStorageKey).catch(() => undefined);
+    await db.clioHandoffExport.delete({ where: { id: exportRecord.id } }).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function listClioHandoffHistory(
@@ -523,4 +614,49 @@ export async function findRecentClioHandoffDuplicate(
     },
     orderBy: [{ exportedAt: "desc" }, { createdAt: "desc" }],
   });
+}
+
+export async function getStoredBatchClioHandoffArchive(input: {
+  firmId: string;
+  batchId: string;
+  exportId: string;
+}): Promise<{ fileName: string; buffer: Buffer }> {
+  const item = await db.migrationBatchClioHandoff.findFirst({
+    where: {
+      firmId: input.firmId,
+      batchId: input.batchId,
+      clioHandoffExportId: input.exportId,
+    },
+    select: {
+      clioHandoffExport: {
+        select: {
+          exportType: true,
+          exportSubtype: true,
+          archiveFileName: true,
+          archiveStorageKey: true,
+        },
+      },
+    },
+  });
+
+  if (!item) {
+    throw new Error("Migration batch handoff archive not found");
+  }
+
+  if (
+    item.clioHandoffExport.exportType !== ClioHandoffExportType.BATCH ||
+    item.clioHandoffExport.exportSubtype !== ClioHandoffExportSubtype.COMBINED_BATCH
+  ) {
+    throw new Error("Migration batch handoff archive not found");
+  }
+
+  if (!item.clioHandoffExport.archiveStorageKey || !item.clioHandoffExport.archiveFileName) {
+    throw new Error("Stored Clio handoff archive unavailable for this export.");
+  }
+
+  const buffer = await getObjectBuffer(item.clioHandoffExport.archiveStorageKey);
+  return {
+    fileName: item.clioHandoffExport.archiveFileName,
+    buffer,
+  };
 }

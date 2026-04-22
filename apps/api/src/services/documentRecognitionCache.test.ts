@@ -21,6 +21,8 @@ async function main() {
     extractedJson: null,
     taskKey: summaryKey,
     textHash: "hash-a",
+    firmId: "firm-1",
+    documentId: "doc-1",
     existingValue: null as { summary: string; keyFacts: string[] } | null,
     compute: async () => {
       summaryCalls += 1;
@@ -34,16 +36,40 @@ async function main() {
   assert.equal(
     isTaskCacheValid(firstSummary.extractedJson, summaryKey, {
       textHash: "hash-a",
+      firmId: "firm-1",
+      documentId: "doc-1",
       ...DOCUMENT_RECOGNITION_PROMPTS.summary,
     }),
     true,
     "Expected first summary run to persist a valid cache entry."
+  );
+  assert.equal(
+    inspectTaskCache(firstSummary.extractedJson, summaryKey, {
+      textHash: "hash-a",
+      firmId: "firm-2",
+      documentId: "doc-1",
+      ...DOCUMENT_RECOGNITION_PROMPTS.summary,
+    }).recomputeReason,
+    "firm_id_mismatch",
+    "Expected cache inspection to reject reuse across firms."
+  );
+  assert.equal(
+    inspectTaskCache(firstSummary.extractedJson, summaryKey, {
+      textHash: "hash-a",
+      firmId: "firm-1",
+      documentId: "doc-2",
+      ...DOCUMENT_RECOGNITION_PROMPTS.summary,
+    }).recomputeReason,
+    "document_id_mismatch",
+    "Expected cache inspection to reject reuse across documents."
   );
 
   const secondSummary = await resolveTaskCache({
     extractedJson: firstSummary.extractedJson,
     taskKey: summaryKey,
     textHash: "hash-a",
+    firmId: "firm-1",
+    documentId: "doc-1",
     existingValue: firstSummary.value,
     compute: async () => {
       summaryCalls += 1;
@@ -60,6 +86,8 @@ async function main() {
     extractedJson: firstSummary.extractedJson,
     taskKey: summaryKey,
     textHash: "hash-a",
+    firmId: "firm-1",
+    documentId: "doc-1",
     existingValue: firstSummary.value,
     compute: async () => {
       summaryCalls += 1;
@@ -74,6 +102,8 @@ async function main() {
   assert.equal(
     inspectTaskCache(firstSummary.extractedJson, summaryKey, {
       textHash: "hash-a",
+      firmId: "firm-1",
+      documentId: "doc-1",
       promptVersion: "document-summary-v2",
       model: DOCUMENT_RECOGNITION_PROMPTS.summary.model,
     }).recomputeReason,
@@ -85,6 +115,8 @@ async function main() {
     extractedJson: promptBumpSummary.extractedJson,
     taskKey: summaryKey,
     textHash: "hash-b",
+    firmId: "firm-1",
+    documentId: "doc-1",
     existingValue: promptBumpSummary.value,
     compute: async () => {
       summaryCalls += 1;
@@ -99,6 +131,8 @@ async function main() {
   assert.equal(
     inspectTaskCache(promptBumpSummary.extractedJson, summaryKey, {
       textHash: "hash-b",
+      firmId: "firm-1",
+      documentId: "doc-1",
       promptVersion: "document-summary-v2",
       model: DOCUMENT_RECOGNITION_PROMPTS.summary.model,
     }).recomputeReason,
@@ -117,6 +151,8 @@ async function main() {
     extractedJson: null,
     taskKey: explainKey,
     textHash: "hash-explain",
+    firmId: "firm-1",
+    documentId: "doc-1",
     existingValue: { bullets: [] as string[] },
     compute: async () => {
       explainCalls += 1;
@@ -133,6 +169,8 @@ async function main() {
     extractedJson: firstExplain.extractedJson,
     taskKey: explainKey,
     textHash: "hash-explain",
+    firmId: "firm-1",
+    documentId: "doc-1",
     existingValue: { bullets: [] as string[] },
     compute: async () => {
       explainCalls += 1;
@@ -150,6 +188,8 @@ async function main() {
     extractedJson: firstExplain.extractedJson,
     taskKey: explainKey,
     textHash: "hash-explain",
+    firmId: "firm-1",
+    documentId: "doc-1",
     existingValue: { bullets: [] as string[] },
     compute: async () => {
       explainCalls += 1;
@@ -173,6 +213,8 @@ async function main() {
   assert.equal(
     inspectTaskCache(invalidatedExplain.extractedJson, explainKey, {
       textHash: "hash-explain",
+      firmId: "firm-1",
+      documentId: "doc-1",
       ...DOCUMENT_RECOGNITION_PROMPTS.explain,
     }).recomputeReason,
     "missing_cache",

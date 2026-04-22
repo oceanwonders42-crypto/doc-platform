@@ -1,0 +1,5 @@
+ALTER TABLE "Firm"
+ALTER COLUMN "plan" SET DEFAULT 'essential';
+
+ALTER TABLE "Firm"
+ALTER COLUMN "pageLimitMonthly" SET DEFAULT 1500;

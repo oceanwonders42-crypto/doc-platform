@@ -14,6 +14,8 @@ import {
   type CaseClioHandoffHistoryItem,
   type ClioHandoffCaseSummary,
 } from "../../services/clioHandoffTracking";
+import { syncClioCaseAssignmentsIfStale } from "../../services/clioCaseAssignments";
+import { buildVisibleCaseWhere } from "../../services/caseVisibility";
 import { buildExportBundle, runExport } from "../../services/export";
 import { getPresignedGetUrl } from "../../services/storage";
 import { auth } from "../middleware/auth";
@@ -41,6 +43,13 @@ const CONTACT_SELECT = {
 type ClioBatchExportSummary = {
   status: "eligible" | "already_exported" | "potentially_skipped";
   reason: string;
+};
+
+type CaseRouteAccessContext = {
+  firmId: string;
+  authRole: Role | string | null | undefined;
+  userId: string | null;
+  apiKeyId: string | null;
 };
 
 function trimToNull(value: unknown): string | null {
@@ -158,6 +167,15 @@ function getSingleCaseReexportReason(req: Request): string | null {
   return trimToNull(req.get("X-Clio-Reexport-Reason")) ?? trimToNull(req.query.reexportReason);
 }
 
+function getCaseRouteAccessContext(req: Request): CaseRouteAccessContext {
+  return {
+    firmId: (req as any).firmId as string,
+    authRole: (req as any).authRole as Role | string | null | undefined,
+    userId: typeof (req as any).userId === "string" ? ((req as any).userId as string) : null,
+    apiKeyId: typeof (req as any).apiKeyId === "string" ? ((req as any).apiKeyId as string) : null,
+  };
+}
+
 function buildSingleCaseRequestFingerprint(
   caseId: string,
   exportSubtype: ClioHandoffExportSubtype,
@@ -206,19 +224,26 @@ function serializeCase(
 
 router.get("/", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
-    const firmId = (req as any).firmId as string;
+    const accessContext = getCaseRouteAccessContext(req);
+    const { firmId } = accessContext;
     const providerId = trimToNull(req.query.providerId);
     const status = trimToNull(req.query.status)?.toLowerCase();
 
-    const where: Prisma.LegalCaseWhereInput = { firmId };
+    await syncClioCaseAssignmentsIfStale({ firmId }).catch(() => undefined);
+
+    const scopedFilters: Prisma.LegalCaseWhereInput = {};
     if (providerId) {
-      where.caseProviders = {
+      scopedFilters.caseProviders = {
         some: { providerId, firmId },
       };
     }
     if (status === "open" || status === "pending" || status === "closed") {
-      where.status = status;
+      scopedFilters.status = status;
     }
+    const where = buildVisibleCaseWhere({
+      ...accessContext,
+      extraWhere: scopedFilters,
+    });
 
     const items = await prisma.legalCase.findMany({
       where,
@@ -288,7 +313,8 @@ router.get("/", auth, requireRole(Role.STAFF), async (req, res) => {
 
 router.post("/", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
-    const firmId = (req as any).firmId as string;
+    const accessContext = getCaseRouteAccessContext(req);
+    const { firmId, userId } = accessContext;
     const body = (req.body ?? {}) as {
       title?: unknown;
       caseNumber?: unknown;
@@ -367,6 +393,7 @@ router.post("/", auth, requireRole(Role.STAFF), async (req, res) => {
           caseNumber,
           clientName,
           clientContactId,
+          assignedUserId: userId ?? undefined,
           incidentDate,
           status,
           notes,
@@ -385,7 +412,8 @@ router.post("/", auth, requireRole(Role.STAFF), async (req, res) => {
 
 router.post("/exports/clio/batch", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
-    const firmId = (req as any).firmId as string;
+    const accessContext = getCaseRouteAccessContext(req);
+    const { firmId } = accessContext;
     const actor = await resolveClioHandoffActorSnapshot({
       firmId,
       userId: ((req as any).userId as string | null | undefined) ?? null,
@@ -402,9 +430,23 @@ router.post("/exports/clio/batch", auth, requireRole(Role.STAFF), async (req, re
     }
 
     const caseIds = body.caseIds.filter((value): value is string => typeof value === "string");
+    const visibleCases = await prisma.legalCase.findMany({
+      where: buildVisibleCaseWhere({
+        ...accessContext,
+        extraWhere: { id: { in: caseIds } },
+        allowApiKeyFirmAccess: true,
+      }),
+      select: { id: true },
+    });
+    const visibleCaseIdSet = new Set(visibleCases.map((item) => item.id));
     const allowReexport = parseBooleanFlag(body.allowReexport);
     const reExportReason = allowReexport ? trimToNull(body.reexportReason) ?? "operator_override" : null;
-    const result = await buildBatchClioHandoffExport({ firmId, caseIds, allowReexport });
+    const result = await buildBatchClioHandoffExport({
+      firmId,
+      caseIds,
+      accessibleCaseIds: [...visibleCaseIdSet],
+      allowReexport,
+    });
     const idempotencyKey = getClioIdempotencyKey(req);
     const requestFingerprint = buildBatchRequestFingerprint(caseIds, allowReexport);
     const duplicate = await findRecentClioHandoffDuplicate({
@@ -454,10 +496,12 @@ router.get("/exports/clio/history", auth, requireRole(Role.STAFF), async (req, r
 
 router.get("/:id", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
-    const firmId = (req as any).firmId as string;
+    const accessContext = getCaseRouteAccessContext(req);
+    const { firmId } = accessContext;
     const caseId = String(req.params.id ?? "");
+    await syncClioCaseAssignmentsIfStale({ firmId, caseIds: [caseId] }).catch(() => undefined);
     const item = await prisma.legalCase.findFirst({
-      where: { id: caseId, firmId },
+      where: buildVisibleCaseWhere({ ...accessContext, caseId }),
       include: { clientContact: { select: CONTACT_SELECT } },
     });
     if (!item) return res.status(404).json({ ok: false, error: "Case not found" });
@@ -479,7 +523,8 @@ router.get("/:id", auth, requireRole(Role.STAFF), async (req, res) => {
 
 router.get("/:id/exports/clio/contacts.csv", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
-    const firmId = (req as any).firmId as string;
+    const accessContext = getCaseRouteAccessContext(req);
+    const { firmId } = accessContext;
     const actor = await resolveClioHandoffActorSnapshot({
       firmId,
       userId: ((req as any).userId as string | null | undefined) ?? null,
@@ -487,8 +532,9 @@ router.get("/:id/exports/clio/contacts.csv", auth, requireRole(Role.STAFF), asyn
       authRole: ((req as any).authRole as string | null | undefined) ?? null,
     });
     const caseId = String(req.params.id ?? "");
+    await syncClioCaseAssignmentsIfStale({ firmId, caseIds: [caseId] }).catch(() => undefined);
     const item = await prisma.legalCase.findFirst({
-      where: { id: caseId, firmId },
+      where: buildVisibleCaseWhere({ ...accessContext, caseId, allowApiKeyFirmAccess: true }),
       include: { clientContact: { select: CONTACT_SELECT } },
     });
     if (!item) return res.status(404).json({ ok: false, error: "Case not found" });
@@ -557,7 +603,8 @@ router.get("/:id/exports/clio/contacts.csv", auth, requireRole(Role.STAFF), asyn
 
 router.get("/:id/exports/clio/matters.csv", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
-    const firmId = (req as any).firmId as string;
+    const accessContext = getCaseRouteAccessContext(req);
+    const { firmId } = accessContext;
     const actor = await resolveClioHandoffActorSnapshot({
       firmId,
       userId: ((req as any).userId as string | null | undefined) ?? null,
@@ -565,8 +612,9 @@ router.get("/:id/exports/clio/matters.csv", auth, requireRole(Role.STAFF), async
       authRole: ((req as any).authRole as string | null | undefined) ?? null,
     });
     const caseId = String(req.params.id ?? "");
+    await syncClioCaseAssignmentsIfStale({ firmId, caseIds: [caseId] }).catch(() => undefined);
     const item = await prisma.legalCase.findFirst({
-      where: { id: caseId, firmId },
+      where: buildVisibleCaseWhere({ ...accessContext, caseId, allowApiKeyFirmAccess: true }),
       include: { clientContact: { select: CONTACT_SELECT } },
     });
     if (!item) return res.status(404).json({ ok: false, error: "Case not found" });
@@ -635,7 +683,8 @@ router.get("/:id/exports/clio/matters.csv", auth, requireRole(Role.STAFF), async
 
 router.post("/:id/exports/packet", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
-    const firmId = (req as any).firmId as string;
+    const accessContext = getCaseRouteAccessContext(req);
+    const { firmId } = accessContext;
     const caseId = String(req.params.id ?? "");
     const body = (req.body ?? {}) as {
       includeTimeline?: unknown;
@@ -649,8 +698,9 @@ router.post("/:id/exports/packet", auth, requireRole(Role.STAFF), async (req, re
         ? body.packetType
         : "combined";
 
+    await syncClioCaseAssignmentsIfStale({ firmId, caseIds: [caseId] }).catch(() => undefined);
     const item = await prisma.legalCase.findFirst({
-      where: { id: caseId, firmId },
+      where: buildVisibleCaseWhere({ ...accessContext, caseId }),
       include: { clientContact: { select: CONTACT_SELECT } },
     });
     if (!item) return res.status(404).json({ ok: false, error: "Case not found" });

@@ -166,7 +166,7 @@ function addClioHandoffAnomalies(
             latestFailureAt: outcomeSummary.latestAt,
             sampleBatchIds: outcomeSummary.batchIds,
           },
-          recommendation: "Review recent migration handoff failures for this batch pattern before continuing exports.",
+          recommendation: getClioHandoffGuidance(`clio_handoff_${outcome}`, outcome),
         });
       }
     }
@@ -178,7 +178,7 @@ function addClioHandoffAnomalies(
       const ratioAlert =
         previousFailures > 0 && currentFailures / previousFailures >= clioHandoffSpikeRatio;
 
-      if (noHistoryAlert || ratioAlert) {
+        if (noHistoryAlert || ratioAlert) {
         anomalies.push({
           severity: "warning",
           code: "clio_handoff_firm_failure_spike",
@@ -190,10 +190,27 @@ function addClioHandoffAnomalies(
             latestFailureAt: summary.total.latestAt,
             sampleBatchIds: summary.total.batchIds,
           },
-          recommendation: "Check whether affected batches share the same manifest/idempotency state before retrying.",
+          recommendation: getClioHandoffGuidance("clio_handoff_firm_failure_spike"),
         });
       }
     }
+  }
+}
+
+function getClioHandoffGuidance(code: string, outcome?: ClioHandoffFailureOutcome): string {
+  if (code === "clio_handoff_firm_failure_spike") {
+    return "Review this firm's recent Clio audit rows (including batchId samples) before taking more retry actions.";
+  }
+
+  switch (outcome) {
+    case "replay_rejected_legacy":
+      return "Legacy export cannot be safely replayed; use allowReexport=true for a fresh export only if intended.";
+    case "replay_rejected_data_changed":
+      return "Exported data changed since the last successful run; review batch and case edits before retrying.";
+    case "forced_reexport":
+      return "Check repeated forced re-export usage for operator workflow confusion and avoid unnecessary repeat exports.";
+    default:
+      return "Review related migration batches before continuing exports.";
   }
 }
 

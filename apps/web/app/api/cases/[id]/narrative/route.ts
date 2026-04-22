@@ -8,11 +8,17 @@ export async function POST(
 ) {
   const { id } = await params;
   const base = process.env.DOC_API_URL;
-  const key = process.env.DOC_API_KEY;
-  if (!base || !key) {
+  const authorization = req.headers.get("authorization");
+  if (!base) {
     return NextResponse.json(
-      { ok: false, error: "DOC_API_URL or DOC_API_KEY is not set" },
+      { ok: false, error: "DOC_API_URL is not set" },
       { status: 500 }
+    );
+  }
+  if (!authorization) {
+    return NextResponse.json(
+      { ok: false, error: "Missing Authorization header" },
+      { status: 401 }
     );
   }
 
@@ -32,7 +38,7 @@ export async function POST(
     res = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${key}`,
+        Authorization: authorization,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),

@@ -9,6 +9,7 @@
  * No Stripe dependency in this file so the app runs without it; add stripe package and wire webhook when ready.
  */
 import { prisma } from "../db/prisma";
+import { getPlanMetadata, normalizePlanSlug } from "./billingPlans";
 
 export type SubscriptionUpdate = {
   plan?: string;
@@ -25,14 +26,23 @@ export async function applySubscriptionUpdate(
   update: SubscriptionUpdate
 ): Promise<void> {
   const data: Record<string, unknown> = {};
-  if (typeof update.plan === "string" && update.plan.trim()) data.plan = update.plan.trim();
+  if (typeof update.plan === "string" && update.plan.trim()) {
+    const plan = normalizePlanSlug(update.plan);
+    data.plan = plan;
+    data.pageLimitMonthly = getPlanMetadata(plan).docLimitMonthly;
+  }
   if (typeof update.billingStatus === "string" && update.billingStatus.trim()) data.billingStatus = update.billingStatus.trim();
   if (update.billingCustomerId !== undefined) data.billingCustomerId = update.billingCustomerId ?? null;
   if (Object.keys(data).length === 0) return;
 
   await prisma.firm.update({
     where: { id: firmId },
-    data: data as { plan?: string; billingStatus?: string; billingCustomerId?: string | null },
+    data: data as {
+      plan?: string;
+      pageLimitMonthly?: number;
+      billingStatus?: string;
+      billingCustomerId?: string | null;
+    },
   });
 }
 

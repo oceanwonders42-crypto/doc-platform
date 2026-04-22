@@ -6,6 +6,7 @@ import crypto from "crypto";
 import { prisma } from "../db/prisma";
 import { putObject } from "../services/storage";
 import { enqueueDocumentJob } from "../services/queue";
+import { buildDocumentStorageKey } from "../services/documentStorageKeys";
 
 export type DocketEntry = {
   id?: string;
@@ -94,11 +95,17 @@ async function ingestIntoPipeline(
   for (const { name, pdfBuffer } of filings) {
     try {
       const fileSha256 = crypto.createHash("sha256").update(pdfBuffer).digest("hex");
-      const ext = name.toLowerCase().endsWith(".pdf") ? "pdf" : "pdf";
-      const key = `${firmId}/court_docket/${Date.now()}_${crypto.randomBytes(6).toString("hex")}.${ext}`;
+      const documentId = crypto.randomUUID();
+      const key = buildDocumentStorageKey({
+        firmId,
+        caseId,
+        documentId,
+        originalName: name,
+      });
       await putObject(key, pdfBuffer, "application/pdf");
       const doc = await prisma.document.create({
         data: {
+          id: documentId,
           firmId,
           source: "court_docket",
           spacesKey: key,

@@ -20,10 +20,31 @@ const documentRecognitionRepairMigrationPath = path.join(
   "20260619000000_repair_document_recognition_runtime",
   "migration.sql"
 );
+const emailMailboxMigrationPath = path.join(
+  process.cwd(),
+  "prisma",
+  "migrations",
+  "20260309000000_mailbox_email_tables",
+  "migration.sql"
+);
+const emailFaxClientMigrationPath = path.join(
+  process.cwd(),
+  "prisma",
+  "migrations",
+  "20260325000000_email_messages_fax_client",
+  "migration.sql"
+);
 
 async function ensureDocumentRecognitionRuntimeSchema(): Promise<void> {
   const sql = await readFile(documentRecognitionRepairMigrationPath, "utf8");
   await pgPool.query(sql);
+}
+
+async function ensureEmailRuntimeSchema(): Promise<void> {
+  const mailboxSql = await readFile(emailMailboxMigrationPath, "utf8");
+  const faxClientSql = await readFile(emailFaxClientMigrationPath, "utf8");
+  await pgPool.query(mailboxSql);
+  await pgPool.query(faxClientSql);
 }
 
 async function main() {
@@ -35,6 +56,9 @@ async function main() {
   const reviewDocId = `review-queue-review-doc-${suffix}`;
   const failedDocId = `review-queue-failed-doc-${suffix}`;
   const otherBatchDocId = `review-queue-other-doc-${suffix}`;
+  const mailboxId = `review-queue-mailbox-${suffix}`;
+  const emailMessageId = `review-queue-message-${suffix}`;
+  const emailAttachmentId = `review-queue-attachment-${suffix}`;
 
   await prisma.firm.create({
     data: {
@@ -61,6 +85,7 @@ async function main() {
     ],
   });
   await ensureDocumentRecognitionRuntimeSchema();
+  await ensureEmailRuntimeSchema();
   await prisma.document.createMany({
     data: [
       {
@@ -115,10 +140,11 @@ async function main() {
   });
   await pgPool.query(
     `insert into document_recognition
-      (document_id, client_name, case_number, doc_type, confidence, match_confidence, match_reason, updated_at)
+      (document_id, client_name, case_number, doc_type, confidence, match_confidence, match_reason,
+       unmatched_reason, classification_reason, classification_signals_json, updated_at)
      values
-      ($1, $2, $3, 'medical_record', 0.88, 0.72, 'Possible batch match', now()),
-      ($4, $5, $6, 'medical_record', 0.91, 0.93, 'Different batch match', now())
+      ($1, $2, $3, 'medical_record', 0.88, 0.72, 'Possible batch match', null, 'Matched on extracted case number', '["case number exact","batch triage"]'::jsonb, now()),
+      ($4, $5, $6, 'medical_record', 0.91, 0.93, 'Different batch match', null, 'Matched on extracted case number', '["case number exact"]'::jsonb, now())
      on conflict (document_id) do update set
        client_name = excluded.client_name,
        case_number = excluded.case_number,
@@ -126,6 +152,9 @@ async function main() {
        confidence = excluded.confidence,
        match_confidence = excluded.match_confidence,
        match_reason = excluded.match_reason,
+       unmatched_reason = excluded.unmatched_reason,
+       classification_reason = excluded.classification_reason,
+       classification_signals_json = excluded.classification_signals_json,
        updated_at = now()`,
     [
       reviewDocId,
@@ -136,6 +165,55 @@ async function main() {
       "BATCH-OTHER-1",
     ]
   );
+  await pgPool.query(
+    `insert into mailbox_connections
+      (id, firm_id, provider, imap_host, imap_username, imap_password, status, created_at, updated_at)
+     values
+      ($1, $2, 'imap', 'imap.example.test', 'review@example.com', 'secret', 'active', now(), now())
+     on conflict (id) do nothing`,
+    [mailboxId, firmId]
+  );
+  await pgPool.query(
+    `insert into email_messages
+      (id, mailbox_connection_id, provider_message_id, from_email, subject, received_at, is_fax, client_name_extracted, created_at)
+     values
+      ($1, $2, $3, $4, $5, now(), true, $6, now())
+     on conflict (mailbox_connection_id, provider_message_id) do nothing`,
+    [
+      emailMessageId,
+      mailboxId,
+      `provider-message-${suffix}`,
+      "fax@example.com",
+      "Client: Alice Batch",
+      "Alice Batch",
+    ]
+  );
+  await pgPool.query(
+    `insert into email_attachments
+      (id, email_message_id, filename, mime_type, size_bytes, sha256, ingest_document_id, created_at)
+     values
+      ($1, $2, 'needs-review.pdf', 'application/pdf', 1024, $3, $4, now())
+     on conflict (email_message_id, sha256) do nothing`,
+    [emailAttachmentId, emailMessageId, `sha-${suffix}`, reviewDocId]
+  );
+  await prisma.systemErrorLog.create({
+    data: {
+      firmId,
+      service: "api",
+      area: "clio_handoff_audit",
+      route: "/migration/batches/:batchId/exports/clio/handoff",
+      method: "POST",
+      severity: "INFO",
+      message: "Clio handoff outcome: forced_reexport",
+      metaJson: {
+        batchId: batchOneId,
+        handoffExportId: `handoff-${suffix}`,
+        hasIdempotencyKey: true,
+        outcomeType: "forced_reexport",
+        reason: "operator override",
+      },
+    },
+  });
 
   const token = signToken({
     userId: actorUserId,
@@ -160,6 +238,22 @@ async function main() {
         reviewReasons?: string[];
         failureStage?: string | null;
         failureReason?: string | null;
+        emailExtraction?: {
+          from?: string | null;
+          subject?: string | null;
+          isFax?: boolean;
+          extractedClientName?: string | null;
+        } | null;
+        matchReasoning?: {
+          classificationReason?: string | null;
+          supportingSignals?: string[];
+        } | null;
+        clioWriteBack?: {
+          outcomeType?: string;
+          reason?: string | null;
+          hasIdempotencyKey?: boolean;
+          batchId?: string | null;
+        } | null;
       }>;
     };
     assert(Array.isArray(filteredJson.items), "Expected filtered review queue response to include items.");
@@ -185,6 +279,45 @@ async function main() {
       "Expected failed document to include a Processing failed review reason."
     );
 
+    const reviewItem = filteredJson.items!.find((item) => item.id === reviewDocId);
+    assert(!!reviewItem, "Expected review document to appear in the filtered review queue.");
+    assert(
+      reviewItem?.emailExtraction?.subject === "Client: Alice Batch",
+      `Expected email extraction subject to be returned, got ${reviewItem?.emailExtraction?.subject}`
+    );
+    assert(
+      reviewItem?.emailExtraction?.from === "fax@example.com",
+      `Expected email extraction sender to be returned, got ${reviewItem?.emailExtraction?.from}`
+    );
+    assert(
+      reviewItem?.emailExtraction?.isFax === true,
+      "Expected email extraction to preserve the fax flag."
+    );
+    assert(
+      reviewItem?.emailExtraction?.extractedClientName === "Alice Batch",
+      `Expected extracted email client name to be returned, got ${reviewItem?.emailExtraction?.extractedClientName}`
+    );
+    assert(
+      reviewItem?.matchReasoning?.classificationReason === "Matched on extracted case number",
+      `Expected match reasoning classification reason to be returned, got ${reviewItem?.matchReasoning?.classificationReason}`
+    );
+    assert(
+      reviewItem?.matchReasoning?.supportingSignals?.includes("case number exact") === true,
+      "Expected match reasoning signals to include case number exact."
+    );
+    assert(
+      reviewItem?.clioWriteBack?.outcomeType === "forced_reexport",
+      `Expected Clio write-back outcome to be returned, got ${reviewItem?.clioWriteBack?.outcomeType}`
+    );
+    assert(
+      reviewItem?.clioWriteBack?.reason === "operator override",
+      `Expected Clio write-back reason to be returned, got ${reviewItem?.clioWriteBack?.reason}`
+    );
+    assert(
+      reviewItem?.clioWriteBack?.hasIdempotencyKey === true,
+      "Expected Clio write-back idempotency flag to be returned."
+    );
+
     const focusedResponse = await fetch(
       `${baseUrl}/me/review-queue?limit=50&migrationBatchId=${encodeURIComponent(batchOneId)}&documentId=${encodeURIComponent(reviewDocId)}`,
       {
@@ -205,6 +338,12 @@ async function main() {
     console.log("Review queue batch filter route tests passed");
   } finally {
     await stopTestServer(server);
+    await prisma.systemErrorLog.deleteMany({
+      where: { firmId, area: "clio_handoff_audit" },
+    });
+    await pgPool.query(`delete from email_attachments where id = $1`, [emailAttachmentId]);
+    await pgPool.query(`delete from email_messages where id = $1`, [emailMessageId]);
+    await pgPool.query(`delete from mailbox_connections where id = $1`, [mailboxId]);
     await pgPool.query(`delete from document_recognition where document_id = any($1)`, [[reviewDocId, otherBatchDocId]]);
     await prisma.document.deleteMany({
       where: { id: { in: [reviewDocId, failedDocId, otherBatchDocId] } },

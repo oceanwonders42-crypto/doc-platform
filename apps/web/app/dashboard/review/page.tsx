@@ -7,6 +7,52 @@ import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DataTable, Column } from "@/components/dashboard/DataTable";
 
+type EmailExtraction = {
+  attachmentFileName: string | null;
+  from: string | null;
+  subject: string | null;
+  receivedAt: string | null;
+  mailboxId: string | null;
+  isFax: boolean;
+  extractedClientName: string | null;
+};
+
+type EmailAutomationField = {
+  value: string;
+  confidence: number;
+  sources: string[];
+};
+
+type EmailAutomation = {
+  fields: {
+    clientName: EmailAutomationField | null;
+    dateOfLoss: EmailAutomationField | null;
+    claimNumber: EmailAutomationField | null;
+    policyNumber: EmailAutomationField | null;
+    insuranceCarrier: EmailAutomationField | null;
+  };
+  matchSignals?: {
+    supportingSignals?: string[];
+  } | null;
+};
+
+type MatchReasoning = {
+  matchReason: string | null;
+  unmatchedReason: string | null;
+  classificationReason: string | null;
+  supportingSignals?: string[];
+  matterRoutingReason: string | null;
+};
+
+type ClioWriteBack = {
+  outcomeType: "replay_success" | "replay_rejected_legacy" | "replay_rejected_data_changed" | "forced_reexport" | "unknown";
+  createdAt: string;
+  handoffExportId: string | null;
+  hasIdempotencyKey: boolean;
+  reason: string | null;
+  batchId: string | null;
+};
+
 type ReviewItem = {
   id: string;
   fileName: string;
@@ -31,6 +77,10 @@ type ReviewItem = {
   createdAt: string;
   migrationBatchId?: string | null;
   ocrDiagnostics?: { ocrConfidence?: number | null } | null;
+  emailExtraction?: EmailExtraction | null;
+  emailAutomation?: EmailAutomation | null;
+  matchReasoning?: MatchReasoning | null;
+  clioWriteBack?: ClioWriteBack | null;
 };
 
 type ReviewQueueResponse = { items?: ReviewItem[] };
@@ -45,6 +95,38 @@ type CasesListResponse = { ok?: boolean; items?: CaseItem[] };
 
 function isCasesListResponse(res: unknown): res is CasesListResponse {
   return typeof res === "object" && res !== null;
+}
+
+function formatReviewValue(value: string | null | undefined): string {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : "-";
+}
+
+function formatReviewDateTime(value: string | null | undefined): string {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
+function getSignalList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function clioWriteBackBadgeClass(outcomeType: ClioWriteBack["outcomeType"]): string {
+  if (outcomeType === "replay_success") return "onyx-badge-success";
+  if (outcomeType === "forced_reexport") return "onyx-badge-warning";
+  if (outcomeType === "replay_rejected_legacy" || outcomeType === "replay_rejected_data_changed") {
+    return "onyx-badge-error";
+  }
+  return "onyx-badge-neutral";
+}
+
+function clioWriteBackLabel(outcomeType: ClioWriteBack["outcomeType"]): string {
+  if (outcomeType === "replay_success") return "Replay success";
+  if (outcomeType === "replay_rejected_legacy") return "Replay rejected (legacy)";
+  if (outcomeType === "replay_rejected_data_changed") return "Replay rejected (data changed)";
+  if (outcomeType === "forced_reexport") return "Forced re-export";
+  return "Unknown";
 }
 
 export default function ReviewQueuePage() {
@@ -578,6 +660,184 @@ export default function ReviewQueuePage() {
                 <p style={{ margin: "0 0 0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
                   OCR confidence: {confidencePct(drawerItem.ocrDiagnostics!.ocrConfidence!)}
                 </p>
+              )}
+              {drawerItem.emailExtraction && (
+                <div
+                  style={{
+                    marginBottom: "0.75rem",
+                    padding: "0.75rem",
+                    background: "var(--onyx-surface-subtle)",
+                    borderRadius: "var(--onyx-radius-sm)",
+                    display: "grid",
+                    gap: "0.35rem",
+                  }}
+                >
+                  <p style={{ margin: 0, fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>
+                    Email extraction
+                  </p>
+                  <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                    <strong>Subject:</strong> {formatReviewValue(drawerItem.emailExtraction.subject)}
+                  </p>
+                  <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                    <strong>From:</strong> {formatReviewValue(drawerItem.emailExtraction.from)}
+                  </p>
+                  <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                    <strong>Received:</strong> {formatReviewDateTime(drawerItem.emailExtraction.receivedAt)}
+                  </p>
+                  <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                    <strong>Client from subject:</strong> {formatReviewValue(drawerItem.emailExtraction.extractedClientName)}
+                  </p>
+                  {drawerItem.emailExtraction.attachmentFileName && (
+                    <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                      <strong>Attachment:</strong> {drawerItem.emailExtraction.attachmentFileName}
+                    </p>
+                  )}
+                  {drawerItem.emailExtraction.isFax && (
+                    <span className="onyx-badge onyx-badge-warning" style={{ width: "fit-content", fontSize: "0.7rem" }}>
+                      Fax-to-email
+                    </span>
+                  )}
+                </div>
+              )}
+              {drawerItem.emailAutomation && (
+                <div
+                  style={{
+                    marginBottom: "0.75rem",
+                    padding: "0.75rem",
+                    background: "var(--onyx-surface-subtle)",
+                    borderRadius: "var(--onyx-radius-sm)",
+                    display: "grid",
+                    gap: "0.35rem",
+                  }}
+                >
+                  <p style={{ margin: 0, fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>
+                    Structured email signals
+                  </p>
+                  {drawerItem.emailAutomation.fields.clientName && (
+                    <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                      <strong>Client:</strong> {drawerItem.emailAutomation.fields.clientName.value}{" "}
+                      <span style={{ color: "var(--onyx-text-muted)" }}>
+                        ({Math.round(drawerItem.emailAutomation.fields.clientName.confidence * 100)}%)
+                      </span>
+                    </p>
+                  )}
+                  {drawerItem.emailAutomation.fields.dateOfLoss && (
+                    <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                      <strong>DOL:</strong> {drawerItem.emailAutomation.fields.dateOfLoss.value}{" "}
+                      <span style={{ color: "var(--onyx-text-muted)" }}>
+                        ({Math.round(drawerItem.emailAutomation.fields.dateOfLoss.confidence * 100)}%)
+                      </span>
+                    </p>
+                  )}
+                  {drawerItem.emailAutomation.fields.claimNumber && (
+                    <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                      <strong>Claim #:</strong> {drawerItem.emailAutomation.fields.claimNumber.value}{" "}
+                      <span style={{ color: "var(--onyx-text-muted)" }}>
+                        ({Math.round(drawerItem.emailAutomation.fields.claimNumber.confidence * 100)}%)
+                      </span>
+                    </p>
+                  )}
+                  {drawerItem.emailAutomation.fields.policyNumber && (
+                    <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                      <strong>Policy #:</strong> {drawerItem.emailAutomation.fields.policyNumber.value}{" "}
+                      <span style={{ color: "var(--onyx-text-muted)" }}>
+                        ({Math.round(drawerItem.emailAutomation.fields.policyNumber.confidence * 100)}%)
+                      </span>
+                    </p>
+                  )}
+                  {drawerItem.emailAutomation.fields.insuranceCarrier && (
+                    <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                      <strong>Carrier:</strong> {drawerItem.emailAutomation.fields.insuranceCarrier.value}{" "}
+                      <span style={{ color: "var(--onyx-text-muted)" }}>
+                        ({Math.round(drawerItem.emailAutomation.fields.insuranceCarrier.confidence * 100)}%)
+                      </span>
+                    </p>
+                  )}
+                  {getSignalList(drawerItem.emailAutomation.matchSignals?.supportingSignals).length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", marginTop: "0.15rem" }}>
+                      {getSignalList(drawerItem.emailAutomation.matchSignals?.supportingSignals).map((signal) => (
+                        <span key={signal} className="onyx-badge onyx-badge-neutral" style={{ fontSize: "0.7rem" }}>
+                          {signal}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {(drawerItem.matchReasoning || drawerItem.matchReason || drawerItem.unmatchedReason || drawerItem.classificationReason) && (
+                <div
+                  style={{
+                    marginBottom: "0.75rem",
+                    padding: "0.75rem",
+                    background: "var(--onyx-surface-subtle)",
+                    borderRadius: "var(--onyx-radius-sm)",
+                    display: "grid",
+                    gap: "0.35rem",
+                  }}
+                >
+                  <p style={{ margin: 0, fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>
+                    Match reasoning
+                  </p>
+                  <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                    <strong>Match:</strong> {formatReviewValue(drawerItem.matchReasoning?.matchReason ?? drawerItem.matchReason)}
+                  </p>
+                  <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                    <strong>Fallback:</strong> {formatReviewValue(drawerItem.matchReasoning?.unmatchedReason ?? drawerItem.unmatchedReason)}
+                  </p>
+                  <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                    <strong>Classification:</strong> {formatReviewValue(drawerItem.matchReasoning?.classificationReason ?? drawerItem.classificationReason)}
+                  </p>
+                  {drawerItem.matchReasoning?.matterRoutingReason && (
+                    <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                      <strong>Matter routing:</strong> {drawerItem.matchReasoning.matterRoutingReason}
+                    </p>
+                  )}
+                  {getSignalList(drawerItem.matchReasoning?.supportingSignals ?? drawerItem.classificationSignals).length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", marginTop: "0.15rem" }}>
+                      {getSignalList(drawerItem.matchReasoning?.supportingSignals ?? drawerItem.classificationSignals).map((signal) => (
+                        <span key={signal} className="onyx-badge onyx-badge-neutral" style={{ fontSize: "0.7rem" }}>
+                          {signal}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {(drawerItem.clioWriteBack || drawerItem.migrationBatchId) && (
+                <div
+                  style={{
+                    marginBottom: "0.75rem",
+                    padding: "0.75rem",
+                    background: "var(--onyx-surface-subtle)",
+                    borderRadius: "var(--onyx-radius-sm)",
+                    display: "grid",
+                    gap: "0.35rem",
+                  }}
+                >
+                  <p style={{ margin: 0, fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>
+                    Clio write-back
+                  </p>
+                  {drawerItem.clioWriteBack ? (
+                    <>
+                      <span className={`onyx-badge ${clioWriteBackBadgeClass(drawerItem.clioWriteBack.outcomeType)}`} style={{ width: "fit-content", fontSize: "0.7rem" }}>
+                        {clioWriteBackLabel(drawerItem.clioWriteBack.outcomeType)}
+                      </span>
+                      <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                        <strong>Logged:</strong> {formatReviewDateTime(drawerItem.clioWriteBack.createdAt)}
+                      </p>
+                      <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                        <strong>Reason:</strong> {formatReviewValue(drawerItem.clioWriteBack.reason)}
+                      </p>
+                      <p style={{ margin: 0, fontSize: "0.8125rem" }}>
+                        <strong>Idempotency key:</strong> {drawerItem.clioWriteBack.hasIdempotencyKey ? "Present" : "Absent"}
+                      </p>
+                    </>
+                  ) : (
+                    <p style={{ margin: 0, fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+                      No Clio write-back result is recorded for this batch yet.
+                    </p>
+                  )}
+                </div>
               )}
               <div style={{ marginBottom: "0.75rem" }}>
                 <label style={{ display: "block", fontSize: "0.75rem", color: "var(--onyx-text-muted)", marginBottom: "0.25rem" }}>Doc type</label>

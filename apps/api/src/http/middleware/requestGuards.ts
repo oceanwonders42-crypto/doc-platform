@@ -6,9 +6,8 @@
  */
 import type { Request, Response, NextFunction } from "express";
 import { sendSafeError } from "../../lib/errors";
-import { MAX_UPLOAD_BYTES } from "../../services/fileSecurity";
 
-const MAX_CONTENT_LENGTH = MAX_UPLOAD_BYTES;
+const MAX_CONTENT_LENGTH = 25 * 1024 * 1024; // 25MB, should match express.json limit
 
 /** Reject request if Content-Length exceeds limit. */
 export function maxBodySize(maxBytes: number = MAX_CONTENT_LENGTH) {

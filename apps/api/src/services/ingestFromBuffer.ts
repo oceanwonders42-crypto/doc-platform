@@ -13,6 +13,7 @@ import { logIntakeFailure } from "./intakeLogger";
 import { hasFeature } from "./featureFlags";
 import { buildOriginalMetadata, normalizeFilename } from "./ingestHelpers";
 import { canIngestDocument } from "./billingPlans";
+import { buildDocumentStorageKey } from "./documentStorageKeys";
 
 export type IngestFromBufferInput = {
   firmId: string;
@@ -218,47 +219,6 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
   const fileSha256 = crypto.createHash("sha256").update(buffer).digest("hex");
   const fileSizeBytes = buffer.length;
 
-  if (externalId) {
-    const existingByExternalId = await prisma.document.findFirst({
-      where: {
-        firmId,
-        external_id: externalId,
-      },
-      orderBy: { ingestedAt: "desc" },
-      select: {
-        id: true,
-        spacesKey: true,
-        metaJson: true,
-      },
-    });
-    if (existingByExternalId) {
-      if (metaJsonPatch && Object.keys(metaJsonPatch).length > 0) {
-        const existingMeta =
-          existingByExternalId.metaJson != null
-            && typeof existingByExternalId.metaJson === "object"
-            && !Array.isArray(existingByExternalId.metaJson)
-            ? (existingByExternalId.metaJson as Record<string, unknown>)
-            : {};
-        await prisma.document.update({
-          where: { id: existingByExternalId.id },
-          data: {
-            metaJson: {
-              ...existingMeta,
-              ...metaJsonPatch,
-            } as Prisma.InputJsonValue,
-          },
-        });
-      }
-      return {
-        ok: true,
-        documentId: existingByExternalId.id,
-        spacesKey: existingByExternalId.spacesKey,
-        duplicate: true,
-        existingId: existingByExternalId.id,
-      };
-    }
-  }
-
   const duplicatesEnabled = await hasFeature(firmId, "duplicates_detection");
   if (duplicatesEnabled) {
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -304,7 +264,7 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
         update: { duplicateDetected: { increment: 1 } },
       });
       await prisma.document.update({
-        where: { id: existing.id },
+        where: { id: existing.id, firmId },
         data: { duplicateMatchCount: { increment: 1 } },
       });
       const meta = {
@@ -330,8 +290,13 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
     }
   }
 
-  const ext = (originalName.split(".").pop() || "bin").toLowerCase();
-  const key = `${firmId}/${Date.now()}_${crypto.randomBytes(6).toString("hex")}.${ext}`;
+  const documentId = crypto.randomUUID();
+  const key = buildDocumentStorageKey({
+    firmId,
+    caseId: null,
+    documentId,
+    originalName,
+  });
 
   await putObject(key, buffer, mimeType);
 
@@ -346,6 +311,7 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
 
   const doc = await prisma.document.create({
     data: {
+      id: documentId,
       firmId,
       source,
       spacesKey: key,
@@ -375,7 +341,7 @@ export async function ingestDocumentFromBuffer(input: IngestFromBufferInput): Pr
       documentId: doc.id,
     });
     await prisma.document.update({
-      where: { id: doc.id },
+      where: { id: doc.id, firmId },
       data: {
         status: "FAILED",
         failureStage: "ingest",

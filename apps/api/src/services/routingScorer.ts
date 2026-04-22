@@ -125,7 +125,7 @@ export async function scoreDocumentRouting(
   extracted: ExtractedForRouting,
   ocrText: string | null
 ): Promise<RoutingScoreResult> {
-  const { id: documentId, firmId, originalName, source, routedCaseId } = document;
+  const { id: documentId, firmId, originalName, source, routedCaseId, status } = document;
   const signals: RoutingScoreResult["signals"] = {
     caseNumber: extracted.caseNumber ?? null,
     clientName: extracted.clientName ?? null,
@@ -383,7 +383,7 @@ export async function getExtractedForRouting(documentId: string): Promise<Extrac
     ),
     docType: firstNonEmpty(r.doc_type, readString(extractedFields?.docType)),
     providerName: firstNonEmpty(
-      r.provider_name ?? null,
+      (r as { provider_name?: string | null }).provider_name ?? null,
       readString(extractedFields?.providerName),
       readString(extractedFields?.provider),
       readString(extractedFields?.facility),

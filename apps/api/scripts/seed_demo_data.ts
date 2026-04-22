@@ -7,6 +7,7 @@ import "dotenv/config";
 import { prisma } from "../src/db/prisma";
 import { pgPool } from "../src/db/pg";
 import { ensureDemoSeedObjects } from "../src/dev/demoSeedObjects";
+import { createFirmWithDefaults } from "../src/services/firmOnboarding";
 
 const DEMO_FIRM_NAME = "Demo Firm";
 const DEMO_USERS: { email: string; role: "PLATFORM_ADMIN" | "FIRM_ADMIN" | "PARALEGAL" | "STAFF" }[] = [
@@ -53,7 +54,11 @@ async function main() {
 
   let firm = await prisma.firm.findFirst({ where: { name: DEMO_FIRM_NAME } });
   if (!firm) {
-    firm = await prisma.firm.create({ data: { name: DEMO_FIRM_NAME } });
+    const createdFirm = await createFirmWithDefaults({ name: DEMO_FIRM_NAME });
+    firm = await prisma.firm.findUnique({ where: { id: createdFirm.id } });
+    if (!firm) {
+      throw new Error("Failed to load newly created demo firm");
+    }
     console.log("Created firm:", firm.id);
   } else {
     console.log("Using existing demo firm:", firm.id);

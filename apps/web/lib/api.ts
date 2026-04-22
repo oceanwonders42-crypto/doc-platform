@@ -120,8 +120,5 @@ export function formatApiClientError(
   if (message.includes("Invalid JSON from server")) {
     return "The API returned invalid JSON. Check the active API build and server logs.";
   }
-  if (message.includes("Failed to fetch")) {
-    return "We couldn't reach the API. Check the active API host, network path, and whether the latest deploy is live.";
-  }
   return message || fallback;
 }

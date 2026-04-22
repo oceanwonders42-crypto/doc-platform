@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getApiBase, getAuthHeader, parseJsonResponse } from "@/lib/api";
+import { useRouter, useSearchParams } from "next/navigation";
+import { formatApiClientError, getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DashboardCard } from "@/components/dashboard/DashboardCard";
 import { useDashboardAuth, canAccessIntegrations } from "@/contexts/DashboardAuthContext";
@@ -10,12 +11,30 @@ import { useDashboardAuth, canAccessIntegrations } from "@/contexts/DashboardAut
 type Step = 1 | 2 | 3 | 4;
 type IntegrationChoice = "email" | "api" | "both" | null;
 type EmailProvider = "GMAIL" | "OUTLOOK" | "IMAP" | null;
+type MailboxCreateResponse = {
+  ok?: boolean;
+  error?: string;
+  mailbox?: {
+    id: string;
+    status: string;
+  };
+};
 
-const labelStyle = { display: "block", marginBottom: "0.35rem", fontSize: "0.8125rem", fontWeight: 500, color: "var(--onyx-text-muted)" } as const;
+const labelStyle = {
+  display: "block",
+  marginBottom: "0.35rem",
+  fontSize: "0.8125rem",
+  fontWeight: 500,
+  color: "var(--onyx-text-muted)",
+} as const;
 const fieldGap = { marginBottom: "1rem" } as const;
 
 export default function IntegrationsSetupPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { role, checked } = useDashboardAuth();
+  const emailFlowRequested = searchParams.get("flow") === "email";
+
   const [step, setStep] = useState<Step>(1);
   const [choice, setChoice] = useState<IntegrationChoice>(null);
   const [emailProvider, setEmailProvider] = useState<EmailProvider>(null);
@@ -24,7 +43,7 @@ export default function IntegrationsSetupPage() {
   const [imapPort, setImapPort] = useState("993");
   const [imapUsername, setImapUsername] = useState("");
   const [imapPassword, setImapPassword] = useState("");
-  const [apiProvider, setApiProvider] = useState<"CLIO" | "FILEVINE" | "GENERIC">("GENERIC");
+  const [apiProvider, setApiProvider] = useState<"CLIO" | "FILEVINE" | "GENERIC">("CLIO");
   const [apiKey, setApiKey] = useState("");
   const [defaultReviewQueue, setDefaultReviewQueue] = useState("default");
   const [autoSync, setAutoSync] = useState(true);
@@ -32,6 +51,13 @@ export default function IntegrationsSetupPage() {
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [connectedMailboxId, setConnectedMailboxId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!emailFlowRequested) return;
+    setChoice("email");
+    setStep(2);
+  }, [emailFlowRequested]);
 
   if (checked && !canAccessIntegrations(role)) {
     return (
@@ -39,7 +65,7 @@ export default function IntegrationsSetupPage() {
         <div className="onyx-card" style={{ padding: "2rem", maxWidth: 480, margin: "0 auto" }}>
           <h2 style={{ margin: "0 0 0.5rem", fontSize: "1.25rem" }}>Access restricted</h2>
           <p style={{ margin: "0 0 1rem", color: "var(--onyx-text-muted)" }}>
-            Only owners and admins can manage integrations.
+            Only owners and admins can manage Clio and email connections.
           </p>
           <Link href="/dashboard" className="onyx-link" style={{ fontSize: "var(--onyx-dash-font-sm)" }}>
             Back to dashboard
@@ -50,30 +76,68 @@ export default function IntegrationsSetupPage() {
   }
 
   async function connectEmail() {
-    if (!emailAddress || !emailProvider) return;
+    if (!emailAddress || !emailProvider || !imapPassword) return;
     setLoading(true);
     setError(null);
+    setTestResult(null);
+
     try {
-      const body: Record<string, unknown> = { emailAddress, provider: emailProvider };
-      if (emailProvider === "IMAP") {
-        body.imapHost = imapHost || "imap.example.com";
-        body.imapPort = parseInt(imapPort, 10) || 993;
-        body.imapSecure = true;
-        body.imapUsername = imapUsername || emailAddress;
-        body.imapPassword = imapPassword;
-      } else {
-        body.imapPassword = imapPassword;
-      }
-      const res = await fetch(`${getApiBase()}/integrations/connect-email`, {
+      const mailboxPayload =
+        emailProvider === "IMAP"
+          ? {
+              imapHost: imapHost || "imap.example.com",
+              imapPort: parseInt(imapPort, 10) || 993,
+              imapSecure: true,
+              imapUsername: imapUsername || emailAddress,
+              imapPassword,
+              folder: "INBOX",
+            }
+          : {
+              imapHost: emailProvider === "GMAIL" ? "imap.gmail.com" : "outlook.office365.com",
+              imapPort: 993,
+              imapSecure: true,
+              imapUsername: emailAddress,
+              imapPassword,
+              folder: "INBOX",
+            };
+
+      const res = await fetch("/api/mailboxes", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeader() } as HeadersInit,
-        body: JSON.stringify(body),
+        body: JSON.stringify(mailboxPayload),
+        ...getFetchOptions(),
       });
-      const data = (await parseJsonResponse(res)) as { ok?: boolean; error?: string };
-      if (!data.ok) throw new Error(data.error || "Connect failed");
+      const data = (await parseJsonResponse(res)) as MailboxCreateResponse;
+      if (!data.ok || !data.mailbox?.id) {
+        throw new Error(data.error || "Email connection could not be created.");
+      }
+
+      const mailboxId = data.mailbox.id;
+      setConnectedMailboxId(mailboxId);
+
+      const testRes = await fetch(`/api/mailboxes/${mailboxId}/test`, {
+        method: "POST",
+        headers: getAuthHeader(),
+        ...getFetchOptions(),
+      });
+      const testData = (await parseJsonResponse(testRes)) as { ok?: boolean; error?: string };
+      if (!testData.ok) {
+        throw new Error(testData.error || "Mailbox connection test failed.");
+      }
+
+      setTestResult({ ok: true });
+      if (emailFlowRequested) {
+        router.push("/dashboard/integrations?focus=email");
+        return;
+      }
       setStep(3);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(
+        formatApiClientError(e, "Connect Email failed.", {
+          deploymentMessage:
+            "The email connection proxy reached the wrong server target. Check the mounted /mailboxes API route and the active web build.",
+        })
+      );
     } finally {
       setLoading(false);
     }
@@ -93,7 +157,12 @@ export default function IntegrationsSetupPage() {
       if (!data.ok) throw new Error(data.error || "Connect failed");
       setStep(3);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(
+        formatApiClientError(e, "Connect to Clio failed.", {
+          deploymentMessage:
+            "The Clio connection flow reached the wrong server target. Check NEXT_PUBLIC_API_URL and whether the latest API build is deployed.",
+        })
+      );
     } finally {
       setLoading(false);
     }
@@ -103,10 +172,34 @@ export default function IntegrationsSetupPage() {
     setLoading(true);
     setTestResult(null);
     setError(null);
+
     try {
+      if (choice === "email" || choice === "both" || emailFlowRequested) {
+        if (!connectedMailboxId) {
+          throw new Error("Connect an email mailbox before running the connection test.");
+        }
+
+        const mailboxTestRes = await fetch(`/api/mailboxes/${connectedMailboxId}/test`, {
+          method: "POST",
+          headers: getAuthHeader(),
+          ...getFetchOptions(),
+        });
+        const mailboxTestData = (await parseJsonResponse(mailboxTestRes)) as {
+          ok?: boolean;
+          error?: string;
+        };
+        setTestResult({ ok: !!mailboxTestData.ok, error: mailboxTestData.error });
+        return;
+      }
+
       const res = await fetch(`${getApiBase()}/integrations/health`, { headers: getAuthHeader() });
-      const data = (await parseJsonResponse(res)) as { ok?: boolean; error?: string; connections?: { id: string }[] };
+      const data = (await parseJsonResponse(res)) as {
+        ok?: boolean;
+        error?: string;
+        connections?: { id: string }[];
+      };
       if (!data.ok) throw new Error(data.error || "Health check failed");
+
       const testRes = await fetch(`${getApiBase()}/integrations/test`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeader() } as HeadersInit,
@@ -115,7 +208,13 @@ export default function IntegrationsSetupPage() {
       const testData = (await parseJsonResponse(testRes)) as { ok?: boolean; error?: string };
       setTestResult({ ok: !!testData.ok, error: testData.error });
     } catch (e) {
-      setTestResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      setTestResult({
+        ok: false,
+        error: formatApiClientError(e, "Connection test failed.", {
+          deploymentMessage:
+            "The integration test flow reached the wrong server target. Check NEXT_PUBLIC_API_URL and whether the latest API build is deployed.",
+        }),
+      });
     } finally {
       setLoading(false);
     }
@@ -127,47 +226,62 @@ export default function IntegrationsSetupPage() {
     <div style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
       <PageHeader
         breadcrumbs={[{ label: "Integrations", href: "/dashboard/integrations" }, { label: "Setup" }]}
-        title="Integration setup"
-        description="Connect email or case management API"
+        title={emailFlowRequested ? "Connect Email" : "Connect to Clio"}
+        description={
+          emailFlowRequested
+            ? "Connect a mailbox for email intake. After a successful connection you will return to Integrations."
+            : "Connect Clio first, then configure intake email and review defaults."
+        }
       />
 
       {error && (
-        <div className="onyx-card" style={{ padding: "1rem", marginBottom: "1rem", borderColor: "var(--onyx-error)" }}>
+        <div
+          className="onyx-card"
+          style={{ padding: "1rem", marginBottom: "1rem", borderColor: "var(--onyx-error)" }}
+        >
           <p style={{ margin: 0, color: "var(--onyx-error)", fontSize: "0.875rem" }}>{error}</p>
         </div>
       )}
 
       <div style={{ maxWidth: "32rem" }}>
         <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1.5rem" }}>
-          {([1, 2, 3, 4] as Step[]).map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => setStep(s)}
-              style={{
-                padding: "0.35rem 0.75rem",
-                borderRadius: "var(--onyx-radius-md)",
-                fontSize: "0.8125rem",
-                fontWeight: 500,
-                border: "none",
-                cursor: "pointer",
-                ...(step === s
-                  ? { background: "var(--onyx-accent)", color: "white" }
-                  : { background: "var(--onyx-surface-elevated)", color: "var(--onyx-text-muted)" }),
-              }}
-            >
-              {s}. {stepLabels[s - 1]}
-            </button>
-          ))}
+          {([1, 2, 3, 4] as Step[]).map((currentStep) => {
+            const disabled = emailFlowRequested && currentStep === 1;
+            return (
+              <button
+                key={currentStep}
+                type="button"
+                onClick={() => {
+                  if (disabled) return;
+                  setStep(currentStep);
+                }}
+                disabled={disabled}
+                style={{
+                  padding: "0.35rem 0.75rem",
+                  borderRadius: "var(--onyx-radius-md)",
+                  fontSize: "0.8125rem",
+                  fontWeight: 500,
+                  border: "none",
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.55 : 1,
+                  ...(step === currentStep
+                    ? { background: "var(--onyx-accent)", color: "white" }
+                    : { background: "var(--onyx-surface-elevated)", color: "var(--onyx-text-muted)" }),
+                }}
+              >
+                {currentStep}. {stepLabels[currentStep - 1]}
+              </button>
+            );
+          })}
         </div>
 
-        {step === 1 && (
-          <DashboardCard title="Choose integration type">
+        {step === 1 && !emailFlowRequested && (
+          <DashboardCard title="Choose connection type">
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
               {[
-                { value: "email" as const, label: "Email — Ingest documents from connected mailbox" },
-                { value: "api" as const, label: "Case management API — Clio, Filevine, or generic" },
-                { value: "both" as const, label: "Both — Email and API" },
+                { value: "email" as const, label: "Email only - Ingest documents from a connected mailbox" },
+                { value: "api" as const, label: "Clio only - Connect the case management API" },
+                { value: "both" as const, label: "Clio + email - Connect both intake paths" },
               ].map(({ value, label }) => (
                 <label
                   key={value}
@@ -209,6 +323,11 @@ export default function IntegrationsSetupPage() {
           <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
             {(choice === "email" || choice === "both") && (
               <DashboardCard title="Email">
+                {emailFlowRequested && (
+                  <p style={{ margin: "0 0 1rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+                    This is the live mailbox connection flow used by the Integrations page.
+                  </p>
+                )}
                 <div style={fieldGap}>
                   <label style={labelStyle}>Provider</label>
                   <select
@@ -238,15 +357,34 @@ export default function IntegrationsSetupPage() {
                   <>
                     <div style={fieldGap}>
                       <label style={labelStyle}>IMAP host</label>
-                      <input type="text" value={imapHost} onChange={(e) => setImapHost(e.target.value)} className="onyx-input" style={{ width: "100%" }} placeholder="imap.example.com" />
+                      <input
+                        type="text"
+                        value={imapHost}
+                        onChange={(e) => setImapHost(e.target.value)}
+                        className="onyx-input"
+                        style={{ width: "100%" }}
+                        placeholder="imap.example.com"
+                      />
                     </div>
                     <div style={fieldGap}>
                       <label style={labelStyle}>IMAP port</label>
-                      <input type="text" value={imapPort} onChange={(e) => setImapPort(e.target.value)} className="onyx-input" style={{ width: "100%" }} />
+                      <input
+                        type="text"
+                        value={imapPort}
+                        onChange={(e) => setImapPort(e.target.value)}
+                        className="onyx-input"
+                        style={{ width: "100%" }}
+                      />
                     </div>
                     <div style={fieldGap}>
                       <label style={labelStyle}>IMAP username</label>
-                      <input type="text" value={imapUsername} onChange={(e) => setImapUsername(e.target.value)} className="onyx-input" style={{ width: "100%" }} />
+                      <input
+                        type="text"
+                        value={imapUsername}
+                        onChange={(e) => setImapUsername(e.target.value)}
+                        className="onyx-input"
+                        style={{ width: "100%" }}
+                      />
                     </div>
                   </>
                 )}
@@ -267,13 +405,13 @@ export default function IntegrationsSetupPage() {
                   disabled={loading || !emailAddress || !emailProvider || !imapPassword}
                   className="onyx-btn-primary"
                 >
-                  {loading ? "Connecting…" : "Connect email"}
+                  {loading ? "Connecting..." : "Connect Email"}
                 </button>
               </DashboardCard>
             )}
 
             {(choice === "api" || choice === "both") && (
-              <DashboardCard title="Case management API">
+              <DashboardCard title="Clio connection">
                 <div style={fieldGap}>
                   <label style={labelStyle}>Provider</label>
                   <select
@@ -298,13 +436,24 @@ export default function IntegrationsSetupPage() {
                     placeholder="Stored encrypted"
                   />
                 </div>
-                <button type="button" onClick={connectApi} disabled={loading || !apiKey} className="onyx-btn-primary">
-                  {loading ? "Connecting…" : "Connect API"}
+                <button
+                  type="button"
+                  onClick={connectApi}
+                  disabled={loading || !apiKey}
+                  className="onyx-btn-primary"
+                >
+                  {loading ? "Connecting..." : "Connect to Clio"}
                 </button>
               </DashboardCard>
             )}
 
-            <button type="button" onClick={() => setStep(1)} className="onyx-btn-secondary">
+            <button
+              type="button"
+              onClick={() => setStep(1)}
+              className="onyx-btn-secondary"
+              disabled={emailFlowRequested}
+              style={emailFlowRequested ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
+            >
               Back
             </button>
           </div>
@@ -323,19 +472,38 @@ export default function IntegrationsSetupPage() {
                 placeholder="default"
               />
             </div>
-            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem", cursor: "pointer", fontSize: "0.875rem" }}>
-              <input type="checkbox" checked={autoSync} onChange={(e) => setAutoSync(e.target.checked)} style={{ accentColor: "var(--onyx-accent)" }} />
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.5rem",
+                marginBottom: "1rem",
+                cursor: "pointer",
+                fontSize: "0.875rem",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={autoSync}
+                onChange={(e) => setAutoSync(e.target.checked)}
+                style={{ accentColor: "var(--onyx-accent)" }}
+              />
               <span>Auto-sync documents</span>
             </label>
             <div style={fieldGap}>
               <label style={labelStyle}>Unmatched document handling</label>
-              <select value={unmatchedHandling} onChange={(e) => setUnmatchedHandling(e.target.value)} className="onyx-input" style={{ width: "100%" }}>
+              <select
+                value={unmatchedHandling}
+                onChange={(e) => setUnmatchedHandling(e.target.value)}
+                className="onyx-input"
+                style={{ width: "100%" }}
+              >
                 <option value="review_queue">Send to review queue</option>
                 <option value="hold">Hold for review</option>
               </select>
             </div>
             <button type="button" onClick={() => setStep(4)} className="onyx-btn-primary">
-              Next — Test integration
+              Next - Test integration
             </button>
           </DashboardCard>
         )}
@@ -345,8 +513,14 @@ export default function IntegrationsSetupPage() {
             <p style={{ margin: "0 0 1rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
               Run a connection test and confirm success.
             </p>
-            <button type="button" onClick={runTest} disabled={loading} className="onyx-btn-primary" style={{ marginBottom: "1rem" }}>
-              {loading ? "Running test…" : "Run connection test"}
+            <button
+              type="button"
+              onClick={runTest}
+              disabled={loading}
+              className="onyx-btn-primary"
+              style={{ marginBottom: "1rem" }}
+            >
+              {loading ? "Running test..." : "Run connection test"}
             </button>
             {testResult !== null && (
               <div
@@ -358,17 +532,22 @@ export default function IntegrationsSetupPage() {
                 }}
               >
                 {testResult.ok ? (
-                  <p style={{ margin: 0, fontWeight: 500, color: "var(--onyx-success)" }}>Connection test passed.</p>
+                  <p style={{ margin: 0, fontWeight: 500, color: "var(--onyx-success)" }}>
+                    Connection test passed.
+                  </p>
                 ) : (
-                  <p style={{ margin: 0, color: "var(--onyx-error)" }}>Test failed: {testResult.error}</p>
+                  <p style={{ margin: 0, color: "var(--onyx-error)" }}>
+                    Test failed: {testResult.error}
+                  </p>
                 )}
               </div>
             )}
             <p style={{ margin: "0 0 1rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-              To verify email ingestion: send a test email with a PDF attachment to the connected mailbox; documents will appear in the review queue after the next sync.
+              To verify email ingestion: send a test email with a PDF attachment to the connected mailbox; documents
+              will appear in the review queue after the next sync.
             </p>
             <Link href="/dashboard/integrations" className="onyx-link" style={{ fontSize: "0.875rem" }}>
-              Back to Integrations →
+              Back to Integrations -&gt;
             </Link>
           </DashboardCard>
         )}

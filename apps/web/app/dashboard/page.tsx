@@ -178,11 +178,46 @@ export default function DashboardHomePage() {
         description={t("dashboard.description")}
       />
 
+      <DashboardCard style={{ marginBottom: "1.25rem", padding: "1.1rem 1.25rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "1rem" }}>
+          <div>
+            <p style={{ margin: "0 0 0.35rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
+              Operational snapshot
+            </p>
+            <p style={{ margin: 0, fontSize: "1.05rem", fontWeight: 600 }}>
+              {caseCount} active case{caseCount === 1 ? "" : "s"} with {summary?.needsReviewDocs ?? 0} document{(summary?.needsReviewDocs ?? 0) === 1 ? "" : "s"} waiting for review.
+            </p>
+          </div>
+          <div>
+            <p style={{ margin: "0 0 0.35rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
+              Intake and routing
+            </p>
+            <p style={{ margin: 0, fontSize: "0.92rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
+              {docsToday} document{docsToday === 1 ? "" : "s"} processed in the active period, with {summary?.unmatchedDocs ?? 0} unmatched item{(summary?.unmatchedDocs ?? 0) === 1 ? "" : "s"} still needing staff attention.
+            </p>
+          </div>
+          <div>
+            <p style={{ margin: "0 0 0.35rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
+              Follow-up work
+            </p>
+            <p style={{ margin: 0, fontSize: "0.92rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
+              {overdueTotal === 0
+                ? "No overdue records requests or follow-up tasks are blocking the staff queue right now."
+                : `${overdueTotal} follow-up item${overdueTotal === 1 ? "" : "s"} need attention across records requests and case tasks.`}
+            </p>
+          </div>
+        </div>
+      </DashboardCard>
+
+      <p style={{ margin: "0 0 0.75rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
+        Operational overview
+      </p>
+
       {/* Top summary cards — case-centric */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
           gap: "1rem",
           marginBottom: "1.5rem",
         }}
@@ -237,7 +272,10 @@ export default function DashboardHomePage() {
         </Link>
       </div>
 
-      {/* Quick actions */}
+      <p style={{ margin: "0 0 0.75rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
+        Quick actions
+      </p>
+
       <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", marginBottom: "1.5rem" }}>
         <Link href="/dashboard/documents" style={{ textDecoration: "none" }}>
           <button type="button" className="onyx-btn-primary" style={{ padding: "0.5rem 1rem" }}>
@@ -261,7 +299,10 @@ export default function DashboardHomePage() {
         </Link>
       </div>
 
-      {/* Main panels: Review Queue, Recently Updated Cases, Missing Doc Alerts, AI Exceptions, Overdue, Team */}
+      <p style={{ margin: "0 0 0.75rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
+        Queues and follow-up
+      </p>
+
       <div
         style={{
           display: "grid",
@@ -369,7 +410,10 @@ export default function DashboardHomePage() {
         </DashboardCard>
       </div>
 
-      {/* Recent activity + Trends — keep below panels */}
+      <p style={{ margin: "1.5rem 0 0.75rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
+        Recent work
+      </p>
+
       <div
         style={{
           display: "grid",

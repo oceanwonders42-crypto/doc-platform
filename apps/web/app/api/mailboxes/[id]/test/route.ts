@@ -1,34 +1,16 @@
-import { NextResponse } from "next/server";
+import { proxyJsonUpstream } from "@/lib/upstreamJsonProxy";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(
-  _req: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const base = process.env.DOC_API_URL;
-  const key = process.env.DOC_API_KEY;
-  if (!base) {
-    return NextResponse.json({ ok: false, error: "DOC_API_URL is not set in apps/web/.env.local" }, { status: 500 });
-  }
-  if (!key) {
-    return NextResponse.json({ ok: false, error: "DOC_API_KEY is not set in apps/web/.env.local" }, { status: 500 });
-  }
-  const url = `${base}/mailboxes/${id}/test`;
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}` },
-      cache: "no-store",
-    });
-  } catch (err) {
-    return NextResponse.json(
-      { ok: false, error: `Backend fetch failed: ${String(err)} | url=${url}` },
-      { status: 502 }
-    );
-  }
-  const data = await res.json().catch(() => ({ ok: false }));
-  return NextResponse.json(data, { status: res.status });
+  return proxyJsonUpstream({
+    request,
+    path: `/mailboxes/${encodeURIComponent(id)}/test`,
+    method: "POST",
+    proxyName: "mailbox_test_proxy",
+  });
 }

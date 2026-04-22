@@ -7,6 +7,7 @@ import { prisma } from "../db/prisma";
 import { getObjectBuffer } from "./storage";
 import { putObject } from "./storage";
 import { buildRecordsRequestLetterPdf } from "./recordsLetterPdf";
+import { buildDocumentStorageKey } from "./documentStorageKeys";
 import { sendAdapter } from "../send/compositeAdapter";
 import { createNotification } from "./notifications";
 import {
@@ -49,8 +50,8 @@ export async function sendRecordsRequest(
   if (!currentReqRow.generatedDocumentId) {
     const [firm, caseRow, provider] = await Promise.all([
       prisma.firm.findUnique({ where: { id: firmId }, select: { name: true } }),
-      prisma.legalCase.findUnique({
-        where: { id: currentReqRow.caseId },
+      prisma.legalCase.findFirst({
+        where: { id: currentReqRow.caseId, firmId },
         select: { title: true, caseNumber: true, clientName: true },
       }),
       currentReqRow.providerId
@@ -80,10 +81,17 @@ export async function sendRecordsRequest(
     const safeName = currentReqRow.providerName.replace(/[^a-zA-Z0-9\-_\s]/g, "").replace(/\s+/g, " ").trim().slice(0, 60) || "Records Request";
     const originalName = `Records Request - ${safeName}.pdf`;
     const fileSha256 = crypto.createHash("sha256").update(pdfBufferNew).digest("hex");
-    const key = `${firmId}/records_request/${Date.now()}_${crypto.randomBytes(6).toString("hex")}.pdf`;
+    const documentId = crypto.randomUUID();
+    const key = buildDocumentStorageKey({
+      firmId,
+      caseId: currentReqRow.caseId,
+      documentId,
+      originalName,
+    });
     await putObject(key, pdfBufferNew, "application/pdf");
     const docNew = await prisma.document.create({
       data: {
+        id: documentId,
         firmId,
         source: "records_request",
         spacesKey: key,

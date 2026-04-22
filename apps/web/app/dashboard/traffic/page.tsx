@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useI18n } from "@/contexts/I18nContext";
 import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
+import { isTrafficFeatureEnabled } from "@/lib/devFeatures";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DataTable, Column } from "@/components/dashboard/DataTable";
 
@@ -26,7 +28,9 @@ function isTrafficListResponse(res: unknown): res is TrafficListResponse {
 }
 
 export default function TrafficListPage() {
+  const router = useRouter();
   const { t } = useI18n();
+  const trafficEnabled = isTrafficFeatureEnabled();
   const [items, setItems] = useState<TrafficItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -47,8 +51,14 @@ export default function TrafficListPage() {
   }, []);
 
   useEffect(() => {
+    if (!trafficEnabled) {
+      router.replace("/dashboard");
+      return;
+    }
     load();
-  }, [load]);
+  }, [load, router, trafficEnabled]);
+
+  if (!trafficEnabled) return null;
 
   const filtered = search.trim()
     ? items.filter(

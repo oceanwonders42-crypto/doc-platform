@@ -12,6 +12,7 @@ import { buildExportBundle } from "./export/contract";
 type BatchClioHandoffExportInput = {
   firmId: string;
   caseIds: string[];
+  accessibleCaseIds?: string[];
   allowReexport?: boolean;
   exportedAt?: Date;
 };
@@ -142,6 +143,10 @@ export async function buildBatchClioHandoffExport(
   if (requestedCaseIds.length === 0) {
     throw new Error("caseIds must contain at least one case id.");
   }
+  const accessibleCaseIdSet =
+    Array.isArray(input.accessibleCaseIds) && input.accessibleCaseIds.length > 0
+      ? new Set(normalizeCaseIds(input.accessibleCaseIds))
+      : null;
 
   const exportedAt = input.exportedAt ?? new Date();
   const datePart = formatDatePart(exportedAt);
@@ -149,7 +154,11 @@ export async function buildBatchClioHandoffExport(
   const cases = await prisma.legalCase.findMany({
     where: {
       firmId: input.firmId,
-      id: { in: requestedCaseIds },
+      id: {
+        in: accessibleCaseIdSet
+          ? requestedCaseIds.filter((caseId) => accessibleCaseIdSet.has(caseId))
+          : requestedCaseIds,
+      },
     },
     select: {
       id: true,

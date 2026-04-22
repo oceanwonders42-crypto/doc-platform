@@ -19,6 +19,7 @@ export type EmailAttachment = {
 export type EmailMessage = {
   providerMessageId: string; // Message-ID header if available, else fallback uid
   fromEmail?: string;
+  fromName?: string;
   subject?: string;
   bodyText?: string;
   sentAt?: Date;
@@ -37,6 +38,12 @@ function bufFromSource(src: any): Promise<Buffer> {
     for await (const ch of src) chunks.push(Buffer.isBuffer(ch) ? ch : Buffer.from(ch));
     return Buffer.concat(chunks);
   })();
+}
+
+function normalizeBodyText(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const normalized = text.replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  return normalized ? normalized.slice(0, 20_000) : undefined;
 }
 
 export async function pollImapSinceUid(
@@ -95,8 +102,10 @@ export async function pollImapSinceUid(
         parsed.from?.value?.[0]?.address ||
         (msg as any).envelope?.from?.[0]?.address ||
         undefined;
+      const fromName = parsed.from?.value?.[0]?.name || undefined;
 
       const subject = parsed.subject || (msg as any).envelope?.subject || undefined;
+      const bodyText = normalizeBodyText(parsed.text || undefined);
 
       const providerMessageId =
         (parsed.messageId?.trim() ||
@@ -122,8 +131,9 @@ export async function pollImapSinceUid(
         uid,
         providerMessageId,
         fromEmail,
+        fromName,
         subject,
-        bodyText: parsed.text || undefined,
+        bodyText,
         sentAt: parsed.date || undefined,
         receivedAt: (msg as any).internalDate || undefined,
         attachments,

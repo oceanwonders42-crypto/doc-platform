@@ -5,10 +5,27 @@ import { OPENAI_TASK_TYPES, recordAiTaskDedupeAvoided } from "./aiTaskTelemetry"
 const url = process.env.REDIS_URL || "redis://localhost:6379";
 const QUEUE_KEY = "doc_jobs";
 const JOB_STATE_KEY_PREFIX = "doc_job_state:";
+const FIRM_CONCURRENCY_SLOT_KEY_PREFIX = "doc_job_firm_slot:";
 const REDIS_LOG_THROTTLE_MS = 60_000;
 const REDIS_RETRY_COOLDOWN_MS = 15_000;
 const REDIS_UNAVAILABLE_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT"]);
 const JOB_STATE_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_FIRM_CONCURRENCY_LEASE_TTL_MS = 2 * 60 * 1000;
+const MIN_FIRM_CONCURRENCY_LEASE_TTL_MS = 15_000;
+
+const RELEASE_FIRM_CONCURRENCY_LEASE_SCRIPT = `
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+end
+return 0
+`;
+
+const HEARTBEAT_FIRM_CONCURRENCY_LEASE_SCRIPT = `
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("pexpire", KEYS[1], ARGV[2])
+end
+return 0
+`;
 
 type RedisAvailability = "unknown" | "up" | "down";
 
@@ -243,11 +260,25 @@ export type QueueSnapshot = {
   byType: Record<JobPayload["type"], QueueTypeMetrics>;
   oldestJobAgeMs: number | null;
   retriedQueuedCount: number;
+  byFirm: Record<string, { queued: number; running: number }>;
   dedupeMarkers: Record<ManagedDedupeJobType, {
     queued: number;
     running: number;
     rerunRequested: number;
   }>;
+};
+
+export type FirmConcurrencyLease = {
+  firmId: string;
+  limit: number;
+  slotKey: string;
+  token: string;
+  ttlMs: number;
+};
+
+export type FirmConcurrencyAcquireResult = {
+  lease: FirmConcurrencyLease;
+  activeJobsForFirm: number;
 };
 
 type ManagedDedupeJobType = "timeline_rebuild" | "post_route_sync" | "case_match" | "extraction";
@@ -349,6 +380,7 @@ function createQueueSnapshotBase(available: boolean): QueueSnapshot {
   return {
     available,
     queueDepth: 0,
+    byFirm: {},
     byType: {
       ocr: createQueueTypeMetrics(),
       classification: createQueueTypeMetrics(),
@@ -366,6 +398,68 @@ function createQueueSnapshotBase(available: boolean): QueueSnapshot {
       extraction: { queued: 0, running: 0, rerunRequested: 0 },
     },
   };
+}
+
+function touchFirmMetrics(snapshot: QueueSnapshot, firmId: string | null | undefined) {
+  if (!firmId) {
+    return null;
+  }
+
+  if (!snapshot.byFirm[firmId]) {
+    snapshot.byFirm[firmId] = { queued: 0, running: 0 };
+  }
+
+  return snapshot.byFirm[firmId];
+}
+
+function getFirmIdFromJobStateKey(key: string): string | null {
+  if (!key.startsWith(JOB_STATE_KEY_PREFIX)) {
+    return null;
+  }
+
+  const raw = key.slice(JOB_STATE_KEY_PREFIX.length);
+  const [, firmId] = raw.split(":");
+  return firmId?.trim() ? firmId : null;
+}
+
+function normalizeFirmConcurrencyLimit(limit: number): number {
+  if (!Number.isFinite(limit)) {
+    return 1;
+  }
+
+  return Math.max(1, Math.trunc(limit));
+}
+
+function normalizeFirmConcurrencyLeaseTtl(ttlMs: number): number {
+  if (!Number.isFinite(ttlMs)) {
+    return DEFAULT_FIRM_CONCURRENCY_LEASE_TTL_MS;
+  }
+
+  return Math.max(MIN_FIRM_CONCURRENCY_LEASE_TTL_MS, Math.trunc(ttlMs));
+}
+
+function buildFirmConcurrencySlotKey(firmId: string, slotNumber: number): string {
+  return `${FIRM_CONCURRENCY_SLOT_KEY_PREFIX}${firmId}:${slotNumber}`;
+}
+
+function buildFirmConcurrencySlotKeys(firmId: string, limit: number): string[] {
+  const normalizedLimit = normalizeFirmConcurrencyLimit(limit);
+  return Array.from({ length: normalizedLimit }, (_unused, index) => buildFirmConcurrencySlotKey(firmId, index + 1));
+}
+
+function getFirmIdFromConcurrencySlotKey(key: string): string | null {
+  if (!key.startsWith(FIRM_CONCURRENCY_SLOT_KEY_PREFIX)) {
+    return null;
+  }
+
+  const raw = key.slice(FIRM_CONCURRENCY_SLOT_KEY_PREFIX.length);
+  const separatorIndex = raw.lastIndexOf(":");
+  if (separatorIndex <= 0) {
+    return null;
+  }
+
+  const firmId = raw.slice(0, separatorIndex);
+  return firmId.trim() ? firmId : null;
 }
 
 function normalizeJobAttempt(value: number | undefined): number {
@@ -452,6 +546,100 @@ async function queuePayload(payload: JobPayload, options?: { attempt?: number })
   const queuedPayload = decorateQueuedPayload(payload, options?.attempt);
   await runRedisCommand("enqueue", () => redis.lpush(QUEUE_KEY, JSON.stringify(queuedPayload)));
   return queuedPayload;
+}
+
+async function countFirmConcurrencySlots(firmId: string, limit: number): Promise<number> {
+  const slotKeys = buildFirmConcurrencySlotKeys(firmId, limit);
+  const values = await runRedisCommand(
+    "firm-concurrency-count",
+    () => redis.mget(...slotKeys),
+    {
+      fallbackOnUnavailable: true,
+      fallbackValue: Array.from({ length: slotKeys.length }, () => null) as Array<string | null>,
+    }
+  );
+  return values.reduce((count, value) => count + (value ? 1 : 0), 0);
+}
+
+export async function getFirmConcurrencyActiveCount(firmId: string, limit: number): Promise<number> {
+  return countFirmConcurrencySlots(firmId, limit);
+}
+
+export async function tryAcquireFirmConcurrencyLease(options: {
+  firmId: string;
+  limit: number;
+  token: string;
+  ttlMs?: number;
+}): Promise<FirmConcurrencyAcquireResult | null> {
+  const normalizedLimit = normalizeFirmConcurrencyLimit(options.limit);
+  const ttlMs = normalizeFirmConcurrencyLeaseTtl(options.ttlMs ?? DEFAULT_FIRM_CONCURRENCY_LEASE_TTL_MS);
+
+  for (let slotNumber = 1; slotNumber <= normalizedLimit; slotNumber += 1) {
+    const slotKey = buildFirmConcurrencySlotKey(options.firmId, slotNumber);
+    const acquired = await runRedisCommand(
+      "firm-concurrency-acquire",
+      () => redis.set(slotKey, options.token, "PX", ttlMs, "NX"),
+      {
+        fallbackOnUnavailable: true,
+        fallbackValue: null,
+      }
+    );
+
+    if (acquired !== "OK") {
+      continue;
+    }
+
+    return {
+      lease: {
+        firmId: options.firmId,
+        limit: normalizedLimit,
+        slotKey,
+        token: options.token,
+        ttlMs,
+      },
+      activeJobsForFirm: await countFirmConcurrencySlots(options.firmId, normalizedLimit),
+    };
+  }
+
+  return null;
+}
+
+export async function heartbeatFirmConcurrencyLease(lease: FirmConcurrencyLease): Promise<boolean> {
+  const refreshed = await runRedisCommand(
+    "firm-concurrency-heartbeat",
+    () => redis.eval(
+      HEARTBEAT_FIRM_CONCURRENCY_LEASE_SCRIPT,
+      1,
+      lease.slotKey,
+      lease.token,
+      String(lease.ttlMs)
+    ),
+    {
+      fallbackOnUnavailable: true,
+      fallbackValue: 0,
+    }
+  );
+
+  return Number(refreshed) === 1;
+}
+
+export async function releaseFirmConcurrencyLease(lease: FirmConcurrencyLease): Promise<{
+  released: boolean;
+  activeJobsForFirm: number;
+}> {
+  const released = await runRedisCommand(
+    "firm-concurrency-release",
+    () => redis.eval(RELEASE_FIRM_CONCURRENCY_LEASE_SCRIPT, 1, lease.slotKey, lease.token),
+    {
+      fallbackOnUnavailable: true,
+      fallbackValue: 0,
+    }
+  );
+
+  return {
+    released: Number(released) === 1,
+    activeJobsForFirm: await countFirmConcurrencySlots(lease.firmId, lease.limit),
+  };
 }
 
 async function pushManagedDedupedJob(payload: JobPayload) {
@@ -681,6 +869,10 @@ export async function getRedisQueueSnapshot(): Promise<QueueSnapshot> {
     snapshot.queueDepth += 1;
     const metrics = snapshot.byType[job.type];
     metrics.queued += 1;
+    const firmMetrics = touchFirmMetrics(snapshot, job.firmId);
+    if (firmMetrics) {
+      firmMetrics.queued += 1;
+    }
     const attempt = normalizeJobAttempt(job.attempt);
     metrics.maxAttempt = Math.max(metrics.maxAttempt, attempt);
     if (attempt > 1) {
@@ -696,6 +888,26 @@ export async function getRedisQueueSnapshot(): Promise<QueueSnapshot> {
   }
 
   let cursor = "0";
+  do {
+    const [nextCursor, keys] = await runRedisCommand(
+      "queue-snapshot-firm-slot-scan",
+      () => redis.scan(cursor, "MATCH", `${FIRM_CONCURRENCY_SLOT_KEY_PREFIX}*`, "COUNT", 100),
+      {
+        fallbackOnUnavailable: true,
+        fallbackValue: ["0", [] as string[]] as [string, string[]],
+      }
+    );
+
+    cursor = nextCursor;
+    for (const key of keys) {
+      const firmMetrics = touchFirmMetrics(snapshot, getFirmIdFromConcurrencySlotKey(key));
+      if (firmMetrics) {
+        firmMetrics.running += 1;
+      }
+    }
+  } while (cursor !== "0");
+
+  cursor = "0";
   do {
     const [nextCursor, keys] = await runRedisCommand(
       "queue-snapshot-scan",

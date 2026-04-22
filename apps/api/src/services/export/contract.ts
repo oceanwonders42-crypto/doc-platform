@@ -5,6 +5,7 @@
 
 import { prisma } from "../../db/prisma";
 import { pgPool } from "../../db/pg";
+import { isDemandPackageReleaseBlocked } from "../demandNarrativeReview";
 
 /** Doc types that belong in a "bills" packet (billing, EOB, ledger). */
 const BILL_DOC_TYPES = new Set([
@@ -92,20 +93,38 @@ export async function buildExportBundle(
   // New review-aware cases should only export documents that were explicitly marked export-ready.
   // Legacy cases without any persisted review lifecycle keep the old routed-document behavior.
   const hasPersistedReviewState = docs.some((d) => d.reviewState != null);
-  let docsToUse = hasPersistedReviewState
-    ? docs.filter((d) => d.reviewState === "EXPORT_READY")
-    : docs;
-  if (packetType !== "combined" && docs.length > 0) {
-    const docIds = docs.map((d) => d.id);
+  const demandPackageStatusByDocId =
+    docs.length > 0
+      ? new Map(
+          (
+            await prisma.demandPackage.findMany({
+              where: {
+                firmId,
+                generatedDocId: { in: docs.map((d) => d.id) },
+              },
+              select: { generatedDocId: true, status: true },
+            })
+          ).flatMap((pkg) => (pkg.generatedDocId ? ([[pkg.generatedDocId, pkg.status]] as const) : []))
+        )
+      : new Map<string, string>();
+  let docsToUse = docs.filter((d) => {
+    const demandPackageStatus = demandPackageStatusByDocId.get(d.id);
+    if (demandPackageStatus != null) {
+      return !isDemandPackageReleaseBlocked(demandPackageStatus);
+    }
+    return hasPersistedReviewState ? d.reviewState === "EXPORT_READY" : true;
+  });
+  if (packetType !== "combined" && docsToUse.length > 0) {
+    const docIds = docsToUse.map((d) => d.id);
     const { rows } = await pgPool.query<{ document_id: string; doc_type: string | null }>(
       `select document_id, doc_type from document_recognition where document_id = any($1)`,
       [docIds]
     );
     const docTypeByDocId = new Map(rows.map((r) => [r.document_id, (r.doc_type ?? "").toLowerCase().trim()]));
     if (packetType === "bills") {
-      docsToUse = docs.filter((d) => BILL_DOC_TYPES.has(docTypeByDocId.get(d.id) ?? ""));
+      docsToUse = docsToUse.filter((d) => BILL_DOC_TYPES.has(docTypeByDocId.get(d.id) ?? ""));
     } else {
-      docsToUse = docs.filter((d) => !BILL_DOC_TYPES.has(docTypeByDocId.get(d.id) ?? ""));
+      docsToUse = docsToUse.filter((d) => !BILL_DOC_TYPES.has(docTypeByDocId.get(d.id) ?? ""));
     }
   }
 

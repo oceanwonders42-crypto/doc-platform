@@ -9,16 +9,20 @@ import {
 } from "../../services/batchClioHandoffExport";
 import {
   findRecentClioHandoffDuplicate,
+  getStoredBatchClioHandoffArchive,
   recordBatchClioHandoff,
   resolveClioHandoffActorSnapshot,
+  recordClioHandoffAuditEvent,
 } from "../../services/clioHandoffTracking";
 import {
   buildMigrationBatchClioPreview,
+  finalizeMigrationBatchForClioHandoff,
   getMigrationBatchDetail,
   importMigrationBatch,
   linkMigrationBatchToClioHandoff,
   listMigrationBatches,
 } from "../../services/migrationBatchWorkflow";
+import { prisma } from "../../db/prisma";
 import { auth } from "../middleware/auth";
 import { requireRole } from "../middleware/requireRole";
 import { computeMigrationSystemReadiness } from "../../services/migrationSystemReadiness";
@@ -178,6 +182,11 @@ function getClioIdempotencyKey(req: Parameters<typeof auth>[0]): string | null {
   return trimToNull(raw);
 }
 
+const IDEMPOTENCY_LEGACY_REPLAY_ERROR =
+  "This Idempotency-Key refers to a legacy export that cannot be safely replayed. Send allowReexport=true to force a fresh export.";
+const IDEMPOTENCY_CHANGED_REPLAY_ERROR =
+  "This Idempotency-Key cannot be replayed because batch export data changed since the prior handoff.";
+
 router.post(
   "/import",
   auth,
@@ -240,6 +249,47 @@ router.get("/batches/:batchId", auth, requireRole(Role.STAFF), async (req, res) 
   } catch (e: any) {
     const message = String(e?.message ?? e);
     const status = message === "Migration batch not found" ? 404 : 500;
+    res.status(status).json({ ok: false, error: message });
+  }
+});
+
+router.post("/batches/:batchId/review/ready-for-handoff", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const batchId = String(req.params.batchId ?? "");
+    const actor =
+      ((req as any).apiKeyPrefix as string | null | undefined) ??
+      ((req as any).userId as string | null | undefined) ??
+      "migration-reviewer";
+    const result = await finalizeMigrationBatchForClioHandoff(firmId, batchId, actor);
+    if (!result.ok) {
+      return res.status(409).json({ ok: false, error: result.error, ...result.detail });
+    }
+    return res.json({ ok: true, markedExportReadyCount: result.markedExportReadyCount, ...result.detail });
+  } catch (e: any) {
+    const message = String(e?.message ?? e);
+    const status = message === "Migration batch not found" ? 404 : 500;
+    res.status(status).json({ ok: false, error: message });
+  }
+});
+
+router.get("/batches/:batchId/exports/clio/handoff/:exportId", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const batchId = String(req.params.batchId ?? "");
+    const exportId = String(req.params.exportId ?? "");
+    const archive = await getStoredBatchClioHandoffArchive({ firmId, batchId, exportId });
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${archive.fileName}"`);
+    res.send(archive.buffer);
+  } catch (e: any) {
+    const message = String(e?.message ?? e);
+    const status =
+      message === "Migration batch handoff archive not found"
+        ? 404
+        : message === "Stored Clio handoff archive unavailable for this export."
+          ? 409
+          : 500;
     res.status(status).json({ ok: false, error: message });
   }
 });
@@ -317,12 +367,16 @@ router.post("/batches/:batchId/exports/clio/handoff", auth, requireRole(Role.STA
       ? trimToNull((req.body ?? {}).reexportReason) ?? "operator_override"
       : null;
     const batchDetail = await getMigrationBatchDetail(firmId, batchId);
-    const currentCaseIds = [...batchDetail.exportSummary.routedCaseIds].sort();
+    const currentCaseIds = [...batchDetail.exportSummary.exportReadyCaseIds].sort();
     if (currentCaseIds.length === 0) {
       return res.status(409).json({
         ok: false,
-        error: "No routed cases in this migration batch are currently ready for Clio handoff.",
+        error:
+          batchDetail.exportSummary.blockedReason ??
+          "No routed cases in this migration batch are currently ready for Clio handoff.",
         skippedCases: [],
+        exportSummary: batchDetail.exportSummary,
+        handoffReadiness: batchDetail.handoffReadiness,
       });
     }
 
@@ -358,13 +412,34 @@ router.post("/batches/:batchId/exports/clio/handoff", auth, requireRole(Role.STA
       });
       const persistedReplaySignature = readReplayManifestSignature(duplicate.manifestJson);
       const currentReplaySignature = buildReplayManifestSignature(replayCurrentPreview);
-      if (
-        persistedReplaySignature === null ||
-        !isSameReplayManifestSignature(persistedReplaySignature, currentReplaySignature)
-      ) {
+      if (persistedReplaySignature === null) {
+        await recordClioHandoffAuditEvent({
+          firmId,
+          batchId,
+          handoffExportId: duplicate.id,
+          hasIdempotencyKey: idempotencyKey !== null,
+          outcomeType: "replay_rejected_legacy",
+          reason: "legacy export cannot be safely replayed",
+          requestFingerprint,
+        });
         return res.status(409).json({
           ok: false,
-          error: "This Idempotency-Key cannot be replayed because batch export data changed since the prior handoff.",
+          error: IDEMPOTENCY_LEGACY_REPLAY_ERROR,
+        });
+      }
+      if (!isSameReplayManifestSignature(persistedReplaySignature, currentReplaySignature)) {
+        await recordClioHandoffAuditEvent({
+          firmId,
+          batchId,
+          handoffExportId: duplicate.id,
+          hasIdempotencyKey: idempotencyKey !== null,
+          outcomeType: "replay_rejected_data_changed",
+          reason: "manifest changed since prior handoff",
+          requestFingerprint,
+        });
+        return res.status(409).json({
+          ok: false,
+          error: IDEMPOTENCY_CHANGED_REPLAY_ERROR,
         });
       }
       const replayCaseIds = readIncludedCaseIdsFromManifestJson(duplicate.manifestJson);
@@ -380,11 +455,20 @@ router.post("/batches/:batchId/exports/clio/handoff", auth, requireRole(Role.STA
         allowReexport: true,
         exportedAt: duplicate.exportedAt,
       });
+      await recordClioHandoffAuditEvent({
+        firmId,
+        batchId,
+        handoffExportId: duplicate.id,
+        hasIdempotencyKey: idempotencyKey !== null,
+        outcomeType: "replay_success",
+        requestFingerprint,
+      });
       await linkMigrationBatchToClioHandoff(firmId, batchId, duplicate.id);
       res.setHeader("Content-Type", "application/zip");
       res.setHeader("Content-Disposition", `attachment; filename="${replayPreview.fileName}"`);
       return res.send(replayPreview.zipBuffer);
     } else {
+      let overrideForcesFreshExport = false;
       if (idempotencyKey) {
         const sameKeyDuplicate = await findRecentClioHandoffDuplicate({
           firmId,
@@ -393,13 +477,24 @@ router.post("/batches/:batchId/exports/clio/handoff", auth, requireRole(Role.STA
           idempotencyKey,
         });
         if (sameKeyDuplicate) {
-          return res.status(409).json({
-            ok: false,
-            error: "This Idempotency-Key was already used for a different Clio handoff export request.",
-          });
+          const isSameBatchDuplicate =
+            allowReexport &&
+            (await prisma.migrationBatchClioHandoff.findFirst({
+              where: { batchId, clioHandoffExportId: sameKeyDuplicate.id },
+              select: { id: true },
+            })) !== null;
+          if (!allowReexport || !isSameBatchDuplicate) {
+            return res.status(409).json({
+              ok: false,
+              error: "This Idempotency-Key was already used for a different Clio handoff export request.",
+            });
+          }
+          overrideForcesFreshExport = true;
         }
       }
 
+      const recordIdempotencyKey =
+        overrideForcesFreshExport ? null : idempotencyKey;
       const preview = await buildBatchClioHandoffExport({
         firmId,
         caseIds: currentCaseIds,
@@ -408,13 +503,24 @@ router.post("/batches/:batchId/exports/clio/handoff", auth, requireRole(Role.STA
       const exportRecord = await recordBatchClioHandoff({
         firmId,
         actor,
-        idempotencyKey,
+        idempotencyKey: recordIdempotencyKey,
         requestFingerprint,
         reExportOverride: allowReexport,
         reExportReason,
         batchResult: preview,
       });
       await linkMigrationBatchToClioHandoff(firmId, batchId, exportRecord.id);
+      if (overrideForcesFreshExport) {
+        await recordClioHandoffAuditEvent({
+          firmId,
+          batchId,
+          handoffExportId: exportRecord.id,
+          hasIdempotencyKey: idempotencyKey !== null,
+          outcomeType: "forced_reexport",
+          reason: reExportReason ?? "operator override",
+          requestFingerprint,
+        });
+      }
       res.setHeader("Content-Type", "application/zip");
       res.setHeader("Content-Disposition", `attachment; filename="${preview.fileName}"`);
       return res.send(preview.zipBuffer);

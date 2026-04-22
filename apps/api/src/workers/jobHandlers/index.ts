@@ -70,18 +70,24 @@ handlers.set("document.reprocess", async (payload, ctx) => {
 
   const doc = await prisma.document.findFirst({
     where: { id: documentId, firmId },
-    select: { id: true, duplicateOfId: true },
+    select: {
+      id: true,
+      duplicateOfId: true,
+      source: true,
+      routedCaseId: true,
+    },
   });
   if (!doc) throw new Error("Document not found");
   if (doc.duplicateOfId) throw new Error("Cannot reprocess a duplicate document");
+  const continuesEmailPipeline = doc.source === "email" && !doc.routedCaseId;
 
   if (mode === "full" || mode === "ocr") {
     await prisma.document.update({
-      where: { id: documentId },
+      where: { id: documentId, firmId },
       data: { status: "PROCESSING", processingStage: "uploaded" },
     });
     await enqueueOcrJob({ documentId, firmId });
-    await ctx.addEvent("info", "Queued OCR job", { mode });
+    await ctx.addEvent("info", "Queued OCR job", { mode, continuesEmailPipeline });
   } else {
     const { rows } = await (await import("../../db/pg")).pgPool.query(
       `select document_id, text_excerpt, doc_type from document_recognition where document_id = $1`,
@@ -91,11 +97,11 @@ handlers.set("document.reprocess", async (payload, ctx) => {
       throw new Error("Run recognition or OCR first; document has no text_excerpt or doc_type");
     }
     await prisma.document.update({
-      where: { id: documentId },
+      where: { id: documentId, firmId },
       data: { status: "PROCESSING", processingStage: "extraction" },
     });
     await enqueueExtractionJob({ documentId, firmId });
-    await ctx.addEvent("info", "Queued extraction job", { mode });
+    await ctx.addEvent("info", "Queued extraction job", { mode, continuesEmailPipeline });
   }
   await addDocumentAuditEvent({
     firmId,
@@ -104,7 +110,7 @@ handlers.set("document.reprocess", async (payload, ctx) => {
     action: "reprocess",
     fromCaseId: null,
     toCaseId: null,
-    metaJson: { mode, jobId: ctx.jobId },
+    metaJson: { mode, jobId: ctx.jobId, continuesEmailPipeline },
   });
 });
 
@@ -239,7 +245,7 @@ handlers.set("document.thumbnail.generate", async (payload, ctx) => {
   const thumbKey = await generateAndStoreDocumentThumbnail(documentId, firmId, buf);
   if (thumbKey) {
     await prisma.document.update({
-      where: { id: documentId },
+      where: { id: documentId, firmId },
       data: { thumbnailKey: thumbKey },
     });
     await ctx.addEvent("info", "Thumbnail saved", { key: thumbKey });

@@ -32,6 +32,8 @@ export type TaskCacheEntry<T = unknown> = {
   textHash: string;
   promptVersion: string;
   model: string;
+  firmId?: string | null;
+  documentId?: string | null;
   generatedAt: string;
   output?: T;
 };
@@ -40,13 +42,17 @@ export type TaskCacheMissReason =
   | "missing_cache"
   | "text_hash_mismatch"
   | "prompt_version_mismatch"
-  | "model_mismatch";
+  | "model_mismatch"
+  | "firm_id_mismatch"
+  | "document_id_mismatch";
 
 export type TaskCacheResponseMeta = {
   cacheUsed: boolean;
   recomputeReason: TaskCacheMissReason | null;
   generatedAt: string | null;
   cacheKey: {
+    firmId?: string;
+    documentId?: string;
     taskType: string;
     variant?: string;
     promptVersion: string;
@@ -114,7 +120,7 @@ export function getTaskCacheEntry<T = unknown>(extractedJson: unknown, taskKey: 
 export function inspectTaskCache<T = unknown>(
   extractedJson: unknown,
   taskKey: string,
-  expected: { textHash: string; promptVersion: string; model: string }
+  expected: { textHash: string; promptVersion: string; model: string; firmId?: string; documentId?: string }
 ): {
   cacheUsed: boolean;
   recomputeReason: TaskCacheMissReason | null;
@@ -125,33 +131,44 @@ export function inspectTaskCache<T = unknown>(
   const { taskType, variant } = parseTaskCacheKey(taskKey);
   let recomputeReason: TaskCacheMissReason | null = null;
 
-  if (!entry) recomputeReason = "missing_cache";
-  else if (entry.textHash !== expected.textHash) recomputeReason = "text_hash_mismatch";
-  else if (entry.promptVersion !== expected.promptVersion) recomputeReason = "prompt_version_mismatch";
-  else if (entry.model !== expected.model) recomputeReason = "model_mismatch";
+  if (!entry) {
+    recomputeReason = "missing_cache";
+  } else if (expected.firmId && entry.firmId !== expected.firmId) {
+    recomputeReason = "firm_id_mismatch";
+  } else if (expected.documentId && entry.documentId !== expected.documentId) {
+    recomputeReason = "document_id_mismatch";
+  } else if (entry.textHash !== expected.textHash) {
+    recomputeReason = "text_hash_mismatch";
+  } else if (entry.promptVersion !== expected.promptVersion) {
+    recomputeReason = "prompt_version_mismatch";
+  } else if (entry.model !== expected.model) {
+    recomputeReason = "model_mismatch";
+  }
 
   return {
     cacheUsed: recomputeReason === null,
     recomputeReason,
     entry,
-    meta: {
-      cacheUsed: recomputeReason === null,
-      recomputeReason,
-      generatedAt: entry?.generatedAt ?? null,
-      cacheKey: {
-        taskType,
-        ...(variant ? { variant } : {}),
-        promptVersion: expected.promptVersion,
-        model: expected.model,
+      meta: {
+        cacheUsed: recomputeReason === null,
+        recomputeReason,
+        generatedAt: entry?.generatedAt ?? null,
+        cacheKey: {
+          firmId: expected.firmId,
+          documentId: expected.documentId,
+          taskType,
+          ...(variant ? { variant } : {}),
+          promptVersion: expected.promptVersion,
+          model: expected.model,
+        },
       },
-    },
   };
 }
 
 export function isTaskCacheValid(
   extractedJson: unknown,
   taskKey: string,
-  expected: { textHash: string; promptVersion: string; model: string }
+  expected: { textHash: string; promptVersion: string; model: string; firmId?: string; documentId?: string }
 ): boolean {
   return inspectTaskCache(extractedJson, taskKey, expected).cacheUsed;
 }
@@ -159,7 +176,7 @@ export function isTaskCacheValid(
 export function getTaskCacheResponseMeta(
   extractedJson: unknown,
   taskKey: string,
-  expected: { textHash: string; promptVersion: string; model: string }
+  expected: { textHash: string; promptVersion: string; model: string; firmId?: string; documentId?: string }
 ): TaskCacheResponseMeta {
   return inspectTaskCache(extractedJson, taskKey, expected).meta;
 }
@@ -239,6 +256,7 @@ export function logTaskCacheDecision(
 ): void {
   logInfo("document_recognition_cache", {
     source: context.source,
+    firmId: meta.cacheKey.firmId ?? null,
     documentId: context.documentId ?? null,
     taskType: meta.cacheKey.taskType,
     variant: meta.cacheKey.variant ?? null,
@@ -260,6 +278,8 @@ export async function resolveTaskCache<T>(params: {
   textHash: string;
   promptVersion: string;
   model: string;
+  firmId?: string;
+  documentId?: string;
   existingValue: T;
   compute: () => Promise<T> | T;
   persistOutput?: boolean;
@@ -275,6 +295,8 @@ export async function resolveTaskCache<T>(params: {
     textHash: params.textHash,
     promptVersion: params.promptVersion,
     model: params.model,
+    firmId: params.firmId,
+    documentId: params.documentId,
   });
   const cacheValid = cacheState.cacheUsed;
 
@@ -321,6 +343,8 @@ export async function resolveTaskCache<T>(params: {
   const value = await params.compute();
   const nextEntry: TaskCacheEntry<T> = {
     textHash: params.textHash,
+    firmId: params.firmId,
+    documentId: params.documentId,
     promptVersion: params.promptVersion,
     model: params.model,
     generatedAt: new Date().toISOString(),

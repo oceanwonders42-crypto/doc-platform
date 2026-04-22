@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useI18n } from "@/contexts/I18nContext";
 import { getApiBase, getAuthHeader, parseJsonResponse } from "@/lib/api";
+import { isTrafficFeatureEnabled } from "@/lib/devFeatures";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DashboardCard } from "@/components/dashboard/DashboardCard";
 
@@ -42,7 +43,9 @@ function isTrafficDetailResponse(res: unknown): res is TrafficDetailResponse {
 }
 
 export default function TrafficDetailPage() {
+  const router = useRouter();
   const { t } = useI18n();
+  const trafficEnabled = isTrafficFeatureEnabled();
   const params = useParams();
   const id = typeof params?.id === "string" ? params.id : "";
   const [item, setItem] = useState<TrafficMatterItem | null>(null);
@@ -50,6 +53,10 @@ export default function TrafficDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!trafficEnabled) {
+      router.replace("/dashboard");
+      return;
+    }
     if (!id) return;
     const base = getApiBase();
     fetch(`${base}/traffic/${id}`, { headers: { ...getAuthHeader(), Accept: "application/json" } })
@@ -60,7 +67,9 @@ export default function TrafficDetailPage() {
       })
       .catch((e) => setError(e?.message ?? "Request failed"))
       .finally(() => setLoading(false));
-  }, [id]);
+  }, [id, router, trafficEnabled]);
+
+  if (!trafficEnabled) return null;
 
   if (loading) {
     return (

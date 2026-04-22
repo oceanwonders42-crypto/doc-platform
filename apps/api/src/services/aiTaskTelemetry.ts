@@ -307,11 +307,12 @@ export async function recordAiTaskFailed(input: FailedTelemetryInput): Promise<v
 }
 
 async function findLatestExecutedFingerprint(
-  input: Pick<CacheHitTelemetryInput, "documentId" | "caseId" | "taskType" | "taskVariant" | "model" | "promptVersion" | "inputHash">
+  input: Pick<CacheHitTelemetryInput, "firmId" | "documentId" | "caseId" | "taskType" | "taskVariant" | "model" | "promptVersion" | "inputHash">
 ) {
   return prisma.aiTaskTelemetry.findFirst({
     where: {
       kind: "executed",
+      firmId: normalizeNullableString(input.firmId),
       documentId: normalizeNullableString(input.documentId),
       caseId: normalizeNullableString(input.caseId),
       taskType: input.taskType,

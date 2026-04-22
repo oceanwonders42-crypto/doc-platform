@@ -57,7 +57,7 @@ export async function routeDocument(
   if (status !== undefined) updateData.status = status;
 
   await prisma.document.updateMany({
-    where: { id: documentId },
+    where: { id: documentId, firmId },
     data: updateData,
   });
   await timingReporter?.("persistence_complete", {
