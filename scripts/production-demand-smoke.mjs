@@ -244,6 +244,7 @@ async function createSmokeFixtures(prisma, input) {
       caseNumber: `SMOKE-${smokeSuffix.slice(-12)}`,
       clientName: contact.fullName,
       clientContactId: contact.id,
+      assignedUserId: input.staffUserId,
       status: "open",
       notes: commonText,
     },
