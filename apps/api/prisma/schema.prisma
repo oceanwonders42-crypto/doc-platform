@@ -946,6 +946,7 @@ model DemandNarrativeDraft {
   id                String             @id @default(cuid())
   firmId            String
   caseId            String
+  demandBankRunId   String?
   narrativeType     String
   tone              String
   status            DemandReviewStatus @default(PENDING_DEV_REVIEW)
@@ -961,11 +962,13 @@ model DemandNarrativeDraft {
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 
-  firm Firm      @relation(fields: [firmId], references: [id], onDelete: Cascade)
-  case LegalCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  firm          Firm           @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  case          LegalCase      @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  demandBankRun DemandBankRun? @relation(fields: [demandBankRunId], references: [id], onDelete: SetNull)
 
   @@index([firmId, caseId, createdAt])
   @@index([firmId, caseId, status, createdAt])
+  @@index([demandBankRunId])
 }
 
 model DemandPackageSectionSource {
@@ -1063,7 +1066,8 @@ model DemandBankRun {
   createdBy           String?
   createdAt           DateTime @default(now())
 
-  firm Firm @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  firm            Firm                   @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  narrativeDrafts DemandNarrativeDraft[]
 
   @@index([firmId, createdAt])
   @@index([firmId, matterId, createdAt])

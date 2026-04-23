@@ -43,6 +43,69 @@ type DemandReviewItem = {
   tone: string;
 };
 
+type RetrievalFeedback = {
+  usefulness: "useful" | "not_useful" | null;
+  removed: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+};
+
+type RetrievalMatchSignal = {
+  label: string;
+  currentValue: string;
+  exampleValue: string;
+  matched: boolean;
+};
+
+type DemandRetrievalPreview = {
+  available: boolean;
+  draftId: string;
+  runId: string | null;
+  runCreatedAt: string | null;
+  unavailableReason: string | null;
+  caseProfile: {
+    jurisdiction: string | null;
+    caseType: string | null;
+    liabilityType: string | null;
+    injuryTags: string[];
+    treatmentTags: string[];
+    bodyPartTags: string[];
+    mriPresent: boolean | null;
+    injectionsPresent: boolean | null;
+    surgeryPresent: boolean | null;
+    billsBand: "low" | "medium" | "high" | null;
+    templateFamily: string | null;
+  } | null;
+  hiddenCounts: {
+    examples: number;
+    sections: number;
+  };
+  retrievedExamples: Array<{
+    id: string;
+    title: string;
+    caseType: string | null;
+    injuryTags: string[];
+    totalBillsAmount: number | null;
+    demandAmount: number | null;
+    qualityScore: number | null;
+    matchScore: number;
+    matchReasons: string[];
+    matchSignals: RetrievalMatchSignal[];
+    feedback: RetrievalFeedback;
+  }>;
+  retrievedSections: Array<{
+    id: string;
+    demandBankDocumentId: string;
+    sourceDemandTitle: string;
+    sectionType: string;
+    heading: string | null;
+    previewText: string | null;
+    matchScore: number;
+    matchReasons: string[];
+    feedback: RetrievalFeedback;
+  }>;
+};
+
 type AuthMeResponse = {
   ok?: boolean;
   role?: string;
@@ -59,6 +122,24 @@ function normalizeDemandStatus(status: DemandApiStatus): NormalizedDemandStatus 
   if (status === "dev_approved" || status === "approved") return "approved";
   if (status === "released_to_requester" || status === "released") return "released";
   return "pending_dev_review";
+}
+
+function formatCurrency(value: number | null) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "Not recorded";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function formatTagList(values: string[]) {
+  return values.length > 0 ? values.join(", ") : "None recorded";
+}
+
+function previewSnippet(value: string | null, limit = 320) {
+  if (!value) return "No reusable preview text stored.";
+  return value.length > limit ? `${value.slice(0, limit).trim()}…` : value;
 }
 
 export default function NarrativePageClient({
@@ -86,6 +167,11 @@ export default function NarrativePageClient({
   const [actionDraftId, setActionDraftId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [retrievalPreview, setRetrievalPreview] = useState<DemandRetrievalPreview | null>(null);
+  const [retrievalLoading, setRetrievalLoading] = useState(false);
+  const [retrievalError, setRetrievalError] = useState<string | null>(null);
+  const [retrievalStatusMessage, setRetrievalStatusMessage] = useState<string | null>(null);
+  const [retrievalActionKey, setRetrievalActionKey] = useState<string | null>(null);
   const visibleDraftItems = useMemo(() => {
     if (isPlatformReviewer) return draftItems;
     return draftItems.filter((item) => normalizeDemandStatus(item.status) === "released");
@@ -100,6 +186,24 @@ export default function NarrativePageClient({
   const visibleText = selectedDraft?.text ?? "";
   const warnings = selectedDraft?.warnings ?? [];
   const usedEvents = selectedDraft?.usedEvents ?? [];
+  const retrievedExamples = useMemo(() => {
+    if (!retrievalPreview?.retrievedExamples) return [];
+    return [...retrievalPreview.retrievedExamples].sort((left, right) => {
+      if (left.feedback.removed !== right.feedback.removed) {
+        return left.feedback.removed ? 1 : -1;
+      }
+      return right.matchScore - left.matchScore;
+    });
+  }, [retrievalPreview]);
+  const retrievedSections = useMemo(() => {
+    if (!retrievalPreview?.retrievedSections) return [];
+    return [...retrievalPreview.retrievedSections].sort((left, right) => {
+      if (left.feedback.removed !== right.feedback.removed) {
+        return left.feedback.removed ? 1 : -1;
+      }
+      return right.matchScore - left.matchScore;
+    });
+  }, [retrievalPreview]);
 
   async function loadAuthState() {
     try {
@@ -152,6 +256,50 @@ export default function NarrativePageClient({
     void loadAuthState();
     void loadDrafts();
   }, [caseId, enabled]);
+
+  useEffect(() => {
+    if (!enabled || !selectedDraft?.id) {
+      setRetrievalPreview(null);
+      setRetrievalError(null);
+      setRetrievalStatusMessage(null);
+      setRetrievalLoading(false);
+      return;
+    }
+
+    let active = true;
+    setRetrievalLoading(true);
+    setRetrievalError(null);
+    setRetrievalStatusMessage(null);
+    void fetch(`${getApiBase()}/cases/${encodeURIComponent(caseId)}/demand-narratives/${encodeURIComponent(selectedDraft.id)}/retrieval-preview`, {
+      headers: getAuthHeader(),
+      ...getFetchOptions(),
+    })
+      .then(async (response) => {
+        const data = (await parseJsonResponse(response)) as {
+          ok?: boolean;
+          preview?: DemandRetrievalPreview;
+          error?: string;
+        };
+        if (!response.ok || data.ok === false || !data.preview) {
+          throw new Error(data.error ?? "Failed to load retrieved demand examples.");
+        }
+        if (!active) return;
+        setRetrievalPreview(data.preview);
+      })
+      .catch((requestError) => {
+        if (!active) return;
+        setRetrievalPreview(null);
+        setRetrievalError(formatApiClientError(requestError, "Failed to load retrieved demand examples."));
+      })
+      .finally(() => {
+        if (!active) return;
+        setRetrievalLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [caseId, enabled, selectedDraft?.id]);
 
   async function handleGenerate() {
     if (!enabled) return;
@@ -269,6 +417,51 @@ export default function NarrativePageClient({
       setError(formatApiClientError(err, "Failed to release demand draft."));
     } finally {
       setActionDraftId(null);
+    }
+  }
+
+  async function handleRetrievalFeedback(
+    itemType: "document" | "section",
+    itemId: string,
+    payload: { usefulness?: "useful" | "not_useful"; removed?: boolean },
+    successMessage: string
+  ) {
+    if (!selectedDraft?.id) return;
+    const actionKey = `${itemType}:${itemId}:${payload.usefulness ?? "none"}:${payload.removed ?? "keep"}`;
+    setRetrievalActionKey(actionKey);
+    setRetrievalError(null);
+    setRetrievalStatusMessage(null);
+    try {
+      const response = await fetch(
+        `${getApiBase()}/cases/${encodeURIComponent(caseId)}/demand-narratives/${encodeURIComponent(selectedDraft.id)}/retrieval-feedback`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeader(),
+          },
+          ...getFetchOptions(),
+          body: JSON.stringify({
+            itemType,
+            itemId,
+            ...payload,
+          }),
+        }
+      );
+      const data = (await parseJsonResponse(response)) as {
+        ok?: boolean;
+        preview?: DemandRetrievalPreview;
+        error?: string;
+      };
+      if (!response.ok || data.ok === false || !data.preview) {
+        throw new Error(data.error ?? "Failed to save retrieval feedback.");
+      }
+      setRetrievalPreview(data.preview);
+      setRetrievalStatusMessage(successMessage);
+    } catch (requestError) {
+      setRetrievalError(formatApiClientError(requestError, "Failed to save retrieval feedback."));
+    } finally {
+      setRetrievalActionKey(null);
     }
   }
 
@@ -646,6 +839,359 @@ export default function NarrativePageClient({
           </div>
         )}
       </section>
+
+      {selectedDraft && (
+        <section style={{ marginTop: 24, padding: 16, border: "1px solid #ddd", borderRadius: 10, background: "#fff" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Retrieved Demand Examples</h2>
+              <p style={{ margin: "6px 0 0", fontSize: 13, color: "#666" }}>
+                This panel shows the approved Demand Bank examples that were retrieved for the selected draft. Current case facts still control the draft.
+              </p>
+            </div>
+            {retrievalPreview?.runCreatedAt && (
+              <span style={{ fontSize: 12, color: "#666" }}>
+                Retrieved {new Date(retrievalPreview.runCreatedAt).toLocaleString()}
+              </span>
+            )}
+          </div>
+
+          {retrievalStatusMessage && (
+            <p style={{ margin: "0 0 12px", color: "#0f5132", fontSize: 13 }}>{retrievalStatusMessage}</p>
+          )}
+
+          {retrievalError && (
+            <p style={{ margin: "0 0 12px", color: "#c00", fontSize: 13 }}>{retrievalError}</p>
+          )}
+
+          {retrievalLoading ? (
+            <p style={{ margin: 0, fontSize: 14, color: "#666" }}>Loading retrieved examples…</p>
+          ) : !retrievalPreview ? (
+            <p style={{ margin: 0, fontSize: 14, color: "#666" }}>Retrieved examples unavailable.</p>
+          ) : !retrievalPreview.available ? (
+            <p style={{ margin: 0, fontSize: 14, color: "#666" }}>
+              {retrievalPreview.unavailableReason ?? "Retrieved examples were not recorded for this draft."}
+            </p>
+          ) : (
+            <div style={{ display: "grid", gap: 16 }}>
+              <div style={{ padding: 12, borderRadius: 8, border: "1px solid #e1e5ea", background: "#f8fafc" }}>
+                <p style={{ margin: 0, fontSize: 13, color: "#334155" }}>
+                  {retrievalPreview.caseProfile
+                    ? `Matched against ${retrievalPreview.caseProfile.caseType ?? "untyped"} / ${retrievalPreview.caseProfile.liabilityType ?? "general"} matter signals`
+                    : "Matched against the stored case profile from generation time."}
+                  {retrievalPreview.hiddenCounts.examples > 0 || retrievalPreview.hiddenCounts.sections > 0
+                    ? ` ${retrievalPreview.hiddenCounts.examples} example(s) and ${retrievalPreview.hiddenCounts.sections} section(s) are hidden because they are no longer approved for reuse.`
+                    : ""}
+                </p>
+              </div>
+
+              <div style={{ display: "grid", gap: 12 }}>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Retrieved demands</h3>
+                  <p style={{ margin: "4px 0 0", fontSize: 13, color: "#666" }}>
+                    Prior approved demand examples are shown for structure and tone only, not for current-case facts.
+                  </p>
+                </div>
+                {retrievedExamples.length === 0 ? (
+                  <p style={{ margin: 0, fontSize: 14, color: "#666" }}>No approved demand examples were stored for this draft.</p>
+                ) : (
+                  <div style={{ display: "grid", gap: 12 }}>
+                    {retrievedExamples.map((example) => {
+                      const usefulActionKey = `document:${example.id}:useful:keep`;
+                      const notUsefulActionKey = `document:${example.id}:not_useful:keep`;
+                      const removeActionKey = `document:${example.id}:none:${!example.feedback.removed}`;
+                      return (
+                        <div
+                          key={example.id}
+                          style={{
+                            padding: 12,
+                            borderRadius: 8,
+                            border: "1px solid #ddd",
+                            background: example.feedback.removed ? "#f8f9fa" : "#fff",
+                            opacity: example.feedback.removed ? 0.72 : 1,
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+                            <div>
+                              <p style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{example.title}</p>
+                              <p style={{ margin: "4px 0 0", fontSize: 12, color: "#666" }}>
+                                {example.caseType ?? "Case type not tagged"} · injuries: {formatTagList(example.injuryTags)}
+                              </p>
+                            </div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                              {example.feedback.removed && (
+                                <span style={{ fontSize: 11, fontWeight: 600, color: "#8a4b00" }}>Removed from this draft review</span>
+                              )}
+                              {example.feedback.usefulness === "useful" && (
+                                <span style={{ fontSize: 11, fontWeight: 600, color: "#0f5132" }}>Marked useful</span>
+                              )}
+                              {example.feedback.usefulness === "not_useful" && (
+                                <span style={{ fontSize: 11, fontWeight: 600, color: "#842029" }}>Marked not useful</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", marginTop: 10 }}>
+                            <div style={{ fontSize: 12, color: "#555" }}>
+                              <strong style={{ color: "#111" }}>Total bills:</strong> {formatCurrency(example.totalBillsAmount)}
+                            </div>
+                            <div style={{ fontSize: 12, color: "#555" }}>
+                              <strong style={{ color: "#111" }}>Demand amount:</strong> {formatCurrency(example.demandAmount)}
+                            </div>
+                            <div style={{ fontSize: 12, color: "#555" }}>
+                              <strong style={{ color: "#111" }}>Quality score:</strong> {example.qualityScore ?? "Not scored"}
+                            </div>
+                            <div style={{ fontSize: 12, color: "#555" }}>
+                              <strong style={{ color: "#111" }}>Match score:</strong> {example.matchScore}
+                            </div>
+                          </div>
+
+                          <div style={{ marginTop: 12 }}>
+                            <p style={{ margin: "0 0 6px", fontSize: 12, fontWeight: 600, color: "#111" }}>Why this was used</p>
+                            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#555" }}>
+                              {example.matchReasons.length > 0 ? (
+                                example.matchReasons.map((reason) => <li key={reason}>{reason}</li>)
+                              ) : (
+                                <li>Approved reusable demand example selected from stored case similarity.</li>
+                              )}
+                            </ul>
+                          </div>
+
+                          <div style={{ marginTop: 12 }}>
+                            <p style={{ margin: "0 0 6px", fontSize: 12, fontWeight: 600, color: "#111" }}>Matched on</p>
+                            <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+                              {example.matchSignals.map((signal) => (
+                                <div key={signal.label} style={{ padding: 8, borderRadius: 6, border: "1px solid #e5e7eb", background: "#fafafa" }}>
+                                  <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>{signal.label}</p>
+                                  <p style={{ margin: "4px 0 0", fontSize: 12, color: "#555" }}>
+                                    Case: {signal.currentValue} · Example: {signal.exampleValue}
+                                  </p>
+                                  <p style={{ margin: "4px 0 0", fontSize: 12, color: signal.matched ? "#0f5132" : "#666" }}>
+                                    {signal.matched ? "Matched" : "No direct match"}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {isPlatformReviewer && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleRetrievalFeedback("document", example.id, { usefulness: "useful" }, "Demand example marked useful.")
+                                }
+                                disabled={retrievalActionKey === usefulActionKey}
+                                style={{
+                                  padding: "6px 12px",
+                                  fontSize: 12,
+                                  border: "1px solid #0f5132",
+                                  borderRadius: 6,
+                                  background: example.feedback.usefulness === "useful" ? "#0f5132" : "#fff",
+                                  color: example.feedback.usefulness === "useful" ? "#fff" : "#0f5132",
+                                  cursor: retrievalActionKey === usefulActionKey ? "not-allowed" : "pointer",
+                                }}
+                              >
+                                {retrievalActionKey === usefulActionKey ? "Saving..." : "Useful"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleRetrievalFeedback("document", example.id, { usefulness: "not_useful" }, "Demand example marked not useful.")
+                                }
+                                disabled={retrievalActionKey === notUsefulActionKey}
+                                style={{
+                                  padding: "6px 12px",
+                                  fontSize: 12,
+                                  border: "1px solid #842029",
+                                  borderRadius: 6,
+                                  background: example.feedback.usefulness === "not_useful" ? "#842029" : "#fff",
+                                  color: example.feedback.usefulness === "not_useful" ? "#fff" : "#842029",
+                                  cursor: retrievalActionKey === notUsefulActionKey ? "not-allowed" : "pointer",
+                                }}
+                              >
+                                {retrievalActionKey === notUsefulActionKey ? "Saving..." : "Not useful"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleRetrievalFeedback(
+                                    "document",
+                                    example.id,
+                                    { removed: !example.feedback.removed },
+                                    example.feedback.removed
+                                      ? "Demand example restored to this draft review."
+                                      : "Demand example removed from this draft review."
+                                  )
+                                }
+                                disabled={retrievalActionKey === removeActionKey}
+                                style={{
+                                  padding: "6px 12px",
+                                  fontSize: 12,
+                                  border: "1px solid #555",
+                                  borderRadius: 6,
+                                  background: "#fff",
+                                  color: "#333",
+                                  cursor: retrievalActionKey === removeActionKey ? "not-allowed" : "pointer",
+                                }}
+                              >
+                                {retrievalActionKey === removeActionKey
+                                  ? "Saving..."
+                                  : example.feedback.removed
+                                    ? "Restore example"
+                                    : "Remove from draft"}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: "grid", gap: 12 }}>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Retrieved sections</h3>
+                  <p style={{ margin: "4px 0 0", fontSize: 13, color: "#666" }}>
+                    Section-level examples stay clearly labeled so reviewers can inspect the exact reusable language the run surfaced.
+                  </p>
+                </div>
+                {retrievedSections.length === 0 ? (
+                  <p style={{ margin: 0, fontSize: 14, color: "#666" }}>No reusable sections were stored for this draft.</p>
+                ) : (
+                  <div style={{ display: "grid", gap: 12 }}>
+                    {retrievedSections.map((section) => {
+                      const usefulActionKey = `section:${section.id}:useful:keep`;
+                      const notUsefulActionKey = `section:${section.id}:not_useful:keep`;
+                      const removeActionKey = `section:${section.id}:none:${!section.feedback.removed}`;
+                      return (
+                        <div
+                          key={section.id}
+                          style={{
+                            padding: 12,
+                            borderRadius: 8,
+                            border: "1px solid #ddd",
+                            background: section.feedback.removed ? "#f8f9fa" : "#fff",
+                            opacity: section.feedback.removed ? 0.72 : 1,
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+                            <div>
+                              <p style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>
+                                {section.heading ?? section.sectionType}
+                              </p>
+                              <p style={{ margin: "4px 0 0", fontSize: 12, color: "#666" }}>
+                                {section.sectionType} from {section.sourceDemandTitle}
+                              </p>
+                            </div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                              {section.feedback.removed && (
+                                <span style={{ fontSize: 11, fontWeight: 600, color: "#8a4b00" }}>Removed from this draft review</span>
+                              )}
+                              {section.feedback.usefulness === "useful" && (
+                                <span style={{ fontSize: 11, fontWeight: 600, color: "#0f5132" }}>Marked useful</span>
+                              )}
+                              {section.feedback.usefulness === "not_useful" && (
+                                <span style={{ fontSize: 11, fontWeight: 600, color: "#842029" }}>Marked not useful</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <p style={{ margin: "10px 0 0", fontSize: 13, color: "#555" }}>
+                            {previewSnippet(section.previewText)}
+                          </p>
+
+                          <div style={{ marginTop: 12 }}>
+                            <p style={{ margin: "0 0 6px", fontSize: 12, fontWeight: 600, color: "#111" }}>Why this was used</p>
+                            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#555" }}>
+                              {section.matchReasons.length > 0 ? (
+                                section.matchReasons.map((reason) => <li key={reason}>{reason}</li>)
+                              ) : (
+                                <li>Approved reusable section selected from stored case similarity.</li>
+                              )}
+                            </ul>
+                          </div>
+
+                          {isPlatformReviewer && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleRetrievalFeedback("section", section.id, { usefulness: "useful" }, "Retrieved section marked useful.")
+                                }
+                                disabled={retrievalActionKey === usefulActionKey}
+                                style={{
+                                  padding: "6px 12px",
+                                  fontSize: 12,
+                                  border: "1px solid #0f5132",
+                                  borderRadius: 6,
+                                  background: section.feedback.usefulness === "useful" ? "#0f5132" : "#fff",
+                                  color: section.feedback.usefulness === "useful" ? "#fff" : "#0f5132",
+                                  cursor: retrievalActionKey === usefulActionKey ? "not-allowed" : "pointer",
+                                }}
+                              >
+                                {retrievalActionKey === usefulActionKey ? "Saving..." : "Useful"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleRetrievalFeedback("section", section.id, { usefulness: "not_useful" }, "Retrieved section marked not useful.")
+                                }
+                                disabled={retrievalActionKey === notUsefulActionKey}
+                                style={{
+                                  padding: "6px 12px",
+                                  fontSize: 12,
+                                  border: "1px solid #842029",
+                                  borderRadius: 6,
+                                  background: section.feedback.usefulness === "not_useful" ? "#842029" : "#fff",
+                                  color: section.feedback.usefulness === "not_useful" ? "#fff" : "#842029",
+                                  cursor: retrievalActionKey === notUsefulActionKey ? "not-allowed" : "pointer",
+                                }}
+                              >
+                                {retrievalActionKey === notUsefulActionKey ? "Saving..." : "Not useful"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleRetrievalFeedback(
+                                    "section",
+                                    section.id,
+                                    { removed: !section.feedback.removed },
+                                    section.feedback.removed
+                                      ? "Retrieved section restored to this draft review."
+                                      : "Retrieved section removed from this draft review."
+                                  )
+                                }
+                                disabled={retrievalActionKey === removeActionKey}
+                                style={{
+                                  padding: "6px 12px",
+                                  fontSize: 12,
+                                  border: "1px solid #555",
+                                  borderRadius: 6,
+                                  background: "#fff",
+                                  color: "#333",
+                                  cursor: retrievalActionKey === removeActionKey ? "not-allowed" : "pointer",
+                                }}
+                              >
+                                {retrievalActionKey === removeActionKey
+                                  ? "Saving..."
+                                  : section.feedback.removed
+                                    ? "Restore section"
+                                    : "Remove from draft"}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       {warnings.length > 0 && (
         <div style={{ marginTop: 16, padding: 12, background: "#fff8e6", border: "1px solid #e6d68a", borderRadius: 8 }}>

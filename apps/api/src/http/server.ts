@@ -80,6 +80,10 @@ import {
   normalizeDemandPackageStatus,
   serializeDemandNarrativeDraft,
 } from "../services/demandNarrativeReview";
+import {
+  getDemandNarrativeRetrievalPreview,
+  updateDemandNarrativeRetrievalFeedback,
+} from "../services/demandNarrativeRetrieval";
 import casesRouter from "./routes/cases";
 import contactsRouter from "./routes/contacts";
 import demandBankRouter from "./routes/demandBank";
@@ -5625,6 +5629,7 @@ app.post("/cases/:id/narrative", auth, requireRole(Role.STAFF), rateLimitEndpoin
       firmId,
       type: internalType,
       tone,
+      createdByUserId: userId ?? null,
       notes,
       questionnaire,
     });
@@ -5651,6 +5656,7 @@ app.post("/cases/:id/narrative", auth, requireRole(Role.STAFF), rateLimitEndpoin
         caseId,
         narrativeType: type,
         tone,
+        demandBankRunId: result.retrievalRunId ?? undefined,
         status: DemandReviewStatus.PENDING_DEV_REVIEW,
         generatedText: result.text,
         warningsJson: (result.warnings ?? []) as Prisma.InputJsonValue,
@@ -5703,6 +5709,82 @@ app.get("/cases/:id/demand-narratives", auth, requireRole(Role.STAFF), async (re
     });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/cases/:id/demand-narratives/:draftId/retrieval-preview", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const caseId = String(req.params.id ?? "");
+    const accessContext = await ensureVisibleCase(req, res, caseId);
+    if (!accessContext) return;
+    const { firmId } = accessContext;
+    const authRole = accessContext.authRole as Role | undefined;
+    const draftId = String(req.params.draftId ?? "");
+
+    const draft = await prisma.demandNarrativeDraft.findFirst({
+      where: { id: draftId, firmId, caseId },
+      select: { id: true, status: true },
+    });
+    if (!draft || !canAccessDemandNarrativeDraft(draft.status, authRole)) {
+      return res.status(404).json({ ok: false, error: "Demand narrative draft not found." });
+    }
+
+    const preview = await getDemandNarrativeRetrievalPreview(firmId, caseId, draftId);
+    res.json({
+      ok: true,
+      preview,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/cases/:id/demand-narratives/:draftId/retrieval-feedback", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const caseId = String(req.params.id ?? "");
+    const accessContext = await ensureVisibleCase(req, res, caseId);
+    if (!accessContext) return;
+    const { firmId } = accessContext;
+    const actorUserId = typeof (req as any).userId === "string" ? ((req as any).userId as string) : null;
+    const draftId = String(req.params.draftId ?? "");
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const itemType = body.itemType === "document" || body.itemType === "section" ? body.itemType : null;
+    const itemId = typeof body.itemId === "string" ? body.itemId.trim() : "";
+    const usefulness =
+      body.usefulness === "useful" || body.usefulness === "not_useful" ? body.usefulness : undefined;
+    const removed = typeof body.removed === "boolean" ? body.removed : undefined;
+
+    if (!itemType || !itemId || (usefulness === undefined && removed === undefined)) {
+      return res.status(400).json({
+        ok: false,
+        error: "itemType, itemId, and at least one feedback field are required.",
+      });
+    }
+
+    const preview = await updateDemandNarrativeRetrievalFeedback({
+      firmId,
+      caseId,
+      draftId,
+      actorUserId,
+      itemType,
+      itemId,
+      usefulness,
+      removed,
+    });
+
+    res.json({
+      ok: true,
+      preview,
+    });
+  } catch (e: any) {
+    const message = String(e?.message || e);
+    const status =
+      message.includes("not found") || message.includes("does not have stored")
+        ? 404
+        : message.includes("required")
+          ? 400
+          : 500;
+    res.status(status).json({ ok: false, error: message });
   }
 });
 

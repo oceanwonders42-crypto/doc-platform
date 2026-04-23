@@ -35,6 +35,7 @@ export interface NarrativeInput {
   firmId: string;
   type: NarrativeType;
   tone: NarrativeTone;
+  createdByUserId?: string | null;
   notes?: string;
   /** Questionnaire answers used only to enrich the prompt; not persisted */
   questionnaire?: {
@@ -57,6 +58,7 @@ export interface NarrativeResult {
   text: string;
   usedEvents: UsedEvent[];
   warnings?: string[];
+  retrievalRunId?: string | null;
 }
 
 export const NARRATIVE_PROMPT_VERSION = "case-narrative-v1";
@@ -104,7 +106,7 @@ function formatEventDate(d: Date | null): string {
 }
 
 export async function generateNarrative(input: NarrativeInput): Promise<NarrativeResult> {
-  const { caseId, firmId, type, tone, notes, questionnaire } = input;
+  const { caseId, firmId, type, tone, createdByUserId, notes, questionnaire } = input;
   const warnings: string[] = [];
 
   const events = await prisma.caseTimelineEvent.findMany({
@@ -179,6 +181,7 @@ export async function generateNarrative(input: NarrativeInput): Promise<Narrativ
   if (diagnoses.length === 0 && procedures.length === 0) warnings.push("No diagnoses or procedures in timeline; consider adding medical records.");
 
   let demandDraftExamplesBlock = "";
+  let retrievalRunId: string | null = null;
   try {
     const context = await buildDemandDraftContext({
       caseId,
@@ -193,9 +196,11 @@ export async function generateNarrative(input: NarrativeInput): Promise<Narrativ
               ? "denial_response"
               : "pre_suit_demand",
       },
+      createdBy: createdByUserId ?? null,
       model: NARRATIVE_MODEL,
       promptVersion: NARRATIVE_PROMPT_VERSION,
     });
+    retrievalRunId = context.retrievalRunId;
     demandDraftExamplesBlock = buildDemandDraftExamplesPromptBlock(context);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -208,6 +213,7 @@ export async function generateNarrative(input: NarrativeInput): Promise<Narrativ
       text: "[Error: OPENAI_API_KEY is not set. Add it to apps/api/.env]",
       usedEvents: events.map((e) => ({ eventDate: e.eventDate?.toISOString() ?? null, eventType: e.eventType, documentId: e.documentId })),
       warnings: ["OPENAI_API_KEY not configured."],
+      retrievalRunId,
     };
   }
 
@@ -276,6 +282,7 @@ export async function generateNarrative(input: NarrativeInput): Promise<Narrativ
         documentId: e.documentId,
       })),
       warnings: warnings.length ? warnings : undefined,
+      retrievalRunId,
     };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -287,6 +294,7 @@ export async function generateNarrative(input: NarrativeInput): Promise<Narrativ
         documentId: e.documentId,
       })),
       warnings: [...warnings, message],
+      retrievalRunId,
     };
   }
 }
