@@ -3,16 +3,23 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  normalizeGitRemote,
+  resolveProductionReleaseConfig,
+} from "./production-release-config.mjs";
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
 export const repoRoot = path.dirname(scriptDir);
-export const deployLogDir = path.join(repoRoot, "logs", "deploy");
-export const deployHistoryFile = path.join(deployLogDir, "history.jsonl");
-export const latestDeployFile = path.join(deployLogDir, "latest.json");
+const productionConfig = resolveProductionReleaseConfig({ repoRoot });
 
-export function runGit(args) {
+export const deployLogDir = productionConfig.deployDir;
+export const deployHistoryFile = productionConfig.deployHistoryFile;
+export const latestDeployFile = productionConfig.latestDeployFile;
+
+export function runGit(args, options = {}) {
   return spawnSync("git", args, {
-    cwd: repoRoot,
+    cwd: options.cwd ?? repoRoot,
     encoding: "utf8",
   });
 }
@@ -31,10 +38,11 @@ export function computeVersionLabel({ branch, shortSha, dirty }) {
   return `${branchLabel}@${shortLabel}${dirty === true ? "-dirty" : ""}`;
 }
 
-export function resolveGitState() {
-  const shaResult = runGit(["rev-parse", "HEAD"]);
-  const branchResult = runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
-  const statusResult = runGit(["status", "--short"]);
+export function resolveGitState(options = {}) {
+  const cwd = options.cwd ?? repoRoot;
+  const shaResult = runGit(["rev-parse", "HEAD"], { cwd });
+  const branchResult = runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd });
+  const statusResult = runGit(["status", "--short"], { cwd });
 
   const sha = shaResult.status === 0 ? shaResult.stdout.trim() : "unknown";
   const branch = branchResult.status === 0 ? branchResult.stdout.trim() : "unknown";
@@ -47,6 +55,7 @@ export function resolveGitState() {
       : [];
 
   return {
+    cwd,
     sha,
     shortSha: sha === "unknown" ? "unknown" : sha.slice(0, 12),
     branch,
@@ -60,37 +69,60 @@ export function resolveGitState() {
   };
 }
 
-export function gitCommitExists(commitish) {
+export function readGitRemote(name = "origin", options = {}) {
+  const result = runGit(["remote", "get-url", name], options);
+  return result.status === 0 ? readString(result.stdout) : null;
+}
+
+export function gitCommitExists(commitish, options = {}) {
   const commit = readString(commitish);
   if (!commit) return false;
-  const result = runGit(["cat-file", "-e", `${commit}^{commit}`]);
+  const result = runGit(["cat-file", "-e", `${commit}^{commit}`], options);
   return result.status === 0;
 }
 
-export function gitCommitInHistory(commitish) {
+export function gitCommitInHistory(commitish, options = {}) {
   const commit = readString(commitish);
   if (!commit) return false;
-  const result = runGit(["rev-list", "--all", "--max-count=1", commit]);
+  const result = runGit(["rev-list", "--all", "--max-count=1", commit], options);
   return result.status === 0 && result.stdout.trim().length > 0;
 }
 
-export function inspectDeploySource(gitState = resolveGitState()) {
+export function inspectDeploySource(gitStateInput, options = {}) {
+  const cwd = options.cwd ?? gitStateInput?.cwd ?? repoRoot;
+  const gitState = gitStateInput ?? resolveGitState({ cwd });
   const failures = [];
   const warnings = [];
+  const remoteUrl = readGitRemote("origin", { cwd });
+  const canonicalRemote = normalizeGitRemote(options.canonicalRemote ?? productionConfig.canonicalRemote);
+  const canonicalBranch = readString(options.canonicalBranch) ?? productionConfig.canonicalBranch;
+  const normalizedRemoteUrl = normalizeGitRemote(remoteUrl);
 
   if (gitState.sha === "unknown") {
     failures.push("git rev-parse HEAD failed; this checkout is missing commit metadata.");
   }
 
-  if (gitState.branch === "unknown") {
-    failures.push("git branch could not be resolved; this looks like a bundle-style checkout rather than a tracked release.");
+  if (gitState.branch === "unknown" || gitState.branch === "HEAD") {
+    failures.push("git branch could not be resolved; production releases must run from a tracked branch.");
   }
 
-  if (gitState.sha !== "unknown" && !gitCommitExists(gitState.sha)) {
+  if (!remoteUrl) {
+    failures.push("origin remote is missing; production releases must come from a canonical GitHub remote.");
+  } else if (!normalizedRemoteUrl) {
+    failures.push(`origin remote ${remoteUrl} could not be normalized for canonical verification.`);
+  } else if (canonicalRemote && normalizedRemoteUrl !== canonicalRemote) {
+    failures.push(`origin remote ${remoteUrl} is not the canonical GitHub source ${canonicalRemote}.`);
+  }
+
+  if (canonicalBranch && gitState.branch !== "unknown" && gitState.branch !== "HEAD" && gitState.branch !== canonicalBranch) {
+    failures.push(`checked out branch ${gitState.branch} does not match canonical production branch ${canonicalBranch}.`);
+  }
+
+  if (gitState.sha !== "unknown" && !gitCommitExists(gitState.sha, { cwd })) {
     failures.push(`commit ${gitState.sha} is not present as a git commit object in this checkout.`);
   }
 
-  if (gitState.sha !== "unknown" && !gitCommitInHistory(gitState.sha)) {
+  if (gitState.sha !== "unknown" && !gitCommitInHistory(gitState.sha, { cwd })) {
     failures.push(`commit ${gitState.sha} is not reachable from local git history.`);
   }
 
@@ -103,7 +135,10 @@ export function inspectDeploySource(gitState = resolveGitState()) {
     failures,
     warnings,
     gitState,
-    bundleDetected: failures.some((entry) => /bundle-style checkout|missing commit metadata/.test(entry)),
+    remoteUrl,
+    normalizedRemoteUrl,
+    canonicalRemote,
+    canonicalBranch,
   };
 }
 
@@ -279,14 +314,22 @@ export async function fetchVersionInfo(target) {
   return extractVersionInfo(payload, versionUrl);
 }
 
-export async function appendDeployRecord(record) {
-  await mkdir(deployLogDir, { recursive: true });
-  await appendFile(deployHistoryFile, `${JSON.stringify(record)}\n`, "utf8");
-  await writeFile(latestDeployFile, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+export async function appendDeployRecord(record, options = {}) {
+  const config = options.config ?? productionConfig;
+  await mkdir(config.deployDir, { recursive: true });
+  await appendFile(config.deployHistoryFile, `${JSON.stringify(record)}\n`, "utf8");
+  await writeLatestDeployRecord(record, { config });
 }
 
-export async function readDeployHistory(limit = 10) {
-  const raw = await readFile(deployHistoryFile, "utf8").catch(() => "");
+export async function writeLatestDeployRecord(record, options = {}) {
+  const config = options.config ?? productionConfig;
+  await mkdir(config.deployDir, { recursive: true });
+  await writeFile(config.latestDeployFile, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+}
+
+export async function readDeployHistory(limit = 10, options = {}) {
+  const config = options.config ?? productionConfig;
+  const raw = await readFile(config.deployHistoryFile, "utf8").catch(() => "");
   return raw
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -301,6 +344,11 @@ export async function readDeployHistory(limit = 10) {
     .filter(Boolean)
     .slice(-limit)
     .reverse();
+}
+
+export async function readLatestDeployRecord(options = {}) {
+  const config = options.config ?? productionConfig;
+  return readJson(config.latestDeployFile);
 }
 
 export function printPass(message) {

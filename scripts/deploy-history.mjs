@@ -15,7 +15,7 @@ for (const item of items) {
   console.log(
     `- ${item.deployedAt} sha=${item.commitSha} shortSha=${item.shortSha} branch=${item.branch} dirty=${
       item.dirty ? "YES" : "NO"
-    } actor=${item.actor ?? "unknown"} versionLabel=${item.versionLabel}`
+    } actor=${item.actor ?? "unknown"} versionLabel=${item.versionLabel} releaseRoot=${item.releaseRoot ?? "unknown"}`
   );
 }
 

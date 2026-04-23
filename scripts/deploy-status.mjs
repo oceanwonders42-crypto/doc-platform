@@ -1,99 +1,66 @@
-import {
-  commitsMatch,
-  fetchVersionInfo,
-  printFail,
-  printPass,
-  resolveGitState,
-} from "./deploy-lib.mjs";
+import { commitsMatch, fetchVersionInfo, printFail, printPass, readLatestDeployRecord, repoRoot } from "./deploy-lib.mjs";
+import { resolveProductionReleaseConfig } from "./production-release-config.mjs";
+import { collectPm2State } from "./production-guard-actions.mjs";
 
-const localGit = resolveGitState();
-const targets = [
-  { service: "api", url: "http://127.0.0.1:4000" },
-  { service: "web", url: "http://127.0.0.1:3000" },
-];
-
+const config = resolveProductionReleaseConfig({ repoRoot });
 const failures = [];
-const liveResults = [];
 
-console.log(`[deploy-status] local branch=${localGit.branch}`);
-console.log(`[deploy-status] local sha=${localGit.sha}`);
-console.log(`[deploy-status] local shortSha=${localGit.shortSha}`);
-console.log(`[deploy-status] local dirty=${localGit.dirty ? "YES" : "NO"}`);
-console.log(`[deploy-status] local versionLabel=${localGit.versionLabel}`);
-
-if (localGit.sha === "unknown") {
-  failures.push("local git SHA could not be resolved");
-}
-if (localGit.dirty) {
-  failures.push("local working tree is dirty");
+const latest = await readLatestDeployRecord({ config });
+if (!latest || typeof latest !== "object") {
+  printFail("no recorded production deploy was found", `Run pnpm deploy:production from ${config.canonicalSourceRoot}.`);
+  process.exit(1);
 }
 
-for (const target of targets) {
-  try {
-    const result = await fetchVersionInfo(target.url);
-    liveResults.push(result);
-    console.log(
-      `[deploy-status] ${target.service} live sha=${result.commitHash} shortSha=${
-        result.shortCommitHash ?? "unknown"
-      } source=${result.buildSource ?? "unknown"} dirty=${
-        result.buildDirty === true ? "YES" : result.buildDirty === false ? "NO" : "unknown"
-      } versionLabel=${result.versionLabel}`
-    );
-  } catch (error) {
-    failures.push(`${target.service} is unreachable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
+console.log(`[deploy-status] recorded commit=${latest.commitSha}`);
+console.log(`[deploy-status] recorded branch=${latest.branch}`);
+console.log(`[deploy-status] recorded releaseRoot=${latest.releaseRoot}`);
+console.log(`[deploy-status] recorded sourceRoot=${latest.sourceRoot}`);
+console.log(`[deploy-status] recorded actor=${latest.actor ?? "unknown"}`);
 
-const api = liveResults.find((entry) => entry.service === "api");
-const web = liveResults.find((entry) => entry.service === "web");
+const versions = {
+  localhostApi: await fetchVersionInfo("http://127.0.0.1:4000").catch((error) => ({ error })),
+  localhostWeb: await fetchVersionInfo("http://127.0.0.1:3000").catch((error) => ({ error })),
+  publicApi: await fetchVersionInfo("https://api.onyxintels.com/api/version").catch((error) => ({ error })),
+  publicWeb: await fetchVersionInfo("https://onyxintels.com/version").catch((error) => ({ error })),
+};
 
-if (!api) failures.push("API live version is unavailable");
-if (!web) failures.push("web live version is unavailable");
-
-if (api && web) {
-  if (api.commitHash !== web.commitHash) {
-    failures.push(`live API/web commitHash mismatch (${api.commitHash} vs ${web.commitHash})`);
+for (const [label, payload] of Object.entries(versions)) {
+  if (payload?.error) {
+    failures.push(`${label} is unreachable: ${payload.error instanceof Error ? payload.error.message : String(payload.error)}`);
+    continue;
   }
-  if ((api.shortCommitHash ?? "unknown") !== (web.shortCommitHash ?? "unknown")) {
-    failures.push(
-      `live API/web shortCommitHash mismatch (${api.shortCommitHash ?? "unknown"} vs ${web.shortCommitHash ?? "unknown"})`
-    );
-  }
-  if (api.versionLabel !== web.versionLabel) {
-    failures.push(`live API/web versionLabel mismatch (${api.versionLabel} vs ${web.versionLabel})`);
-  }
-  if ((api.buildSource ?? "unknown") !== (web.buildSource ?? "unknown")) {
-    failures.push(`live API/web buildSource mismatch (${api.buildSource ?? "unknown"} vs ${web.buildSource ?? "unknown"})`);
-  }
-  if (api.buildDirty !== web.buildDirty) {
-    failures.push(
-      `live API/web buildDirty mismatch (${api.buildDirty === null ? "unknown" : api.buildDirty ? "YES" : "NO"} vs ${
-        web.buildDirty === null ? "unknown" : web.buildDirty ? "YES" : "NO"
-      })`
-    );
+  console.log(
+    `[deploy-status] ${label} sha=${payload.commitHash} source=${payload.buildSource ?? "unknown"} dirty=${
+      payload.buildDirty === true ? "YES" : payload.buildDirty === false ? "NO" : "unknown"
+    } versionLabel=${payload.versionLabel}`
+  );
+  if (!commitsMatch(latest.commitSha, payload.commitHash)) {
+    failures.push(`${label} commit ${payload.commitHash} does not match recorded ${latest.commitSha}`);
   }
 }
 
-for (const result of liveResults) {
-  if (!commitsMatch(localGit.sha, result.commitHash)) {
-    failures.push(`${result.service} live commit ${result.commitHash} does not match local ${localGit.sha}`);
-  }
-  if (!result.buildSource) {
-    failures.push(`${result.service} live buildSource is missing`);
-  }
-  if (result.buildDirty === null) {
-    failures.push(`${result.service} live buildDirty is missing`);
+const pm2State = await collectPm2State({ cwd: config.canonicalSourceRoot });
+if (!pm2State.success) {
+  failures.push(`unable to read PM2 state (${pm2State.command})`);
+} else {
+  for (const appName of ["doc-platform-api", "doc-platform-web", "doc-platform-worker"]) {
+    const app = pm2State.apps?.[appName];
+    if (!app) {
+      failures.push(`${appName} is missing from PM2`);
+      continue;
+    }
+    console.log(`[deploy-status] ${appName} cwd=${app.pm_cwd ?? app.cwd ?? "unknown"} script=${app.script ?? "unknown"} status=${app.status}`);
+    if (!String(app.pm_cwd ?? app.cwd ?? "").startsWith(latest.releaseRoot)) {
+      failures.push(`${appName} is not running from recorded release root ${latest.releaseRoot}`);
+    }
   }
 }
-
-const liveMatchesLocal = failures.length === 0;
-console.log(`[deploy-status] liveMatchesLocal=${liveMatchesLocal ? "YES" : "NO"}`);
 
 if (failures.length > 0) {
   for (const failure of failures) {
-    printFail(failure, "Redeploy or roll back until local, API, and web all report the same clean version.");
+    printFail(failure, "Re-run the runtime guard and redeploy from the canonical source if production has drifted.");
   }
-  process.exitCode = 1;
-} else {
-  printPass(`local and live versions match (${localGit.sha}, ${localGit.versionLabel})`);
+  process.exit(1);
 }
+
+printPass(`production matches recorded release ${latest.commitSha} at ${latest.releaseRoot}`);

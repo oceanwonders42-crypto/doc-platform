@@ -133,6 +133,8 @@ function verifyCompletedBuildMeta({ failures, warnings, passes }, service, build
 }
 
 export async function verifyDeployConfig(options = {}) {
+  const runtimeRepoRoot = options.repoRootOverride ?? repoRoot;
+  const skipCanonicalSourceCheck = options.skipCanonicalSourceCheck === true;
   const requireBuilt = options.requireBuilt === true;
   const expectedSha = readScript(options.expectedSha);
   const expectedVersionLabel = readScript(options.expectedVersionLabel);
@@ -141,18 +143,20 @@ export async function verifyDeployConfig(options = {}) {
   const warnings = [];
   const passes = [];
 
-  const deploySource = inspectDeploySource();
-  if (!deploySource.ok) {
-    failures.push(...deploySource.failures);
-  } else {
-    passes.push(`git-backed deploy source verified at commit ${deploySource.gitState.sha}`);
+  if (!skipCanonicalSourceCheck) {
+    const deploySource = inspectDeploySource(undefined, { cwd: runtimeRepoRoot });
+    if (!deploySource.ok) {
+      failures.push(...deploySource.failures);
+    } else {
+      passes.push(`git-backed deploy source verified at commit ${deploySource.gitState.sha}`);
+    }
+    warnings.push(...deploySource.warnings);
   }
-  warnings.push(...deploySource.warnings);
 
-  const ecosystemPath = path.join(repoRoot, "ecosystem.config.cjs");
-  const apiPackagePath = path.join(repoRoot, "apps", "api", "package.json");
-  const webPackagePath = path.join(repoRoot, "apps", "web", "package.json");
-  const startWrapperPath = path.join(repoRoot, "scripts", "start-service-with-build-info.mjs");
+  const ecosystemPath = path.join(runtimeRepoRoot, "ecosystem.config.cjs");
+  const apiPackagePath = path.join(runtimeRepoRoot, "apps", "api", "package.json");
+  const webPackagePath = path.join(runtimeRepoRoot, "apps", "web", "package.json");
+  const startWrapperPath = path.join(runtimeRepoRoot, "scripts", "start-service-with-build-info.mjs");
 
   const apiScripts = await readPackageScripts(apiPackagePath);
   const webScripts = await readPackageScripts(webPackagePath);
@@ -173,7 +177,7 @@ export async function verifyDeployConfig(options = {}) {
     findPm2App(ecosystem, "doc-platform-api"),
     {
       name: "doc-platform-api",
-      cwd: path.join(repoRoot, "apps", "api"),
+      cwd: path.join(runtimeRepoRoot, "apps", "api"),
       script: startWrapperPath,
       args: ["api", "node", "dist/http/server.js"],
     }
@@ -183,7 +187,7 @@ export async function verifyDeployConfig(options = {}) {
     findPm2App(ecosystem, "doc-platform-worker"),
     {
       name: "doc-platform-worker",
-      cwd: path.join(repoRoot, "apps", "api"),
+      cwd: path.join(runtimeRepoRoot, "apps", "api"),
       script: startWrapperPath,
       args: ["worker", "node", "dist/workers/worker.js"],
     }
@@ -193,7 +197,7 @@ export async function verifyDeployConfig(options = {}) {
     findPm2App(ecosystem, "doc-platform-web"),
     {
       name: "doc-platform-web",
-      cwd: path.join(repoRoot, "apps", "web"),
+      cwd: path.join(runtimeRepoRoot, "apps", "web"),
       script: startWrapperPath,
       args: ["web", "node", "node_modules/next/dist/bin/next", "start"],
     }
@@ -204,11 +208,11 @@ export async function verifyDeployConfig(options = {}) {
   }
 
   const expectedFiles = [
-    path.join(repoRoot, "apps", "api", "build-meta.json"),
-    path.join(repoRoot, "apps", "api", "dist", "http", "server.js"),
-    path.join(repoRoot, "apps", "api", "dist", "workers", "worker.js"),
-    path.join(repoRoot, "apps", "web", "build-meta.json"),
-    path.join(repoRoot, "apps", "web", ".next", "BUILD_ID"),
+    path.join(runtimeRepoRoot, "apps", "api", "build-meta.json"),
+    path.join(runtimeRepoRoot, "apps", "api", "dist", "http", "server.js"),
+    path.join(runtimeRepoRoot, "apps", "api", "dist", "workers", "worker.js"),
+    path.join(runtimeRepoRoot, "apps", "web", "build-meta.json"),
+    path.join(runtimeRepoRoot, "apps", "web", ".next", "BUILD_ID"),
   ];
 
   for (const filePath of expectedFiles) {
@@ -219,10 +223,10 @@ export async function verifyDeployConfig(options = {}) {
     }
   }
 
-  const apiBuildMeta = await readBuildMeta(path.join(repoRoot, "apps", "api"));
-  const webBuildMeta = await readBuildMeta(path.join(repoRoot, "apps", "web"));
-  const apiBuildMetaRaw = await readJsonFile(path.join(repoRoot, "apps", "api", "build-meta.json"));
-  const webBuildMetaRaw = await readJsonFile(path.join(repoRoot, "apps", "web", "build-meta.json"));
+  const apiBuildMeta = await readBuildMeta(path.join(runtimeRepoRoot, "apps", "api"));
+  const webBuildMeta = await readBuildMeta(path.join(runtimeRepoRoot, "apps", "web"));
+  const apiBuildMetaRaw = await readJsonFile(path.join(runtimeRepoRoot, "apps", "api", "build-meta.json"));
+  const webBuildMetaRaw = await readJsonFile(path.join(runtimeRepoRoot, "apps", "web", "build-meta.json"));
 
   verifyCompletedBuildMeta({ failures, warnings, passes }, "api", apiBuildMetaRaw);
   verifyCompletedBuildMeta({ failures, warnings, passes }, "web", webBuildMetaRaw);

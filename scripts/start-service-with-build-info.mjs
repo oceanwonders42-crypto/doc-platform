@@ -1,6 +1,9 @@
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+
+import { readLatestDeployRecord } from "./deploy-lib.mjs";
+import { normalizePath, resolveProductionReleaseConfig } from "./production-release-config.mjs";
 
 function readJson(filePath) {
   try {
@@ -19,6 +22,10 @@ function computeVersionLabel(build) {
 function readEnv(name) {
   const value = process.env[name];
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function samePath(left, right) {
+  return normalizePath(left) === normalizePath(right);
 }
 
 function readBuildInfo(cwd) {
@@ -136,6 +143,76 @@ function collectStartupGuards(service, build) {
   return { errors, warnings, allowAmbiguousBuildState };
 }
 
+function inspectDurableEnvLink(filePath, expectedTarget) {
+  try {
+    const stats = lstatSync(filePath);
+    if (!stats.isSymbolicLink()) {
+      return { ok: false, reason: "not_a_symlink" };
+    }
+    const actualTarget = normalizePath(realpathSync(filePath));
+    return {
+      ok: samePath(actualTarget, expectedTarget),
+      reason: samePath(actualTarget, expectedTarget) ? null : `wrong_target:${actualTarget}`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function collectRuntimeLockErrors(service, cwd, build) {
+  const errors = [];
+  if (process.env.NODE_ENV !== "production") {
+    return errors;
+  }
+  if (readEnv("DOC_RUNTIME_RELEASE_LOCK") === "false") {
+    return errors;
+  }
+
+  const runtimeReleaseRoot = path.dirname(path.dirname(cwd));
+  const runtimeConfig = resolveProductionReleaseConfig({ repoRoot: runtimeReleaseRoot });
+  const latest = await readLatestDeployRecord({ config: runtimeConfig });
+  if (!latest || typeof latest !== "object") {
+    errors.push(`latest deploy metadata is missing at ${runtimeConfig.latestDeployFile}`);
+    return errors;
+  }
+
+  if (!samePath(runtimeReleaseRoot, latest.releaseRoot)) {
+    errors.push(`runtime release root ${runtimeReleaseRoot} does not match recorded release ${latest.releaseRoot}`);
+  }
+
+  if (build.sha !== "unknown" && latest.commitSha && build.sha !== latest.commitSha) {
+    errors.push(`runtime build SHA ${build.sha} does not match recorded release commit ${latest.commitSha}`);
+  }
+
+  const runtimeApiEnv = inspectDurableEnvLink(
+    path.join(runtimeReleaseRoot, "apps", "api", ".env"),
+    runtimeConfig.durableApiEnvPath
+  );
+  if (!runtimeApiEnv.ok) {
+    errors.push(`API env linkage drifted (${runtimeApiEnv.reason})`);
+  }
+
+  const runtimeWebEnv = inspectDurableEnvLink(
+    path.join(runtimeReleaseRoot, "apps", "web", ".env.local"),
+    runtimeConfig.durableWebEnvPath
+  );
+  if (!runtimeWebEnv.ok) {
+    errors.push(`web env linkage drifted (${runtimeWebEnv.reason})`);
+  }
+
+  if (service === "api" || service === "worker") {
+    const expectedReleaseRoot = readEnv("DOC_PROD_RELEASE_ROOT");
+    if (expectedReleaseRoot && !samePath(runtimeReleaseRoot, expectedReleaseRoot)) {
+      errors.push(`runtime release root ${runtimeReleaseRoot} does not match DOC_PROD_RELEASE_ROOT ${expectedReleaseRoot}`);
+    }
+  }
+
+  return errors;
+}
+
 const [service, command, ...args] = process.argv.slice(2);
 
 if (!service || !command) {
@@ -168,13 +245,19 @@ startupGuards.warnings.forEach((warning) => {
   console.warn(`[startup] CRITICAL ${warning}`);
 });
 
-if (startupGuards.errors.length > 0) {
+const runtimeLockErrors = await collectRuntimeLockErrors(service, cwd, build);
+runtimeLockErrors.forEach((error) => {
+  console.error(`[startup] FATAL runtime lock ${error}`);
+});
+
+if (startupGuards.errors.length > 0 || runtimeLockErrors.length > 0) {
+  const allErrors = [...startupGuards.errors, ...runtimeLockErrors];
   startupGuards.errors.forEach((error) => {
     console.error(`[startup] FATAL ${error}`);
   });
   console.error("[startup] refusing to start", {
     service,
-    errors: startupGuards.errors,
+    errors: allErrors,
     buildMetaPath: build.buildMetaPath,
     allowAmbiguousBuildState: startupGuards.allowAmbiguousBuildState,
   });

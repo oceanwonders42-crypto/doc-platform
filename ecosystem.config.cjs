@@ -15,12 +15,16 @@ function loadOptionalEnvFile(filePath) {
 
 const apiEnvPath = path.join(__dirname, "apps", "api", ".env");
 const apiEnvLocalPath = path.join(__dirname, "apps", "api", ".env.local");
+const webEnvPath = path.join(__dirname, "apps", "web", ".env.local");
 
 loadOptionalEnvFile(apiEnvPath);
 loadOptionalEnvFile(apiEnvLocalPath);
+loadOptionalEnvFile(webEnvPath);
 
 const resolvedTesseractPath =
   process.env.TESSERACT_PATH?.trim() || "C:\\Program Files\\Tesseract-OCR\\tesseract.exe";
+const resolvedPm2LogRoot =
+  process.env.DOC_PROD_LOG_ROOT?.trim() || path.join(__dirname, "logs", "pm2");
 const resolvedOpenAiEnv = {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
@@ -47,8 +51,8 @@ module.exports = {
       max_memory_restart: "700M",
       merge_logs: true,
       time: true,
-      out_file: path.join(__dirname, "logs", "pm2", "api-out.log"),
-      error_file: path.join(__dirname, "logs", "pm2", "api-error.log"),
+      out_file: path.join(resolvedPm2LogRoot, "api-out.log"),
+      error_file: path.join(resolvedPm2LogRoot, "api-error.log"),
       env: {
         NODE_ENV: "production",
         SESSION_SECRET: process.env.SESSION_SECRET,
@@ -56,6 +60,15 @@ module.exports = {
         API_SECRET: process.env.API_SECRET,
         PROVIDER_SESSION_SECRET: process.env.PROVIDER_SESSION_SECRET,
         TESSERACT_PATH: resolvedTesseractPath,
+        DOC_PROD_STATE_ROOT: process.env.DOC_PROD_STATE_ROOT,
+        DOC_PROD_RELEASE_ROOT: process.env.DOC_PROD_RELEASE_ROOT,
+        DOC_PROD_CANONICAL_SOURCE: process.env.DOC_PROD_CANONICAL_SOURCE,
+        DOC_PROD_CANONICAL_REMOTE: process.env.DOC_PROD_CANONICAL_REMOTE,
+        DOC_PROD_CANONICAL_BRANCH: process.env.DOC_PROD_CANONICAL_BRANCH,
+        DOC_PROD_API_ENV: process.env.DOC_PROD_API_ENV,
+        DOC_PROD_WEB_ENV: process.env.DOC_PROD_WEB_ENV,
+        DOC_PROD_LOG_ROOT: resolvedPm2LogRoot,
+        DOC_RUNTIME_RELEASE_LOCK: process.env.DOC_RUNTIME_RELEASE_LOCK ?? "true",
         ...resolvedOpenAiEnv,
       },
     },
@@ -76,11 +89,20 @@ module.exports = {
       max_memory_restart: "700M",
       merge_logs: true,
       time: true,
-      out_file: path.join(__dirname, "logs", "pm2", "worker-out.log"),
-      error_file: path.join(__dirname, "logs", "pm2", "worker-error.log"),
+      out_file: path.join(resolvedPm2LogRoot, "worker-out.log"),
+      error_file: path.join(resolvedPm2LogRoot, "worker-error.log"),
       env: {
         NODE_ENV: "production",
         TESSERACT_PATH: resolvedTesseractPath,
+        DOC_PROD_STATE_ROOT: process.env.DOC_PROD_STATE_ROOT,
+        DOC_PROD_RELEASE_ROOT: process.env.DOC_PROD_RELEASE_ROOT,
+        DOC_PROD_CANONICAL_SOURCE: process.env.DOC_PROD_CANONICAL_SOURCE,
+        DOC_PROD_CANONICAL_REMOTE: process.env.DOC_PROD_CANONICAL_REMOTE,
+        DOC_PROD_CANONICAL_BRANCH: process.env.DOC_PROD_CANONICAL_BRANCH,
+        DOC_PROD_API_ENV: process.env.DOC_PROD_API_ENV,
+        DOC_PROD_WEB_ENV: process.env.DOC_PROD_WEB_ENV,
+        DOC_PROD_LOG_ROOT: resolvedPm2LogRoot,
+        DOC_RUNTIME_RELEASE_LOCK: process.env.DOC_RUNTIME_RELEASE_LOCK ?? "true",
         ...resolvedOpenAiEnv,
       },
     },
@@ -101,9 +123,21 @@ module.exports = {
       max_memory_restart: "900M",
       merge_logs: true,
       time: true,
-      out_file: path.join(__dirname, "logs", "pm2", "web-out.log"),
-      error_file: path.join(__dirname, "logs", "pm2", "web-error.log"),
-      env: { NODE_ENV: "production", PORT: "3000" },
+      out_file: path.join(resolvedPm2LogRoot, "web-out.log"),
+      error_file: path.join(resolvedPm2LogRoot, "web-error.log"),
+      env: {
+        NODE_ENV: "production",
+        PORT: "3000",
+        DOC_PROD_STATE_ROOT: process.env.DOC_PROD_STATE_ROOT,
+        DOC_PROD_RELEASE_ROOT: process.env.DOC_PROD_RELEASE_ROOT,
+        DOC_PROD_CANONICAL_SOURCE: process.env.DOC_PROD_CANONICAL_SOURCE,
+        DOC_PROD_CANONICAL_REMOTE: process.env.DOC_PROD_CANONICAL_REMOTE,
+        DOC_PROD_CANONICAL_BRANCH: process.env.DOC_PROD_CANONICAL_BRANCH,
+        DOC_PROD_API_ENV: process.env.DOC_PROD_API_ENV,
+        DOC_PROD_WEB_ENV: process.env.DOC_PROD_WEB_ENV,
+        DOC_PROD_LOG_ROOT: resolvedPm2LogRoot,
+        DOC_RUNTIME_RELEASE_LOCK: process.env.DOC_RUNTIME_RELEASE_LOCK ?? "true",
+      },
     },
   ],
 };
