@@ -3,6 +3,51 @@ import assert from "node:assert/strict";
 import { runImageOcrFallback } from "./imageOcrFallback";
 import { runOcrPipeline } from "./index";
 
+async function testPdfEmbeddedTextSkipsFallback() {
+  let fallbackCalls = 0;
+
+  const result = await runOcrPipeline(
+    Buffer.from("fake-pdf"),
+    {
+      mimeType: "application/pdf",
+      documentId: "doc-pdf-1",
+      firmId: "firm-pdf-1",
+    },
+    {
+      extractEmbeddedText: async () => ({
+        fullText: "Embedded PDF text from a medical record.",
+        pageTexts: [{ page: 1, text: "Embedded PDF text from a medical record." }],
+        ocrEngine: "embedded",
+        ocrConfidence: 0.95,
+        preprocessingApplied: [],
+        pageDiagnostics: [
+          {
+            pageNumber: 1,
+            ocrMethod: "embedded",
+            status: "GOOD",
+            averageConfidence: 0.95,
+            textLength: 40,
+          },
+        ],
+      }),
+      runImageOcrFallback: async () => {
+        fallbackCalls += 1;
+        return {
+          fullText: "Fallback OCR text",
+          pageTexts: [{ page: 1, text: "Fallback OCR text" }],
+          ocrEngine: "tesseract",
+          ocrConfidence: 0.8,
+          preprocessingApplied: ["attempted_image_ocr"],
+          pageDiagnostics: [],
+        };
+      },
+    }
+  );
+
+  assert.equal(fallbackCalls, 0, "Expected embedded-text PDFs to skip image fallback when text is already available.");
+  assert.match(result.fullText, /Embedded PDF text/);
+}
+
 async function testImageMimeTypeRoutesIntoFallback() {
   let fallbackCalls = 0;
 
@@ -158,6 +203,8 @@ async function testEmptyRasterizationReportsFailure() {
 }
 
 async function main() {
+  await testPdfEmbeddedTextSkipsFallback();
+  console.log("  - embedded-text PDFs skip image fallback");
   await testImageMimeTypeRoutesIntoFallback();
   console.log("  - image MIME types route into the fallback path");
   await testFallbackRecordsPreprocessingMetadata();

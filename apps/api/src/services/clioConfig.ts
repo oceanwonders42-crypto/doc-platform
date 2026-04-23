@@ -7,13 +7,26 @@ import { prisma } from "../db/prisma";
 import { decryptSecret } from "./credentialEncryption";
 
 export type ClioConfigResult =
-  | { configured: true; accessToken: string; claimNumberCustomFieldId: string | null }
+  | {
+      configured: true;
+      accessToken: string;
+      claimNumberCustomFieldId: string | null;
+      integrationId: string | null;
+      sandbox: ClioSandboxConfig | null;
+    }
   | { configured: false; error?: string };
 
 type ClioCredentialPayload = {
   accessToken?: unknown;
   apiKey?: unknown;
   token?: unknown;
+  sandboxMode?: unknown;
+  sandboxLabel?: unknown;
+};
+
+export type ClioSandboxConfig = {
+  mode: "local_case_api";
+  label: string | null;
 };
 
 type ClioFieldMappingRow = {
@@ -76,6 +89,18 @@ function resolveAccessTokenFromCredential(payload: ClioCredentialPayload): strin
   return null;
 }
 
+function resolveSandboxConfigFromCredential(payload: ClioCredentialPayload): ClioSandboxConfig | null {
+  const sandboxMode = normalizeString(payload.sandboxMode);
+  if (sandboxMode !== "local_case_api") {
+    return null;
+  }
+
+  return {
+    mode: "local_case_api",
+    label: normalizeString(payload.sandboxLabel),
+  };
+}
+
 /**
  * Get Clio config for the firm. Prefers encrypted credentials via crmIntegrationId;
  * falls back to firm.settings.clioAccessToken.
@@ -115,7 +140,13 @@ export async function getClioConfig(firmId: string): Promise<ClioConfigResult> {
         const parsed = JSON.parse(decryptSecret(cred.encryptedSecret)) as ClioCredentialPayload;
         const token = resolveAccessTokenFromCredential(parsed);
         if (token) {
-          return { configured: true, accessToken: token, claimNumberCustomFieldId };
+          return {
+            configured: true,
+            accessToken: token,
+            claimNumberCustomFieldId,
+            integrationId: integration?.id ?? null,
+            sandbox: resolveSandboxConfigFromCredential(parsed),
+          };
         }
       } catch {
         return { configured: false, error: "Failed to decrypt Clio credential" };
@@ -130,6 +161,8 @@ export async function getClioConfig(firmId: string): Promise<ClioConfigResult> {
       configured: true,
       accessToken: legacyToken.trim(),
       claimNumberCustomFieldId: resolveClaimNumberCustomFieldId(settings, []),
+      integrationId: null,
+      sandbox: null,
     };
   }
 

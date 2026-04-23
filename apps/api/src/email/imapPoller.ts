@@ -1,6 +1,13 @@
 import { ImapFlow } from "imapflow";
 import crypto from "crypto";
 import { simpleParser } from "mailparser";
+import { PDFDocument, StandardFonts } from "pdf-lib";
+
+export type ImapSandboxConfig = {
+  mode: "local_imap_fixture";
+  label?: string | null;
+  fixtureId?: string | null;
+};
 
 export type ImapConfig = {
   host: string;
@@ -8,6 +15,7 @@ export type ImapConfig = {
   secure: boolean;
   auth: { user: string; pass: string };
   mailbox: string; // INBOX
+  sandbox?: ImapSandboxConfig | null;
 };
 
 export type EmailAttachment = {
@@ -46,11 +54,158 @@ function normalizeBodyText(text: string | undefined): string | undefined {
   return normalized ? normalized.slice(0, 20_000) : undefined;
 }
 
+export function shouldUseLocalMailboxSandbox(cfg: ImapConfig): boolean {
+  return (
+    process.env.NODE_ENV !== "production" &&
+    process.env.ONYX_ENABLE_LOCAL_MAILBOX_SANDBOX === "true" &&
+    cfg.sandbox?.mode === "local_imap_fixture"
+  );
+}
+
+async function buildSandboxPdf(lines: string[]): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([612, 792]);
+  page.drawText(lines.join("\n"), {
+    x: 40,
+    y: 720,
+    size: 12,
+    font,
+    lineHeight: 16,
+  });
+  return Buffer.from(await doc.save());
+}
+
+async function buildLocalMailboxSandboxMessages(
+  cfg: ImapConfig
+): Promise<EmailMessage[]> {
+  const fixtureId = cfg.sandbox?.fixtureId?.trim() || "default";
+  const label = cfg.sandbox?.label?.trim() || "Local mailbox sandbox";
+
+  const strongLines = [
+    "Medical Record",
+    "Patient: Riley Carter",
+    "Case Number: SMOKE-2026-001",
+    "Provider: Harbor Physical Therapy",
+    "Date of Loss: 02/14/2026",
+    "Diagnosis: Cervical strain and lumbar strain.",
+    "Physical therapy continues twice weekly.",
+  ];
+  const ambiguousLines = [
+    "Unsigned intake worksheet",
+    "Patient: Unverified caller",
+    "Provider: Community Urgent Care",
+    "Follow-up recommended pending identity confirmation.",
+  ];
+  const clioLines = [
+    "Insurance Letter",
+    "Client: Riley Carter",
+    "Case Number: SMOKE-2026-001",
+    "Carrier: Safe Harbor Insurance",
+    "Claim Number: CLM-SMOKE-4242",
+    "Policy Number: POL-SMOKE-7788",
+    "Date of Loss: 02/14/2026",
+    "Please update the matter with the current claim information.",
+  ];
+
+  const [strongPdf, ambiguousPdf, clioPdf] = await Promise.all([
+    buildSandboxPdf(strongLines),
+    buildSandboxPdf(ambiguousLines),
+    buildSandboxPdf(clioLines),
+  ]);
+
+  const baseHeaders = {
+    "x-onyx-local-mailbox-sandbox": "true",
+    "x-onyx-local-mailbox-fixture": fixtureId,
+    "x-onyx-local-mailbox-label": label,
+  };
+
+  return [
+    {
+      uid: 1001,
+      providerMessageId: `<${fixtureId}.strong@local-mailbox-sandbox.onyx>`,
+      fromEmail: "records@harborpt.local",
+      fromName: "Harbor Physical Therapy",
+      subject: "Medical record for Riley Carter",
+      bodyText: normalizeBodyText(strongLines.join("\n")),
+      sentAt: new Date("2026-04-20T14:30:00.000Z"),
+      receivedAt: new Date("2026-04-20T14:31:00.000Z"),
+      attachments: [
+        {
+          filename: "smoke-strong-record.pdf",
+          mimeType: "application/pdf",
+          content: strongPdf,
+        },
+      ],
+      rawHeaders: {
+        ...baseHeaders,
+        "message-id": `<${fixtureId}.strong@local-mailbox-sandbox.onyx>`,
+      },
+    },
+    {
+      uid: 1002,
+      providerMessageId: `<${fixtureId}.ambiguous@local-mailbox-sandbox.onyx>`,
+      fromEmail: "triage@communityurgent.local",
+      fromName: "Community Urgent Care",
+      subject: "Unsigned intake worksheet",
+      bodyText: normalizeBodyText(ambiguousLines.join("\n")),
+      sentAt: new Date("2026-04-20T15:00:00.000Z"),
+      receivedAt: new Date("2026-04-20T15:01:00.000Z"),
+      attachments: [
+        {
+          filename: "smoke-ambiguous-note.pdf",
+          mimeType: "application/pdf",
+          content: ambiguousPdf,
+        },
+      ],
+      rawHeaders: {
+        ...baseHeaders,
+        "message-id": `<${fixtureId}.ambiguous@local-mailbox-sandbox.onyx>`,
+      },
+    },
+    {
+      uid: 1003,
+      providerMessageId: `<${fixtureId}.clio@local-mailbox-sandbox.onyx>`,
+      fromEmail: "claims@safeharbor.local",
+      fromName: "Safe Harbor Insurance",
+      subject: "Carrier update for Riley Carter claim CLM-SMOKE-4242",
+      bodyText: normalizeBodyText(clioLines.join("\n")),
+      sentAt: new Date("2026-04-20T16:00:00.000Z"),
+      receivedAt: new Date("2026-04-20T16:01:00.000Z"),
+      attachments: [
+        {
+          filename: "smoke-clio-routing-letter.pdf",
+          mimeType: "application/pdf",
+          content: clioPdf,
+        },
+      ],
+      rawHeaders: {
+        ...baseHeaders,
+        "message-id": `<${fixtureId}.clio@local-mailbox-sandbox.onyx>`,
+      },
+    },
+  ];
+}
+
 export async function pollImapSinceUid(
   cfg: ImapConfig,
   lastUid: number | null,
   maxMessages = 25
 ): Promise<{ messages: EmailMessage[]; highestUid: number | null }> {
+  if (shouldUseLocalMailboxSandbox(cfg)) {
+    const fixtureId = cfg.sandbox?.fixtureId?.trim() || "default";
+    const sandboxMessages = await buildLocalMailboxSandboxMessages(cfg);
+    const messages = sandboxMessages
+      .filter((message) => (lastUid == null ? true : message.uid > lastUid))
+      .slice(0, maxMessages);
+    const highestUid =
+      messages.length > 0 ? messages[messages.length - 1].uid : null;
+    console.log(
+      `[imap:sandbox] fixture=${fixtureId} mailbox=${cfg.mailbox} messages=${messages.length} highestUid=${highestUid ?? "null"} realNetworkCall=false`
+    );
+    return { messages, highestUid };
+  }
+
   const client = new ImapFlow({
     host: cfg.host,
     port: cfg.port,
@@ -160,6 +315,13 @@ export function sha256(buf: Buffer) {
 export async function testImapConnection(
   cfg: ImapConfig
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (shouldUseLocalMailboxSandbox(cfg)) {
+    console.log(
+      `[imap:sandbox] test fixture=${cfg.sandbox?.fixtureId?.trim() || "default"} mailbox=${cfg.mailbox} realNetworkCall=false`
+    );
+    return { ok: true };
+  }
+
   const client = new ImapFlow({
     host: cfg.host,
     port: cfg.port,

@@ -5,7 +5,12 @@
  */
 import { prisma } from "../db/prisma";
 import { decryptSecret } from "./credentialEncryption";
-import { pollImapSinceUid } from "../email/imapPoller";
+import {
+  pollImapSinceUid,
+  shouldUseLocalMailboxSandbox,
+  type ImapConfig,
+  type ImapSandboxConfig,
+} from "../email/imapPoller";
 import { ingestDocumentFromBuffer } from "./ingestFromBuffer";
 import { extractEmailAutomationSnapshot } from "./emailAutomation";
 import { isEmailAutomationAllowedForFirm } from "./featureCompatibility";
@@ -13,10 +18,46 @@ import { createNotification } from "./notifications";
 import type { MailboxConnection } from "@prisma/client";
 import type { FirmIntegration } from "@prisma/client";
 import type { IntegrationCredential } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 
 type FirmIntegrationWithCreds = FirmIntegration & { credentials: IntegrationCredential[] };
 
+type MailboxCredentialPayload = {
+  imapHost: string;
+  imapPort: number;
+  imapSecure: boolean;
+  imapUsername: string;
+  imapPassword: string;
+  folder: string;
+  sandboxMode?: ImapSandboxConfig["mode"] | null;
+  sandboxLabel?: string | null;
+  sandboxFixtureId?: string | null;
+};
+
 const MAX_MESSAGES_PER_POLL = 25;
+
+type LocalMailboxSandboxScope = {
+  mailboxId: string | null;
+  firmId: string | null;
+};
+
+function normalizeScopeId(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function resolveLocalMailboxSandboxScope(): LocalMailboxSandboxScope {
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.ONYX_ENABLE_LOCAL_MAILBOX_SANDBOX !== "true"
+  ) {
+    return { mailboxId: null, firmId: null };
+  }
+  return {
+    mailboxId: normalizeScopeId(process.env.ONYX_LOCAL_MAILBOX_SANDBOX_MAILBOX_ID),
+    firmId: normalizeScopeId(process.env.ONYX_LOCAL_MAILBOX_SANDBOX_FIRM_ID),
+  };
+}
 
 function isPdfAttachment(filename: string, mimeType?: string | null): boolean {
   const lower = (filename || "").toLowerCase();
@@ -44,12 +85,17 @@ export type PollMailboxResult = {
   error?: string;
 };
 
+export type PollMailboxScope = {
+  firmId?: string;
+  mailboxId?: string;
+};
+
 /**
  * Poll a single mailbox: fetch new messages, ingest PDF attachments, update cursor and lastSyncAt.
  */
 export async function pollMailbox(mailbox: MailboxConnection, integration: FirmIntegrationWithCreds | null): Promise<PollMailboxResult> {
   const { id: mailboxId, firmId, integrationId } = mailbox;
-  let credentials: { imapHost: string; imapPort: number; imapSecure: boolean; imapUsername: string; imapPassword: string; folder: string };
+  let credentials: MailboxCredentialPayload;
   if (integrationId && integration?.credentials?.length) {
     try {
       credentials = JSON.parse(decryptSecret(integration.credentials[0].encryptedSecret));
@@ -74,18 +120,23 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
 
   let messages: Awaited<ReturnType<typeof pollImapSinceUid>>["messages"];
   let highestUid: number | null;
+  const pollConfig: ImapConfig = {
+    host: credentials.imapHost,
+    port: credentials.imapPort || 993,
+    secure: credentials.imapSecure ?? true,
+    auth: { user: credentials.imapUsername, pass: credentials.imapPassword },
+    mailbox: credentials.folder || "INBOX",
+    sandbox:
+      credentials.sandboxMode === "local_imap_fixture"
+        ? {
+            mode: "local_imap_fixture",
+            label: credentials.sandboxLabel,
+            fixtureId: credentials.sandboxFixtureId,
+          }
+        : undefined,
+  };
   try {
-    const out = await pollImapSinceUid(
-      {
-        host: credentials.imapHost,
-        port: credentials.imapPort || 993,
-        secure: credentials.imapSecure ?? true,
-        auth: { user: credentials.imapUsername, pass: credentials.imapPassword },
-        mailbox: credentials.folder || "INBOX",
-      },
-      lastUid,
-      MAX_MESSAGES_PER_POLL
-    );
+    const out = await pollImapSinceUid(pollConfig, lastUid, MAX_MESSAGES_PER_POLL);
     messages = out.messages;
     highestUid = out.highestUid;
   } catch (e) {
@@ -99,6 +150,20 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
     }).catch(() => {});
     createNotification(firmId, "mailbox_poll_failed", "Mailbox poll failed", `Poll failed for ${mailbox.emailAddress}: ${msg.slice(0, 200)}`, { mailboxId }).catch(() => {});
     return { ok: false, mailboxId, firmId, messagesProcessed: 0, attachmentsIngested: 0, error: msg };
+  }
+
+  if (shouldUseLocalMailboxSandbox(pollConfig)) {
+    const fixtureId = pollConfig.sandbox?.fixtureId?.trim() || "default";
+    const label = pollConfig.sandbox?.label?.trim() || "Local mailbox sandbox";
+    await prisma.integrationSyncLog.create({
+      data: {
+        firmId,
+        integrationId: integration!.id,
+        eventType: "mailbox_sandbox_poll",
+        status: "success",
+        message: `Local mailbox sandbox fixture=${fixtureId} label="${label}" realNetworkCall=false messages=${messages.length}`,
+      },
+    }).catch(() => {});
   }
 
   let attachmentsIngested = 0;
@@ -196,9 +261,19 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
 /**
  * Poll all active mailboxes for a firm (or all firms). Used by integration sync worker.
  */
-export async function pollAllActiveMailboxes(firmId?: string): Promise<PollMailboxResult[]> {
+export async function pollAllActiveMailboxes(
+  scope: PollMailboxScope = {}
+): Promise<PollMailboxResult[]> {
+  const sandboxScope = resolveLocalMailboxSandboxScope();
+  const effectiveFirmId = scope.firmId ?? sandboxScope.firmId;
+  const effectiveMailboxId = scope.mailboxId ?? sandboxScope.mailboxId;
+  const where: Prisma.MailboxConnectionWhereInput = {
+    active: true,
+    ...(effectiveFirmId ? { firmId: effectiveFirmId } : {}),
+    ...(effectiveMailboxId ? { id: effectiveMailboxId } : {}),
+  };
   const mailboxes = await prisma.mailboxConnection.findMany({
-    where: { active: true, ...(firmId ? { firmId } : {}) },
+    where,
     include: {
       integration: { include: { credentials: true } },
     },

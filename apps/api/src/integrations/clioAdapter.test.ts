@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 
 import {
   CLIO_CLAIM_NUMBER_MIN_CONFIDENCE,
+  buildLocalClioSandboxWriteBackPayload,
   buildClioMatterNote,
   decideClioClaimNumberWriteBack,
   deriveClioClaimNumberCandidate,
+  resolveClioWriteBackConfidence,
 } from "./clioAdapter";
 
 function main() {
@@ -39,6 +41,9 @@ function main() {
     insuranceFields: { claimNumber: "CLM-1234" },
   });
   assert.equal(lowConfidenceCandidate, null);
+
+  assert.equal(resolveClioWriteBackConfidence(0.56, 0.98), 0.98);
+  assert.equal(resolveClioWriteBackConfidence(0.91, null), 0.91);
 
   const conflictingCandidate = deriveClioClaimNumberCandidate({
     docType: "insurance_letter",
@@ -97,6 +102,49 @@ function main() {
   assert.deepEqual(noCandidateDecision, {
     action: "skip_no_candidate",
   });
+
+  const sandboxPayload = buildLocalClioSandboxWriteBackPayload({
+    context: {
+      ok: true,
+      accessToken: "sandbox-token",
+      matterId: "sandbox-matter-1",
+      claimNumberCustomFieldId: "claim-field-1",
+      integrationId: "integration-1",
+      sandbox: {
+        mode: "local_case_api",
+        label: "Internal smoke CASE_API sandbox",
+      },
+    },
+    documentContext: {
+      documentId: "doc-123",
+      fileName: "carrier-letter.pdf",
+      source: "mailbox_fixture",
+      ingestedAt: new Date("2026-04-21T12:00:00.000Z"),
+      extractedFields: {
+        claimNumber: "CLM-1234",
+        policyNumber: "POL-7788",
+        insurerName: "Safe Harbor Insurance",
+      },
+      docType: "insurance_letter",
+      confidence: 0.98,
+      insuranceFields: {
+        claimNumber: "CLM-1234",
+        policyNumber: "POL-7788",
+        insuranceCompany: "Safe Harbor Insurance",
+      },
+    },
+    note,
+    claimNumberCandidate: {
+      claimNumber: "CLM-1234",
+      confidence: 0.98,
+    },
+  });
+  assert.equal(sandboxPayload.mode, "local_case_api");
+  assert.equal(sandboxPayload.clioMatterId, "sandbox-matter-1");
+  assert.equal(sandboxPayload.claimNumberCandidate, "CLM-1234");
+  assert.equal(sandboxPayload.policyNumberCandidate, "POL-7788");
+  assert.equal(sandboxPayload.insuranceCarrierCandidate, "Safe Harbor Insurance");
+  assert.equal(sandboxPayload.realNetworkCall, false);
 
   console.log("clio adapter write-back tests passed");
 }

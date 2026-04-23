@@ -35,9 +35,12 @@ import { extractCourtFields } from "../ai/extractors/courtExtractor";
 import { extractTrafficCitationFields } from "../ai/extractors/trafficCitationExtractor";
 import { extractTrafficStatuteCode } from "../ai/extractors/trafficStatuteExtractor";
 import { createOrUpdateTrafficMatter } from "../services/trafficMatterService";
-import { matchDocumentToCase } from "../services/caseMatching";
 import { routeDocument } from "../services/documentRouting";
-import { getExtractedForRouting } from "../services/routingScorer";
+import {
+  getExtractedForRouting,
+  saveRoutingScoreSnapshot,
+  scoreDocumentRouting,
+} from "../services/routingScorer";
 import { hasFeature } from "../services/featureFlags";
 import { canUseClioAutoUpdate } from "../services/planPolicy";
 import { rebuildCaseTimeline } from "../services/caseTimeline";
@@ -59,6 +62,7 @@ import {
   serializeJsonbParam,
   upsertTaskCacheEntry,
 } from "../services/documentRecognitionCache";
+import { buildRoutingExplanation } from "../services/documentRoutingDecision";
 
 async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -1191,6 +1195,8 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
       reviewState: true,
       processingStage: true,
       routingStatus: true,
+      originalName: true,
+      source: true,
     },
   });
   if (!existingDocument) {
@@ -1246,18 +1252,55 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
   const extractedForRouting = await getExtractedForRouting(documentId);
   const caseNumber = extractedForRouting?.caseNumber ?? null;
   const clientName = extractedForRouting?.clientName ?? null;
+  const { rows: recognitionRows } = await pgPool.query<{ text_excerpt: string | null }>(
+    `select text_excerpt from document_recognition where document_id = $1`,
+    [documentId]
+  );
 
   const rule = await prisma.routingRule.findUnique({ where: { firmId } });
   const minAutoRouteConfidence = rule?.minAutoRouteConfidence ?? 0.9;
   const autoRouteEnabled = rule?.autoRouteEnabled ?? false;
-
-  const match = await matchDocumentToCase(firmId, { documentId, caseNumber, clientName }, null);
-  let matchConfidence = match.matchConfidence;
-  let matchedCaseId = match.caseId;
-  let suggestedCaseId = matchedCaseId;
+  const routingScore = await scoreDocumentRouting(
+    {
+      id: documentId,
+      firmId,
+      originalName: existingDocument.originalName ?? null,
+      source: existingDocument.source ?? null,
+      routedCaseId: existingDocument.routedCaseId ?? null,
+      status: existingDocument.status ?? null,
+    },
+    {
+      caseNumber,
+      clientName,
+      docType: extractedForRouting?.docType ?? null,
+      providerName: extractedForRouting?.providerName ?? null,
+      documentClientName: extractedForRouting?.documentClientName ?? null,
+      emailClientName: extractedForRouting?.emailClientName ?? null,
+    },
+    recognitionRows[0]?.text_excerpt ?? null
+  );
+  await saveRoutingScoreSnapshot(firmId, documentId, routingScore).catch((error) => {
+    console.warn("[routing] failed to persist routing score snapshot", {
+      documentId,
+      firmId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+  const routingExplanation = buildRoutingExplanation(routingScore, {
+    minConfidence: minAutoRouteConfidence,
+  });
+  let matchConfidence = routingScore.confidence;
+  let matchedCaseId = routingScore.chosenCaseId;
+  let suggestedCaseId = routingExplanation.suggestedCaseId;
+  let matchReason =
+    routingScore.candidates[0]?.reason ??
+    routingScore.signals.baseMatchReason ??
+    routingExplanation.reviewReasons[0] ??
+    null;
 
   if (
     matchedCaseId == null &&
+    routingScore.candidates.length === 0 &&
     clientName &&
     String(clientName).trim().length >= 2
   ) {
@@ -1290,7 +1333,12 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
         action: "auto_created_case",
         routedSystem: "auto",
         routingStatus: "routed",
-        metaJson: { reason: "auto_create_from_doc", clientName: name },
+        metaJson: {
+          reason: "auto_create_from_doc",
+          clientName: name,
+          topSignals: routingExplanation.topSignals,
+          reviewReasons: routingExplanation.reviewReasons,
+        },
       });
       if (routed.ok) {
         createNotification(
@@ -1333,14 +1381,19 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
     autoRouteEnabled &&
     suggestedCaseId != null &&
     matchedCaseId != null &&
-    matchConfidence >= minAutoRouteConfidence
+    routingExplanation.shouldAutoRoute
   ) {
     const routed = await routeDocument(firmId, documentId, matchedCaseId, {
       actor: "system",
       action: "auto_routed",
       routedSystem: "auto",
       routingStatus: "routed",
-      metaJson: { matchConfidence, caseId: matchedCaseId },
+      metaJson: {
+        matchConfidence,
+        caseId: matchedCaseId,
+        topSignals: routingExplanation.topSignals,
+        candidateSummaries: routingExplanation.candidateSummaries,
+      },
     });
     if (routed.ok) {
       console.log(`Auto-routed document ${documentId} to case ${matchedCaseId}`);
@@ -1387,7 +1440,13 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
           action: "suggested",
           fromCaseId: null,
           toCaseId: matchedCaseId,
-          metaJson: { matchConfidence, reason: routed.error },
+          metaJson: {
+            matchConfidence,
+            reason: routed.error,
+            topSignals: routingExplanation.topSignals,
+            candidateSummaries: routingExplanation.candidateSummaries,
+            reviewReasons: routingExplanation.reviewReasons,
+          },
         },
       });
     }
@@ -1416,7 +1475,13 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
           action: "suggested",
           fromCaseId: null,
           toCaseId: matchedCaseId ?? null,
-          metaJson: { matchConfidence, suggestedCaseId },
+          metaJson: {
+            matchConfidence,
+            suggestedCaseId,
+            topSignals: routingExplanation.topSignals,
+            candidateSummaries: routingExplanation.candidateSummaries,
+            reviewReasons: routingExplanation.reviewReasons,
+          },
         },
       });
     }
@@ -1424,7 +1489,12 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
 
   await pgPool.query(
     `update document_recognition set match_confidence = $1, match_reason = $2, suggested_case_id = $4, updated_at = now() where document_id = $3`,
-    [matchConfidence, match.matchReason ?? null, documentId, matchedCaseId]
+    [
+      matchConfidence,
+      matchReason ?? routingExplanation.reviewReasons[0] ?? null,
+      documentId,
+      suggestedCaseId,
+    ]
   );
   console.log(`Case match done: ${documentId}`);
   logInfo("transfer_fast_path_async", {
@@ -1432,8 +1502,13 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
     stage: "job_end",
     documentId,
     firmId,
-    suggestedCaseId: matchedCaseId,
-    routingRequiredReview: !(autoRouteEnabled && suggestedCaseId != null && matchedCaseId != null && matchConfidence >= minAutoRouteConfidence),
+    suggestedCaseId,
+    routingRequiredReview: !(
+      autoRouteEnabled &&
+      suggestedCaseId != null &&
+      matchedCaseId != null &&
+      routingExplanation.shouldAutoRoute
+    ),
     elapsedMs: Date.now() - startedAt,
   });
 }

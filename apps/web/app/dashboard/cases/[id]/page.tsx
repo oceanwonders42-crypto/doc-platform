@@ -27,6 +27,8 @@ type CaseItem = {
   caseNumber: string | null;
   clientName: string | null;
   createdAt: string;
+  assignedUserId?: string | null;
+  assignedUser?: { id: string; email: string } | null;
   clioHandoff?: {
     alreadyExported: boolean;
     exportCount: number;
@@ -63,6 +65,36 @@ type Doc = {
 type Financial = { medicalBillsTotal: number; liensTotal: number; settlementOffer: number | null };
 type Insight = { type: string; severity: string; title: string; detail: string | null };
 type BillLine = { id: string; documentId: string; providerName: string | null; serviceDate: string | null; amountCharged: number | null; balance: number | null; lineTotal: number | null };
+type DemandPackageItem = {
+  id: string;
+  title: string;
+  status: string;
+  generatedDocId: string | null;
+  generatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+type DemandPackageLimitations = {
+  suggestedTitle: string;
+  warnings: string[];
+  stats: {
+    documentCount: number;
+    timelineEventCount: number;
+    providerCount: number;
+    recordsRequestCount: number;
+    hasCaseSummary: boolean;
+    hasMedicalBills: boolean;
+    hasSettlementOffer: boolean;
+  };
+};
+type CaseTaskItem = {
+  id: string;
+  title: string;
+  dueDate: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
 
 function parseFileName(contentDisposition: string | null, fallback: string): string {
   if (!contentDisposition) return fallback;
@@ -149,6 +181,11 @@ export default function CaseDetailPage() {
     warnings?: string[];
   } | null>(null);
   const [draftError, setDraftError] = useState<string | null>(null);
+  const [demandPackages, setDemandPackages] = useState<DemandPackageItem[]>([]);
+  const [createDemandLoading, setCreateDemandLoading] = useState(false);
+  const [createDemandMessage, setCreateDemandMessage] = useState<string | null>(null);
+  const [latestDemandLimitations, setLatestDemandLimitations] = useState<DemandPackageLimitations | null>(null);
+  const [tasks, setTasks] = useState<CaseTaskItem[]>([]);
   const [questionInput, setQuestionInput] = useState("");
   const [answerLoading, setAnswerLoading] = useState(false);
   const [answerResult, setAnswerResult] = useState<{ answer: string; sourcesUsed: string[]; warnings?: string[] } | null>(null);
@@ -201,8 +238,10 @@ export default function CaseDetailPage() {
       fetch(`${caseApiBase}/financial`, { headers }).then(parseJsonResponse),
       fetch(`${caseApiBase}/bill-line-items`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
       fetch(`${caseApiBase}/insights`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
+      fetch(`${caseApiBase}/demand-packages`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
+      fetch(`${caseApiBase}/tasks`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
     ])
-      .then(([caseRes, timelineRes, providersRes, docsRes, finRes, billRes, insightsRes]) => {
+      .then(([caseRes, timelineRes, providersRes, docsRes, finRes, billRes, insightsRes, demandPackagesRes, tasksRes]) => {
         const c = caseRes as { ok?: boolean; item?: CaseItem };
         const t = timelineRes as { ok?: boolean; items?: TimelineEvent[] };
         const p = providersRes as { ok?: boolean; items?: Provider[] };
@@ -210,6 +249,8 @@ export default function CaseDetailPage() {
         const f = finRes as { ok?: boolean; item?: Financial };
         const b = billRes as { ok?: boolean; items?: BillLine[] };
         const i = insightsRes as { ok?: boolean; insights?: Insight[] };
+        const demandPackagePayload = demandPackagesRes as { ok?: boolean; items?: DemandPackageItem[] };
+        const taskPayload = tasksRes as { ok?: boolean; items?: CaseTaskItem[] };
         if (c.ok && c.item) setCaseData(c.item);
         if (t.ok && t.items) setTimeline(t.items);
         if (p.ok && p.items) setProviders(p.items);
@@ -217,6 +258,8 @@ export default function CaseDetailPage() {
         if (f.ok && f.item) setFinancial(f.item);
         if (b.ok && b.items) setBillLines(b.items);
         if (i.ok && i.insights) setInsights(i.insights);
+        if (demandPackagePayload.ok && demandPackagePayload.items) setDemandPackages(demandPackagePayload.items);
+        if (taskPayload.ok && taskPayload.items) setTasks(taskPayload.items);
         if (!c.ok) setError((c as { error?: string }).error ?? "Case not found");
       })
       .catch((e) => setError(e?.message ?? "Request failed"))
@@ -236,6 +279,38 @@ export default function CaseDetailPage() {
       })
       .catch(() => undefined);
   }, [id]);
+
+  const refreshDemandPackages = useCallback(() => {
+    if (!id) return Promise.resolve();
+    return fetch(`${caseApiBase}/demand-packages`, {
+      headers: getAuthHeader(),
+      ...getFetchOptions(),
+    })
+      .then(parseJsonResponse)
+      .then((response: unknown) => {
+        const data = response as { ok?: boolean; items?: DemandPackageItem[] };
+        if (data.ok && Array.isArray(data.items)) {
+          setDemandPackages(data.items);
+        }
+      })
+      .catch(() => undefined);
+  }, [caseApiBase, id]);
+
+  const refreshTasks = useCallback(() => {
+    if (!id) return Promise.resolve();
+    return fetch(`${caseApiBase}/tasks`, {
+      headers: getAuthHeader(),
+      ...getFetchOptions(),
+    })
+      .then(parseJsonResponse)
+      .then((response: unknown) => {
+        const data = response as { ok?: boolean; items?: CaseTaskItem[] };
+        if (data.ok && Array.isArray(data.items)) {
+          setTasks(data.items);
+        }
+      })
+      .catch(() => undefined);
+  }, [caseApiBase, id]);
 
   const rebuildChronology = useCallback(() => {
     if (!id) return;
@@ -443,6 +518,39 @@ export default function CaseDetailPage() {
     [caseApiBase, id, draftSectionKey]
   );
 
+  const createDemandPackage = useCallback(() => {
+    if (!id) return;
+    setCreateDemandLoading(true);
+    setCreateDemandMessage(null);
+    fetch(`${caseApiBase}/demand-packages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      ...getFetchOptions(),
+      body: JSON.stringify({}),
+    })
+      .then(parseJsonResponse)
+      .then((response: unknown) => {
+        const payload = response as {
+          ok?: boolean;
+          error?: string;
+          message?: string;
+          limitations?: DemandPackageLimitations;
+          item?: DemandPackageItem;
+        };
+        if (!payload.ok) {
+          setCreateDemandMessage(payload.error ?? "Failed to queue demand package.");
+          return;
+        }
+        setLatestDemandLimitations(payload.limitations ?? null);
+        setCreateDemandMessage(payload.message ?? "Demand package queued.");
+        void refreshDemandPackages();
+      })
+      .catch((error) => {
+        setCreateDemandMessage(error?.message ?? "Request failed");
+      })
+      .finally(() => setCreateDemandLoading(false));
+  }, [caseApiBase, id, refreshDemandPackages]);
+
   const runAnswerQuestion = useCallback(() => {
     if (!id) return;
     const q = questionInput.trim();
@@ -645,6 +753,19 @@ export default function CaseDetailPage() {
   const totalDocumentCount = documents.length;
   const reviewedDocumentCount = documents.filter((doc) => doc.reviewState != null).length;
   const exportReadyCount = documents.filter((doc) => doc.reviewState === "EXPORT_READY").length;
+  const openTasks = tasks.filter((task) => !task.completedAt);
+  const overdueTasks = openTasks.filter((task) => {
+    if (!task.dueDate) return false;
+    return new Date(task.dueDate).getTime() < Date.now();
+  });
+  const docsNeedingReview = documents.filter((doc) => {
+    if (doc.status === "NEEDS_REVIEW" || doc.status === "UNMATCHED") return true;
+    return doc.reviewState === "IN_REVIEW";
+  });
+  const pendingDemandPackages = demandPackages.filter((pkg) => {
+    const normalized = pkg.status.trim().toLowerCase();
+    return normalized !== "released" && normalized !== "released_to_requester";
+  });
   const packetReadinessMessage =
     totalDocumentCount === 0
       ? "Add routed documents to this case to enable packet export."
@@ -1040,6 +1161,18 @@ export default function CaseDetailPage() {
           <p style={{ margin: 0, fontSize: "0.875rem" }}><strong>Client:</strong> {caseData.clientName ?? "—"}</p>
           <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Case #:</strong> {caseData.caseNumber ?? "—"}</p>
           <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Created:</strong> {new Date(caseData.createdAt).toLocaleDateString()}</p>
+          <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}>
+            <strong>Owner:</strong> {caseData.assignedUser?.email ?? "Unassigned"}
+          </p>
+        </DashboardCard>
+        <DashboardCard title="Execution coverage">
+          <p style={{ margin: 0, fontSize: "0.875rem" }}><strong>Open tasks:</strong> {openTasks.length}</p>
+          <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Overdue tasks:</strong> {overdueTasks.length}</p>
+          <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Docs in review:</strong> {docsNeedingReview.length}</p>
+          <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Demand work in flight:</strong> {pendingDemandPackages.length}</p>
+          <p style={{ margin: "0.5rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+            Uses the current owner, case-task backlog, review-state documents, and pending demand items already tracked in the platform.
+          </p>
         </DashboardCard>
         {financial && (
           <DashboardCard title="Billing summary">
@@ -1350,7 +1483,116 @@ export default function CaseDetailPage() {
           )}
         </DashboardCard>
 
-        <DashboardCard title="Demands">
+        <DashboardCard title="Create Demand" style={{ marginBottom: "1rem" }}>
+          <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+            Build a real demand packet from the current case record. The generator uses the stored case summary, chronology, providers, specials, and documents already in the platform. Missing-data limitations are surfaced before review.
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", marginBottom: "0.9rem" }}>
+            <div className="onyx-card" style={{ padding: "0.8rem 0.9rem", minWidth: 150 }}>
+              <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Packages</p>
+              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{demandPackages.length}</p>
+            </div>
+            <div className="onyx-card" style={{ padding: "0.8rem 0.9rem", minWidth: 150 }}>
+              <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Case documents</p>
+              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{documents.length}</p>
+            </div>
+            <div className="onyx-card" style={{ padding: "0.8rem 0.9rem", minWidth: 150 }}>
+              <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Timeline events</p>
+              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{timelineItems.length}</p>
+            </div>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", marginBottom: "0.75rem" }}>
+            <button
+              type="button"
+              className="onyx-btn-primary"
+              onClick={() => createDemandPackage()}
+              disabled={createDemandLoading}
+            >
+              {createDemandLoading ? "Queuing demand..." : "Create Demand"}
+            </button>
+            <button
+              type="button"
+              className="onyx-btn-secondary"
+              onClick={() => refreshDemandPackages()}
+              disabled={createDemandLoading}
+            >
+              Refresh packages
+            </button>
+          </div>
+          {createDemandMessage && (
+            <p style={{ margin: "0 0 0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+              {createDemandMessage}
+            </p>
+          )}
+          {latestDemandLimitations && (
+            <div
+              style={{
+                marginBottom: "1rem",
+                padding: "0.85rem 1rem",
+                border: "1px solid var(--onyx-border)",
+                borderRadius: "var(--onyx-radius-sm)",
+                background: "var(--onyx-background-surface)",
+              }}
+            >
+              <p style={{ margin: "0 0 0.4rem", fontSize: "0.82rem", fontWeight: 600 }}>
+                Latest demand run limitations
+              </p>
+              {latestDemandLimitations.warnings.length > 0 ? (
+                <ul style={{ margin: 0, paddingLeft: "1.2rem", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+                  {latestDemandLimitations.warnings.map((warning, index) => (
+                    <li key={index} style={{ marginBottom: "0.2rem" }}>{warning}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p style={{ margin: 0, fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+                  No missing-data limitations were detected in the latest readiness snapshot.
+                </p>
+              )}
+            </div>
+          )}
+          {demandPackages.length === 0 ? (
+            <p style={{ margin: 0, fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+              No demand packages have been generated for this case yet.
+            </p>
+          ) : (
+            <div style={{ display: "grid", gap: "0.75rem" }}>
+              {demandPackages.map((pkg) => (
+                <div
+                  key={pkg.id}
+                  className="onyx-card"
+                  style={{
+                    padding: "0.85rem 1rem",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: "1rem",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div>
+                    <p style={{ margin: "0 0 0.25rem", fontWeight: 600 }}>{pkg.title}</p>
+                    <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--onyx-text-muted)" }}>
+                      Status: {pkg.status.replace(/_/g, " ")}
+                      {pkg.generatedAt ? ` | Generated ${new Date(pkg.generatedAt).toLocaleString()}` : ` | Updated ${new Date(pkg.updatedAt).toLocaleString()}`}
+                    </p>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.65rem" }}>
+                    {pkg.generatedDocId ? (
+                      <Link href={`/documents/${pkg.generatedDocId}`} className="onyx-link">
+                        Open packet
+                      </Link>
+                    ) : (
+                      <span style={{ fontSize: "0.8rem", color: "var(--onyx-text-muted)" }}>
+                        Waiting for generation/review
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </DashboardCard>
+
+        <DashboardCard title="Demand drafting tools">
           <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
             Generate a draft section from case data. Run Summarize, Extract, and Build chronology first for better drafts. Outputs are for review only.
           </p>
@@ -1409,7 +1651,55 @@ export default function CaseDetailPage() {
 
       {activeTab === "tasks" && (
         <DashboardCard title="Tasks">
-          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>Case tasks and to-dos. Use Case AI actions above for chronology, demands, and Q&A.</p>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
+            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+              Existing case tasks make execution ownership visible without inventing a new manager-assignment system.
+            </p>
+            <button
+              type="button"
+              className="onyx-btn-secondary"
+              onClick={() => void refreshTasks()}
+              style={{ padding: "0.35rem 0.75rem", fontSize: "0.8125rem" }}
+            >
+              Refresh tasks
+            </button>
+          </div>
+          {tasks.length === 0 ? (
+            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+              No case tasks yet. Add tasks through the existing case-task flow to make execution handoffs visible here.
+            </p>
+          ) : (
+            <div style={{ display: "grid", gap: "0.75rem" }}>
+              {tasks.map((task) => {
+                const isComplete = Boolean(task.completedAt);
+                const isOverdue =
+                  !isComplete &&
+                  Boolean(task.dueDate) &&
+                  new Date(task.dueDate as string).getTime() < Date.now();
+                return (
+                  <div
+                    key={task.id}
+                    className="onyx-card"
+                    style={{ padding: "0.9rem 1rem", borderColor: isOverdue ? "var(--onyx-warning)" : undefined }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
+                      <div>
+                        <p style={{ margin: 0, fontSize: "0.9375rem", fontWeight: 600 }}>{task.title}</p>
+                        <p style={{ margin: "0.35rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+                          Due: {task.dueDate ? new Date(task.dueDate).toLocaleDateString() : "No due date"}
+                          {" · "}
+                          Created: {new Date(task.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <span className={isComplete ? "onyx-badge-info" : isOverdue ? "onyx-badge-warning" : "onyx-badge-success"}>
+                        {isComplete ? "Completed" : isOverdue ? "Overdue" : "Open"}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </DashboardCard>
       )}
 

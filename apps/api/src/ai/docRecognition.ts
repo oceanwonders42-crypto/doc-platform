@@ -1,5 +1,6 @@
 // /src/ai/docRecognition.ts
 // Uses pdfjs-dist (must be installed in apps/api). Node/CommonJS: use legacy build.
+import path from "node:path";
 
 function clean(s: string) {
   return s.replace(/\s+/g, " ").trim();
@@ -9,7 +10,14 @@ function getPdfjs() {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const pdfjs = require("pdfjs-dist/legacy/build/pdf.js");
-    if (pdfjs && typeof pdfjs.getDocument === "function") return pdfjs;
+    if (pdfjs && typeof pdfjs.getDocument === "function") {
+      if (typeof pdfjs.GlobalWorkerOptions !== "undefined") {
+        pdfjs.GlobalWorkerOptions.workerSrc = require.resolve(
+          "pdfjs-dist/legacy/build/pdf.worker.js"
+        );
+      }
+      return pdfjs;
+    }
     console.error("[docRecognition] pdfjs-dist/legacy/build/pdf.js loaded but getDocument missing; keys:", Object.keys(pdfjs || {}));
   } catch (e: unknown) {
     const err = e instanceof Error ? e : new Error(String(e));
@@ -20,17 +28,25 @@ function getPdfjs() {
   );
 }
 
+function getDocumentLoadingTask(pdfjs: any, buffer: Buffer | Uint8Array) {
+  const data = buffer instanceof Buffer ? new Uint8Array(buffer) : buffer;
+  const standardFontDataUrl = `${path.join(
+    path.dirname(require.resolve("pdfjs-dist/package.json")),
+    "standard_fonts"
+  )}${path.sep}`;
+  return pdfjs.getDocument({
+    data,
+    disableWorker: true,
+    standardFontDataUrl,
+  });
+}
+
 export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
   const pdfjs = getPdfjs();
 
-  if (typeof (pdfjs as any).GlobalWorkerOptions !== "undefined") {
-    (pdfjs as any).GlobalWorkerOptions.workerSrc = "";
-  }
-
-  const data = buffer instanceof Buffer ? new Uint8Array(buffer) : buffer;
   let loadingTask: any;
   try {
-    loadingTask = (pdfjs as any).getDocument({ data });
+    loadingTask = getDocumentLoadingTask(pdfjs, buffer);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[docRecognition] getDocument failed:", msg);
@@ -57,14 +73,9 @@ export type PdfPageText = { page: number; text: string };
 export async function extractTextFromPdfPerPage(buffer: Buffer): Promise<{ fullText: string; pageTexts: PdfPageText[] }> {
   const pdfjs = getPdfjs();
 
-  if (typeof (pdfjs as any).GlobalWorkerOptions !== "undefined") {
-    (pdfjs as any).GlobalWorkerOptions.workerSrc = "";
-  }
-
-  const data = buffer instanceof Buffer ? new Uint8Array(buffer) : buffer;
   let loadingTask: any;
   try {
-    loadingTask = (pdfjs as any).getDocument({ data });
+    loadingTask = getDocumentLoadingTask(pdfjs, buffer);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`PDF parse failed: ${msg}`);

@@ -71,6 +71,11 @@ export async function runOcrPipeline(
   let result: OcrResult | null = null;
 
   if (shouldTryEmbeddedText) {
+    result = await extractText(documentBuffer).catch(() => null);
+    if (result && !isLowTextResult(result)) {
+      return applyDerivedMetadata(result);
+    }
+
     const fallback = await runFallback(
       documentBuffer,
       mimeType,
@@ -83,11 +88,6 @@ export async function runOcrPipeline(
 
     if (!isLowTextResult(fallback)) {
       return applyDerivedMetadata(fallback);
-    }
-
-    result = await extractText(documentBuffer).catch(() => null);
-    if (result && !isLowTextResult(result)) {
-      return applyDerivedMetadata(result);
     }
 
     const merged = fallback.fullText.trim().length > 0 ? fallback : { ...fallback, lowQualityExtraction: true };

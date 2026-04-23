@@ -16,6 +16,7 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import multer from "multer";
 import type { NextFunction, Request, Response } from "express";
+import type { RoutingCandidate } from "../services/routingScorer";
 
 import { prisma } from "../db/prisma";
 import { auth } from "./middleware/auth";
@@ -42,7 +43,6 @@ import {
   enqueueTimelineRebuildJob,
   getRedisQueueSnapshot,
 } from "../services/queue";
-import { matchDocumentToCase } from "../services/caseMatching";
 import { getCaseInsights } from "../services/caseInsights";
 import {
   createNotification,
@@ -55,7 +55,11 @@ import { buildCaseReportPdf } from "../services/caseReportPdf";
 import { fetchCourtDocket } from "../court/docketFetcher";
 import { testImapConnection } from "../email/imapPoller";
 import { routeDocument } from "../services/documentRouting";
-import { getExtractedForRouting } from "../services/routingScorer";
+import {
+  getExtractedForRouting,
+  saveRoutingScoreSnapshot,
+  scoreDocumentRouting,
+} from "../services/routingScorer";
 import { generateNarrative } from "../ai/narrativeAssistant";
 import { explainDocument } from "../ai/documentExplain";
 import { pushCrmWebhook } from "../integrations/crm/pushService";
@@ -112,7 +116,6 @@ import {
 import { startDocumentWorkerLoop } from "../workers/documentWorkerLoop";
 import { validateProductionRuntime } from "../lib/productionRuntime";
 import { ensureDemoSeedObjects } from "../dev/demoSeedObjects";
-import { getJobCounts } from "../services/jobQueue";
 import { getBuildInfo } from "../lib/buildInfo";
 import { logInfo } from "../lib/logger";
 import { buildDocumentStorageKey } from "../services/documentStorageKeys";
@@ -128,6 +131,13 @@ import { getDeferredJobTelemetryOverview } from "../services/deferredJobTelemetr
 import { buildWeeklyOperatorReport } from "../services/operatorWeeklyReport";
 import { buildVisibleCaseWhere } from "../services/caseVisibility";
 import { syncClioCaseAssignmentsIfStale } from "../services/clioCaseAssignments";
+import { buildRoutingExplanation } from "../services/documentRoutingDecision";
+import { logActivity } from "../services/activityFeed";
+import {
+  loadRoutingFeedbackContext,
+  recordRoutingFeedback,
+} from "../services/routingFeedback";
+import { buildDemandPackageReadinessSnapshot } from "../services/demandPackageWorkflow";
 import {
   buildTaskCacheKey,
   computeDocumentExplainVariant,
@@ -156,6 +166,7 @@ import {
   normalizePlanSlug,
   type CanIngestResult,
 } from "../services/billingPlans";
+import { enqueueJob, getJobCounts } from "../services/jobQueue";
 
 export const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -240,10 +251,15 @@ function serializeDemandPackageReviewItem(pkg: {
   createdAt: Date;
   updatedAt: Date;
 }) {
+  const normalizedStatus = normalizeDemandPackageStatus(pkg.status);
+  const rawStatus =
+    typeof pkg.status === "string" && pkg.status.trim().length > 0
+      ? pkg.status.trim().toLowerCase()
+      : "draft";
   return {
     id: pkg.id,
     title: pkg.title,
-    status: normalizeDemandPackageStatus(pkg.status) ?? "pending_dev_review",
+    status: normalizedStatus ?? rawStatus,
     generatedDocId: pkg.generatedDocId ?? null,
     generatedAt: pkg.generatedAt?.toISOString() ?? null,
     createdAt: pkg.createdAt.toISOString(),
@@ -283,6 +299,126 @@ async function ensureVisibleCase(
     return null;
   }
   return accessContext;
+}
+
+type LoadedRoutingFeedbackContext = Awaited<
+  ReturnType<typeof loadRoutingFeedbackContext>
+>;
+
+async function persistRoutingFeedbackOutcome(
+  feedbackContext: LoadedRoutingFeedbackContext,
+  input: {
+    firmId: string;
+    documentId: string;
+    finalCaseId?: string | null;
+    finalStatus?: string | null;
+    finalDocType?: string | null;
+    correctedBy?: string | null;
+  }
+): Promise<void> {
+  if (!feedbackContext) return;
+  await recordRoutingFeedback(
+    {
+      ...input,
+      finalDocType: input.finalDocType ?? feedbackContext.predicted.docType ?? null,
+    },
+    feedbackContext.predicted,
+    feedbackContext.features
+  );
+}
+
+function asPlainRecord(value: unknown): Record<string, unknown> | null {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function buildRoutingExplanationFromSnapshot(
+  snapshot: {
+    chosenCaseId: string | null;
+    chosenFolder: string | null;
+    chosenDocType: string | null;
+    confidence: number | null;
+    signalsJson: unknown;
+    candidatesJson: unknown;
+  },
+  minConfidence: number
+) {
+  const signals = asPlainRecord(snapshot.signalsJson) ?? {};
+  const rawCandidates = Array.isArray(snapshot.candidatesJson)
+    ? snapshot.candidatesJson
+    : [];
+  const candidates: RoutingCandidate[] = rawCandidates
+    .map((candidate) => {
+      const record = asPlainRecord(candidate);
+      if (!record || typeof record.caseId !== "string") return null;
+      const source: RoutingCandidate["source"] =
+        record.source === "pattern" ||
+        record.source === "feedback" ||
+        record.source === "case_match"
+          ? record.source
+          : "case_match";
+      return {
+        caseId: record.caseId,
+        caseNumber:
+          typeof record.caseNumber === "string" ? record.caseNumber : null,
+        caseTitle: typeof record.caseTitle === "string" ? record.caseTitle : null,
+        confidence:
+          typeof record.confidence === "number" && Number.isFinite(record.confidence)
+            ? record.confidence
+            : 0,
+        reason: typeof record.reason === "string" ? record.reason : "Routing candidate",
+        source,
+        patternId: typeof record.patternId === "string" ? record.patternId : undefined,
+        patternName:
+          typeof record.patternName === "string" ? record.patternName : undefined,
+      };
+    })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => candidate != null);
+
+  return buildRoutingExplanation(
+    {
+      chosenCaseId: snapshot.chosenCaseId,
+      chosenFolder: snapshot.chosenFolder,
+      chosenDocType: snapshot.chosenDocType,
+      confidence:
+        typeof snapshot.confidence === "number" && Number.isFinite(snapshot.confidence)
+          ? snapshot.confidence
+          : 0,
+      candidates,
+      matchedPatterns: [],
+      signals: {
+        caseNumber:
+          typeof signals.caseNumber === "string" ? signals.caseNumber : null,
+        clientName:
+          typeof signals.clientName === "string" ? signals.clientName : null,
+        docType: typeof signals.docType === "string" ? signals.docType : null,
+        fileName:
+          typeof signals.fileName === "string" ? signals.fileName : null,
+        source: typeof signals.source === "string" ? signals.source : null,
+        baseMatchReason:
+          typeof signals.baseMatchReason === "string"
+            ? signals.baseMatchReason
+            : null,
+        providerName:
+          typeof signals.providerName === "string" ? signals.providerName : null,
+        providerMatchReasons: asStringArray(signals.providerMatchReasons),
+        documentClientName:
+          typeof signals.documentClientName === "string"
+            ? signals.documentClientName
+            : null,
+        emailClientName:
+          typeof signals.emailClientName === "string"
+            ? signals.emailClientName
+            : null,
+      },
+    },
+    { minConfidence }
+  );
 }
 
 function buildVersionPayload(service: string) {
@@ -2693,6 +2829,36 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
       insurance_fields?: unknown;
     }
     const recByDoc = new Map<string, DocRecRow>(recRows.map((r: DocRecRow) => [r.document_id ?? "", r]));
+    const routingRule = await prisma.routingRule.findUnique({
+      where: { firmId },
+      select: { minAutoRouteConfidence: true },
+    });
+    const minAutoRouteConfidence = routingRule?.minAutoRouteConfidence ?? 0.9;
+    const routingSnapshots =
+      docIds.length > 0
+        ? await prisma.routingScoreSnapshot.findMany({
+            where: {
+              firmId,
+              documentId: { in: docIds },
+            },
+            orderBy: { createdAt: "desc" },
+            select: {
+              documentId: true,
+              chosenCaseId: true,
+              chosenFolder: true,
+              chosenDocType: true,
+              confidence: true,
+              signalsJson: true,
+              candidatesJson: true,
+            },
+          })
+        : [];
+    const routingSnapshotByDoc = new Map<string, (typeof routingSnapshots)[number]>();
+    for (const snapshot of routingSnapshots) {
+      if (!routingSnapshotByDoc.has(snapshot.documentId)) {
+        routingSnapshotByDoc.set(snapshot.documentId, snapshot);
+      }
+    }
 
     const { rows: emailRows } =
       docIds.length > 0
@@ -2883,7 +3049,13 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
       const classificationReason = rec?.classification_reason ?? null;
       const classificationSignals = collectReasoningSignals(rec?.classification_signals_json);
       const matterRoutingReason = rec?.matter_routing_reason ?? null;
-      const recommendation = routingRecommendation(caseMatchConfidence, suggestedCaseId);
+      const routingExplanationSnapshot = routingSnapshotByDoc.get(d.id);
+      const routingExplanation = routingExplanationSnapshot
+        ? buildRoutingExplanationFromSnapshot(
+            routingExplanationSnapshot,
+            minAutoRouteConfidence
+          )
+        : null;
       const effectiveReviewState = getEffectiveDocumentReviewState({
         reviewState: d.reviewState,
         status: d.status,
@@ -2905,6 +3077,13 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
             ? "Document processing failed before routing."
             : "No case match has been confirmed yet."
           : null);
+      const recommendation = routingExplanation
+        ? routingExplanation.shouldAutoRoute
+          ? "route"
+          : routingExplanation.reviewReasons.length > 0
+            ? "review_manually"
+            : routingRecommendation(caseMatchConfidence, suggestedCaseId)
+        : routingRecommendation(caseMatchConfidence, suggestedCaseId);
       const reviewReasons: string[] = [];
       if (d.duplicateOfId) pushReason(reviewReasons, "Possible duplicate");
       if (d.status === "FAILED") pushReason(reviewReasons, "Processing failed");
@@ -2914,6 +3093,17 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
       }
       if (!d.routedCaseId && !suggestedCaseId) pushReason(reviewReasons, "Needs case routing");
       if (recommendation === "review_manually") pushReason(reviewReasons, "Low-confidence match");
+      for (const reason of routingExplanation?.reviewReasons ?? []) {
+        pushReason(reviewReasons, reason);
+      }
+      const emailAutomationSignals = asStringArray(
+        getDocumentEmailAutomation(d.metaJson)?.matchSignals?.supportingSignals
+      );
+      const routingSignals = [
+        ...(routingExplanation?.topSignals ?? []),
+        ...classificationSignals,
+        ...emailAutomationSignals,
+      ].filter((signal, index, list) => signal && list.indexOf(signal) === index);
       const summaryPayload =
         rec?.summary != null
           ? typeof rec.summary === "object"
@@ -2959,8 +3149,10 @@ app.get("/me/review-queue", auth, requireRole(Role.STAFF), async (req, res) => {
           matchReason,
           unmatchedReason,
           classificationReason,
-          supportingSignals: classificationSignals,
+          supportingSignals: routingSignals,
           matterRoutingReason,
+          candidateSummaries: routingExplanation?.candidateSummaries ?? [],
+          reviewReasons,
         },
         summary: summaryPayload,
         insuranceFields: rec?.insurance_fields ?? null,
@@ -4698,7 +4890,13 @@ app.post("/documents/:id/rematch", auth, requireRole(Role.STAFF), async (req, re
 
     const doc = await prisma.document.findFirst({
       where: { id: documentId, firmId },
-      select: { id: true, routedCaseId: true },
+      select: {
+        id: true,
+        routedCaseId: true,
+        originalName: true,
+        source: true,
+        status: true,
+      },
     });
     if (!doc) {
       return res.status(404).json({ ok: false, error: "document not found" });
@@ -4709,25 +4907,52 @@ app.post("/documents/:id/rematch", auth, requireRole(Role.STAFF), async (req, re
       return res.status(400).json({ ok: false, error: "Run recognition first" });
     }
 
-    const signals = {
-      documentId,
-      caseNumber: extractedForRouting.caseNumber ?? null,
-      clientName: extractedForRouting.clientName ?? null,
-    };
-    const match = await matchDocumentToCase(firmId, signals, doc.routedCaseId);
+    const { rows: recognitionRows } = await pgPool.query<{ text_excerpt: string | null }>(
+      `select text_excerpt from document_recognition where document_id = $1`,
+      [documentId]
+    );
+    const routingRule = await prisma.routingRule.findUnique({
+      where: { firmId },
+      select: { minAutoRouteConfidence: true },
+    });
+    const minAutoRouteConfidence = routingRule?.minAutoRouteConfidence ?? 0.9;
+    const routingScore = await scoreDocumentRouting(
+      {
+        id: documentId,
+        firmId,
+        originalName: doc.originalName ?? null,
+        source: doc.source ?? null,
+        routedCaseId: doc.routedCaseId ?? null,
+        status: doc.status ?? null,
+      },
+      extractedForRouting,
+      recognitionRows[0]?.text_excerpt ?? null
+    );
+    await saveRoutingScoreSnapshot(firmId, documentId, routingScore).catch(() => undefined);
+    const routingExplanation = buildRoutingExplanation(routingScore, {
+      minConfidence: minAutoRouteConfidence,
+    });
 
     await pgPool.query(
       `update document_recognition set match_confidence = $1, match_reason = $2, suggested_case_id = $4, updated_at = now() where document_id = $3`,
-      [match.matchConfidence, match.matchReason, documentId, match.caseId]
+      [
+        routingScore.confidence,
+        routingScore.candidates[0]?.reason ??
+          routingExplanation.reviewReasons[0] ??
+          routingScore.signals.baseMatchReason ??
+          null,
+        documentId,
+        routingScore.chosenCaseId,
+      ]
     );
 
     const updateData: { status?: string; routedCaseId?: string | null } = {};
-    if (match.matchConfidence > 0.9 && match.caseId) {
+    if (routingExplanation.shouldAutoRoute && routingScore.chosenCaseId) {
       updateData.status = "UPLOADED";
-      updateData.routedCaseId = match.caseId;
-    } else if (match.matchConfidence >= 0.5) {
+      updateData.routedCaseId = routingScore.chosenCaseId;
+    } else if (routingScore.confidence >= 0.5) {
       updateData.status = "NEEDS_REVIEW";
-      updateData.routedCaseId = match.caseId ?? null;
+      updateData.routedCaseId = routingScore.chosenCaseId ?? null;
     } else {
       updateData.status = "NEEDS_REVIEW";
       updateData.routedCaseId = null;
@@ -4746,20 +4971,31 @@ app.post("/documents/:id/rematch", auth, requireRole(Role.STAFF), async (req, re
       actor,
       action: "rematch",
       fromCaseId: doc.routedCaseId ?? null,
-      toCaseId: match.caseId ?? null,
+      toCaseId: routingScore.chosenCaseId ?? null,
       metaJson: {
-        matchConfidence: match.matchConfidence,
-        matchReason: match.matchReason,
-        caseId: match.caseId,
+        matchConfidence: routingScore.confidence,
+        matchReason:
+          routingScore.candidates[0]?.reason ??
+          routingExplanation.reviewReasons[0] ??
+          null,
+        caseId: routingScore.chosenCaseId,
+        topSignals: routingExplanation.topSignals,
+        candidateSummaries: routingExplanation.candidateSummaries,
+        reviewReasons: routingExplanation.reviewReasons,
       },
     });
 
     res.json({
       ok: true,
       documentId,
-      matchConfidence: match.matchConfidence,
-      matchReason: match.matchReason,
-      caseId: match.caseId,
+      matchConfidence: routingScore.confidence,
+      matchReason:
+        routingScore.candidates[0]?.reason ??
+        routingExplanation.reviewReasons[0] ??
+        null,
+      caseId: routingScore.chosenCaseId,
+      topSignals: routingExplanation.topSignals,
+      reviewReasons: routingExplanation.reviewReasons,
     });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
@@ -4861,6 +5097,7 @@ app.post("/documents/:id/approve", auth, requireRole(Role.STAFF), async (req, re
       select: { id: true, routedCaseId: true, reviewState: true, status: true },
     });
     if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+    const feedbackContext = await loadRoutingFeedbackContext(firmId, documentId);
 
     await prisma.document.updateMany({
       where: { id: documentId, firmId },
@@ -4906,6 +5143,14 @@ app.post("/documents/:id/approve", auth, requireRole(Role.STAFF), async (req, re
       trace.mark("enqueue_complete", { queuedJobs: [] });
     }
 
+    await persistRoutingFeedbackOutcome(feedbackContext, {
+      firmId,
+      documentId,
+      finalCaseId: doc.routedCaseId ?? null,
+      finalStatus: doc.status ?? null,
+      correctedBy: actor,
+    });
+
     res.json({ ok: true });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
@@ -4930,6 +5175,7 @@ app.post("/documents/:id/reject", auth, requireRole(Role.STAFF), async (req, res
       select: { id: true, routedCaseId: true, reviewState: true, status: true },
     });
     if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+    const feedbackContext = await loadRoutingFeedbackContext(firmId, documentId);
 
     await prisma.document.updateMany({
       where: { id: documentId, firmId },
@@ -4944,6 +5190,14 @@ app.post("/documents/:id/reject", auth, requireRole(Role.STAFF), async (req, res
       fromCaseId: doc.routedCaseId ?? null,
       toCaseId: doc.routedCaseId ?? null,
       metaJson: body ?? null,
+    });
+
+    await persistRoutingFeedbackOutcome(feedbackContext, {
+      firmId,
+      documentId,
+      finalCaseId: null,
+      finalStatus: doc.status ?? "NEEDS_REVIEW",
+      correctedBy: actor,
     });
 
     res.json({ ok: true });
@@ -4965,6 +5219,7 @@ app.post("/documents/:id/route", auth, requireRole(Role.STAFF), async (req, res)
     const actor = (req as any).apiKeyPrefix || "reviewer";
     const body = (req.body ?? {}) as any;
     const toCaseId = body?.caseId ? String(body.caseId) : null;
+    const feedbackContext = await loadRoutingFeedbackContext(firmId, documentId);
     const trace = createFastPathTrace(res, "documents_route", {
       firmId,
       documentId,
@@ -4987,6 +5242,14 @@ app.post("/documents/:id/route", auth, requireRole(Role.STAFF), async (req, res)
     if (!result.ok) {
       return res.status(404).json({ ok: false, error: result.error });
     }
+
+    await persistRoutingFeedbackOutcome(feedbackContext, {
+      firmId,
+      documentId,
+      finalCaseId: toCaseId,
+      finalStatus: toCaseId ? "UPLOADED" : "UNMATCHED",
+      correctedBy: actor,
+    });
 
     res.json({ ok: true });
   } catch (e: any) {
@@ -5125,6 +5388,7 @@ app.patch("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
     if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
 
     if (body.routedCaseId !== undefined) {
+      const feedbackContext = await loadRoutingFeedbackContext(firmId, documentId);
       const toCaseId = body.routedCaseId === null || body.routedCaseId === "" ? null : String(body.routedCaseId).trim();
       if (toCaseId) {
         const caseRow = await prisma.legalCase.findFirst({ where: { id: toCaseId, firmId }, select: { id: true } });
@@ -5140,6 +5404,13 @@ app.patch("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
           metaJson: { source: "patch" },
         });
         if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+        await persistRoutingFeedbackOutcome(feedbackContext, {
+          firmId,
+          documentId,
+          finalCaseId: toCaseId,
+          finalStatus: "UPLOADED",
+          correctedBy: actor,
+        });
         return res.json({ ok: true, id: documentId });
       }
       await prisma.document.updateMany({
@@ -5154,6 +5425,13 @@ app.patch("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
         fromCaseId: doc.routedCaseId ?? null,
         toCaseId: null,
         metaJson: { source: "patch" },
+      });
+      await persistRoutingFeedbackOutcome(feedbackContext, {
+        firmId,
+        documentId,
+        finalCaseId: null,
+        finalStatus: "UNMATCHED",
+        correctedBy: actor,
       });
       return res.json({ ok: true, id: documentId });
     }
@@ -5346,7 +5624,20 @@ app.get("/cases/:id", auth, requireRole(Role.STAFF), async (req, res) => {
     const { firmId } = accessContext;
     const c = await prisma.legalCase.findFirst({
       where: buildVisibleCaseWhere({ ...accessContext, caseId }),
-      select: { id: true, title: true, caseNumber: true, clientName: true, createdAt: true },
+      select: {
+        id: true,
+        title: true,
+        caseNumber: true,
+        clientName: true,
+        createdAt: true,
+        assignedUserId: true,
+        assignedUser: {
+          select: {
+            id: true,
+            email: true,
+          },
+        },
+      },
     });
     if (!c) return res.status(404).json({ error: "Case not found" });
     res.json({ ok: true, item: c });
@@ -5887,16 +6178,93 @@ app.post("/cases/:id/demand-narratives/:draftId/release", auth, requireRole(Role
   }
 });
 
+app.post("/cases/:id/demand-packages", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const caseId = String(req.params.id ?? "");
+    const accessContext = await ensureVisibleCase(req, res, caseId);
+    if (!accessContext) return;
+    const { firmId } = accessContext;
+
+    const allowed = await hasFeature(firmId, "demand_narratives");
+    if (!allowed) {
+      return res.status(403).json({
+        ok: false,
+        error: "Demand narratives add-on is not enabled for this firm.",
+      });
+    }
+
+    const body = (req.body ?? {}) as { title?: string };
+    const readiness = await buildDemandPackageReadinessSnapshot(caseId, firmId);
+    const normalizedTitle =
+      typeof body.title === "string" && body.title.trim().length > 0
+        ? body.title.trim().slice(0, 180)
+        : readiness.suggestedTitle;
+
+    const created = await prisma.demandPackage.create({
+      data: {
+        firmId,
+        caseId,
+        title: normalizedTitle,
+        status: "draft",
+      },
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        generatedDocId: true,
+        generatedAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    const job = await enqueueJob({
+      firmId,
+      type: "demand_package.generate",
+      payload: {
+        demandPackageId: created.id,
+        firmId,
+      },
+      priority: 60,
+    });
+
+    logActivity({
+      firmId,
+      caseId,
+      type: "demand_package_requested",
+      title: "Demand package queued",
+      meta: {
+        demandPackageId: created.id,
+        jobId: job.id,
+        warnings: readiness.warnings,
+        stats: readiness.stats,
+      },
+    });
+
+    res.status(202).json({
+      ok: true,
+      item: serializeDemandPackageReviewItem(created),
+      limitations: readiness,
+      jobId: job.id,
+      message:
+        readiness.warnings.length > 0
+          ? "Demand package queued. Missing-data limitations were detected and returned with the job."
+          : "Demand package queued for generation.",
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.get("/cases/:id/demand-packages", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const caseId = String(req.params.id ?? "");
     const accessContext = await ensureVisibleCase(req, res, caseId);
     if (!accessContext) return;
     const { firmId } = accessContext;
-    const authRole = accessContext.authRole as Role | undefined;
 
     const packages = await prisma.demandPackage.findMany({
-      where: { firmId, caseId, generatedDocId: { not: null } },
+      where: { firmId, caseId },
       orderBy: [{ updatedAt: "desc" }],
       select: {
         id: true,
@@ -5908,13 +6276,10 @@ app.get("/cases/:id/demand-packages", auth, requireRole(Role.STAFF), async (req,
         updatedAt: true,
       },
     });
-    const visiblePackages = isDemandReviewerRole(authRole)
-      ? packages
-      : packages.filter((pkg) => !isDemandPackageReleaseBlocked(pkg.status));
 
     res.json({
       ok: true,
-      items: visiblePackages.map((pkg) => serializeDemandPackageReviewItem(pkg)),
+      items: packages.map((pkg) => serializeDemandPackageReviewItem(pkg)),
     });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });

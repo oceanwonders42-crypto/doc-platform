@@ -3,10 +3,10 @@
  */
 import { pgPool } from "../db/pg";
 import { prisma } from "../db/prisma";
-import { logWarn } from "../lib/logger";
+import { logInfo, logWarn } from "../lib/logger";
 import { logActivity } from "../services/activityFeed";
 import { addDocumentAuditEvent } from "../services/audit";
-import { getClioConfig } from "../services/clioConfig";
+import { getClioConfig, type ClioSandboxConfig } from "../services/clioConfig";
 
 const CLIO_API_BASE = process.env.CLIO_API_BASE_URL || "https://app.clio.com/api/v4";
 export const CLIO_CLAIM_NUMBER_MIN_CONFIDENCE = 0.85;
@@ -29,8 +29,12 @@ type ClioMatterApiContext =
       accessToken: string;
       matterId: string;
       claimNumberCustomFieldId: string | null;
+      integrationId: string | null;
+      sandbox: ClioSandboxConfig | null;
     }
   | { ok: false; error: string };
+
+type ClioMatterApiReadyContext = Extract<ClioMatterApiContext, { ok: true }>;
 
 type ClioMatterCustomFieldValue = {
   id?: string | number;
@@ -110,6 +114,30 @@ export type SyncClioMatterWriteBackOnIngestResult = {
   claimNumberError?: string;
 };
 
+export type LocalClioSandboxWriteBackPayload = {
+  mode: "local_case_api";
+  sandboxLabel: string | null;
+  clioMatterId: string;
+  claimNumberCustomFieldId: string | null;
+  fileName: string;
+  documentId: string;
+  docType: string | null;
+  claimNumberCandidate: string | null;
+  claimNumberConfidence: number | null;
+  policyNumberCandidate: string | null;
+  insuranceCarrierCandidate: string | null;
+  noteSubject: string;
+  noteDetail: string;
+  realNetworkCall: false;
+};
+
+export function resolveClioWriteBackConfidence(
+  documentConfidence: unknown,
+  recognitionConfidence: unknown
+): number | null {
+  return toNumber(recognitionConfidence) ?? toNumber(documentConfidence);
+}
+
 function normalizeString(value: unknown): string | null {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -166,6 +194,26 @@ function buildClioHeaders(accessToken: string): Record<string, string> {
   };
 }
 
+function isLocalClioSandboxEnabled(context: {
+  integrationId: string | null;
+  sandbox: ClioSandboxConfig | null;
+}): boolean {
+  return (
+    process.env.NODE_ENV !== "production" &&
+    process.env.ONYX_ENABLE_LOCAL_CASE_API_SANDBOX === "true" &&
+    Boolean(context.integrationId) &&
+    context.sandbox?.mode === "local_case_api"
+  );
+}
+
+function stringifySandboxMessage(metaJson: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(metaJson).slice(0, 4000);
+  } catch {
+    return "Local CASE_API sandbox payload recorded";
+  }
+}
+
 async function getClioMatterApiContext(firmId: string, caseId: string): Promise<ClioMatterApiContext> {
   const config = await getClioConfig(firmId);
   if (!config.configured) {
@@ -187,6 +235,8 @@ async function getClioMatterApiContext(firmId: string, caseId: string): Promise<
     accessToken: config.accessToken,
     matterId,
     claimNumberCustomFieldId: config.claimNumberCustomFieldId,
+    integrationId: config.integrationId,
+    sandbox: config.sandbox,
   };
 }
 
@@ -303,6 +353,46 @@ export function buildClioMatterNote(context: {
     detail_text_type: "plain_text",
     date: dateSource.toISOString().slice(0, 10),
     type: "Matter",
+  };
+}
+
+function resolvePolicyNumberCandidate(context: ClioWriteBackDocumentContext): string | null {
+  return (
+    normalizeClaimNumber(context.extractedFields.policyNumber) ??
+    normalizeClaimNumber(context.insuranceFields?.policyNumber)
+  );
+}
+
+function resolveInsuranceCarrierCandidate(context: ClioWriteBackDocumentContext): string | null {
+  return (
+    normalizeString(context.extractedFields.insurerName) ??
+    normalizeString(context.insuranceFields?.insurerName) ??
+    normalizeString(context.extractedFields.insuranceCompany) ??
+    normalizeString(context.insuranceFields?.insuranceCompany)
+  );
+}
+
+export function buildLocalClioSandboxWriteBackPayload(input: {
+  context: ClioMatterApiReadyContext;
+  documentContext: ClioWriteBackDocumentContext;
+  note: ReturnType<typeof buildClioMatterNote>;
+  claimNumberCandidate: ClioClaimNumberCandidate | null;
+}): LocalClioSandboxWriteBackPayload {
+  return {
+    mode: "local_case_api",
+    sandboxLabel: input.context.sandbox?.label ?? null,
+    clioMatterId: input.context.matterId,
+    claimNumberCustomFieldId: input.context.claimNumberCustomFieldId,
+    fileName: input.documentContext.fileName,
+    documentId: input.documentContext.documentId,
+    docType: normalizeString(input.documentContext.docType),
+    claimNumberCandidate: input.claimNumberCandidate?.claimNumber ?? null,
+    claimNumberConfidence: input.claimNumberCandidate?.confidence ?? null,
+    policyNumberCandidate: resolvePolicyNumberCandidate(input.documentContext),
+    insuranceCarrierCandidate: resolveInsuranceCarrierCandidate(input.documentContext),
+    noteSubject: input.note.subject,
+    noteDetail: input.note.detail,
+    realNetworkCall: false,
   };
 }
 
@@ -460,7 +550,10 @@ async function loadClioWriteBackDocumentContext(
     ingestedAt: documentRow.ingestedAt,
     extractedFields,
     docType: recognitionRow?.doc_type ?? normalizeString(extractedFields.docType),
-    confidence: toNumber(documentRow.confidence) ?? toNumber(recognitionRow?.confidence),
+    confidence: resolveClioWriteBackConfidence(
+      documentRow.confidence,
+      recognitionRow?.confidence
+    ),
     insuranceFields,
   };
 }
@@ -483,6 +576,65 @@ async function auditClioWriteBackEvent(input: {
   });
 }
 
+async function recordClioSandboxEvent(input: {
+  firmId: string;
+  caseId: string;
+  documentId: string;
+  integrationId: string | null;
+  action: string;
+  metaJson: Record<string, unknown>;
+}) {
+  await auditClioWriteBackEvent({
+    firmId: input.firmId,
+    caseId: input.caseId,
+    documentId: input.documentId,
+    action: input.action,
+    metaJson: {
+      sandboxMode: "local_case_api",
+      ...input.metaJson,
+    },
+  });
+
+  if (input.integrationId) {
+    await prisma.integrationSyncLog.create({
+      data: {
+        firmId: input.firmId,
+        integrationId: input.integrationId,
+        eventType: input.action,
+        status: "sandbox_success",
+        message: stringifySandboxMessage({
+          sandboxMode: "local_case_api",
+          ...input.metaJson,
+        }),
+      },
+    });
+  }
+
+  logInfo(input.action, {
+    firmId: input.firmId,
+    caseId: input.caseId,
+    documentId: input.documentId,
+    sandboxMode: "local_case_api",
+  });
+}
+
+function mapSandboxClaimNumberStatus(decision: ClioClaimNumberDecision): SyncClioMatterWriteBackOnIngestResult["claimNumberStatus"] {
+  switch (decision.action) {
+    case "skip_unconfigured":
+      return "skipped_unconfigured";
+    case "skip_low_confidence":
+      return "skipped_low_confidence";
+    case "skip_no_candidate":
+      return "skipped_no_candidate";
+    case "already_set":
+      return "already_set";
+    case "conflict":
+      return "conflict";
+    case "update":
+      return "updated";
+  }
+}
+
 /**
  * Push a document to a Clio matter: create document record, upload file to put_url, mark complete.
  */
@@ -491,6 +643,25 @@ export async function pushDocumentToClio(params: PushDocumentToClioParams): Prom
   const context = await getClioMatterApiContext(firmId, caseId);
   if (!context.ok) {
     return { ok: false, error: context.error };
+  }
+
+  if (isLocalClioSandboxEnabled(context)) {
+    await recordClioSandboxEvent({
+      firmId,
+      caseId,
+      documentId,
+      integrationId: context.integrationId,
+      action: "clio_sandbox_document_pushed",
+      metaJson: {
+        clioMatterId: context.matterId,
+        fileName: fileName || documentId,
+        claimNumberCustomFieldId: context.claimNumberCustomFieldId,
+        sandboxLabel: context.sandbox?.label ?? null,
+        fileUrlUsed: false,
+        realNetworkCall: false,
+      },
+    });
+    return { ok: true, clioDocumentId: `sandbox-doc-${documentId}` };
   }
 
   const headers = buildClioHeaders(context.accessToken);
@@ -600,6 +771,55 @@ export async function syncClioMatterWriteBackOnIngest(
     docType: documentContext.docType,
     claimNumberCandidate: claimNumberCandidate?.claimNumber ?? null,
   });
+
+  if (isLocalClioSandboxEnabled(context)) {
+    const sandboxPayload = buildLocalClioSandboxWriteBackPayload({
+      context,
+      documentContext,
+      note,
+      claimNumberCandidate,
+    });
+    const decision = decideClioClaimNumberWriteBack({
+      claimNumberCustomFieldId: context.claimNumberCustomFieldId,
+      candidate: claimNumberCandidate,
+      missingCandidateAction: claimNumberAssessment.status === "candidate"
+        ? undefined
+        : claimNumberAssessment.status,
+      currentFieldValue: null,
+    });
+    const sandboxNoteId = `sandbox-note-${documentId}`;
+    await recordClioSandboxEvent({
+      firmId,
+      caseId,
+      documentId,
+      integrationId: context.integrationId,
+      action: "clio_sandbox_writeback",
+      metaJson: {
+        ...sandboxPayload,
+        claimNumberDecision: decision.action,
+        claimNumberStatus: mapSandboxClaimNumberStatus(decision),
+        sandboxNoteId,
+      },
+    });
+
+    return {
+      noteStatus: "added",
+      noteId: sandboxNoteId,
+      claimNumberStatus: mapSandboxClaimNumberStatus(decision),
+      claimNumber:
+        decision.action === "update" ||
+        decision.action === "already_set" ||
+        decision.action === "conflict"
+          ? decision.claimNumber
+          : claimNumberCandidate?.claimNumber ?? null,
+      currentClaimNumber:
+        decision.action === "already_set"
+          ? decision.claimNumber
+          : decision.action === "conflict"
+            ? decision.currentValue
+            : null,
+    };
+  }
 
   const noteResult = await createClioMatterNote({
     accessToken: context.accessToken,

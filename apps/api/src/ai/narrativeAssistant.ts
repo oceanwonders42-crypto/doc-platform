@@ -18,6 +18,10 @@ import {
   buildDemandDraftContext,
   buildDemandDraftExamplesPromptBlock,
 } from "../services/demandDraftContext";
+import {
+  buildFirmDemandPatternsPromptBlock,
+  getFirmDemandPatterns,
+} from "../services/demandFirmPatterns";
 
 export type NarrativeType =
   | "treatment_summary"
@@ -182,6 +186,7 @@ export async function generateNarrative(input: NarrativeInput): Promise<Narrativ
 
   let demandDraftExamplesBlock = "";
   let retrievalRunId: string | null = null;
+  let firmDemandPatternsBlock = "";
   try {
     const context = await buildDemandDraftContext({
       caseId,
@@ -205,6 +210,18 @@ export async function generateNarrative(input: NarrativeInput): Promise<Narrativ
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     warnings.push(`Demand Bank examples unavailable: ${message}`);
+  }
+
+  try {
+    const firmPatterns = await getFirmDemandPatterns({
+      firmId,
+      narrativeType: type,
+      limit: 2,
+    });
+    firmDemandPatternsBlock = buildFirmDemandPatternsPromptBlock(firmPatterns);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    warnings.push(`Firm drafting patterns unavailable: ${message}`);
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
@@ -242,6 +259,7 @@ export async function generateNarrative(input: NarrativeInput): Promise<Narrativ
     "Procedures: " + proceduresBlock + "\n" +
     injuriesBlock + (injuriesBlock ? "\n" : "") +
     (demandDraftExamplesBlock ? "\n" + demandDraftExamplesBlock + "\n" : "\n") +
+    (firmDemandPatternsBlock ? "\n" + firmDemandPatternsBlock + "\n" : "\n") +
     "\n## Task\n" +
     "Write a **" + sectionTitle + "** section (2-4 short paragraphs) for a demand letter. " + toneInstruction + "\n" +
     "Current case facts are the only source of truth. Prior demand examples are for style and structure only. Never copy facts, providers, bills, dates, diagnoses, or demand values from prior matters.\n" +
