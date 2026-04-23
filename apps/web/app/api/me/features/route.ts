@@ -11,7 +11,16 @@ const EMPTY_FEATURES = {
   crm_push: false,
   case_insights: false,
   email_automation: false,
+  clio_auto_update_entitled: false,
+  legacy_clio_sync_enabled: false,
+  clio_auto_update_gate_source: null as "entitlement" | "legacy_flag" | null,
 };
+
+function normalizeClioAutoUpdateGateSource(
+  value: unknown
+): "entitlement" | "legacy_flag" | null {
+  return value === "entitlement" || value === "legacy_flag" ? value : null;
+}
 
 export async function GET() {
   const base = process.env.DOC_API_URL;
@@ -39,5 +48,8 @@ export async function GET() {
     crm_push: Boolean(data.crm_push),
     case_insights: Boolean(data.case_insights),
     email_automation: Boolean(data.email_automation),
+    clio_auto_update_entitled: Boolean(data.clio_auto_update_entitled),
+    legacy_clio_sync_enabled: Boolean(data.legacy_clio_sync_enabled),
+    clio_auto_update_gate_source: normalizeClioAutoUpdateGateSource(data.clio_auto_update_gate_source),
   });
 }

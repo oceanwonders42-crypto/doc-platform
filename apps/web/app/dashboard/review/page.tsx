@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
+import {
+  getClioAutoUpdateUiState,
+  type ClioAutoUpdateGateSource,
+} from "@/lib/clioAutoUpdateUi";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DataTable, Column } from "@/components/dashboard/DataTable";
 
@@ -97,6 +101,22 @@ function isCasesListResponse(res: unknown): res is CasesListResponse {
   return typeof res === "object" && res !== null;
 }
 
+function readClioAutoUpdateGateSource(
+  value: unknown
+): ClioAutoUpdateGateSource | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const gateSource = (value as { clio_auto_update_gate_source?: unknown })
+    .clio_auto_update_gate_source;
+  if (
+    gateSource === "entitlement" ||
+    gateSource === "legacy_flag" ||
+    gateSource === null
+  ) {
+    return gateSource;
+  }
+  return undefined;
+}
+
 function formatReviewValue(value: string | null | undefined): string {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : "-";
 }
@@ -143,6 +163,9 @@ export default function ReviewQueuePage() {
   const [drawerCaseNumber, setDrawerCaseNumber] = useState("");
   const [drawerCaseId, setDrawerCaseId] = useState("");
   const [drawerSaving, setDrawerSaving] = useState(false);
+  const [clioAutoUpdateGateSource, setClioAutoUpdateGateSource] = useState<
+    ClioAutoUpdateGateSource | undefined
+  >(undefined);
   const migrationBatchId = searchParams?.get("migrationBatchId")?.trim() ?? "";
   const focusDocumentId = searchParams?.get("documentId")?.trim() ?? "";
   const batchLabel = searchParams?.get("batchLabel")?.trim() ?? "";
@@ -159,20 +182,46 @@ export default function ReviewQueuePage() {
     if (returnTo) params.set("returnTo", returnTo);
     return `/dashboard/review?${params.toString()}`;
   }, [batchContextActive, batchLabelText, migrationBatchId, returnTo]);
+  const clioAutoUpdateUi = useMemo(
+    () =>
+      clioAutoUpdateGateSource === undefined
+        ? null
+        : getClioAutoUpdateUiState(clioAutoUpdateGateSource),
+    [clioAutoUpdateGateSource]
+  );
 
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
     const base = getApiBase();
+    if (!base) {
+      setLoading(false);
+      setError("The review queue API target is not configured.");
+      setClioAutoUpdateGateSource(undefined);
+      return;
+    }
     const params = new URLSearchParams();
     params.set("limit", "50");
     if (migrationBatchId) params.set("migrationBatchId", migrationBatchId);
     if (focusDocumentId) params.set("documentId", focusDocumentId);
-    fetch(`${base}/me/review-queue?${params.toString()}`, { headers: getAuthHeader(), ...getFetchOptions() })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
+    Promise.all([
+      fetch(`${base}/me/review-queue?${params.toString()}`, {
+        headers: getAuthHeader(),
+        ...getFetchOptions(),
+      }).then(parseJsonResponse),
+      fetch(`${base}/me/features`, {
+        headers: getAuthHeader(),
+        ...getFetchOptions(),
+      })
+        .then(parseJsonResponse)
+        .catch(() => null),
+    ])
+      .then(([res, features]: [unknown, unknown]) => {
         if (isReviewQueueResponse(res) && res.items) setItems(res.items);
         else setError("Failed to load review queue");
+
+        const gateSource = readClioAutoUpdateGateSource(features);
+        setClioAutoUpdateGateSource(gateSource);
       })
       .catch((e) => setError(e?.message ?? "Request failed"))
       .finally(() => setLoading(false));
@@ -558,6 +607,59 @@ export default function ReviewQueuePage() {
         </div>
       )}
 
+      {clioAutoUpdateUi?.showPageBanner ? (
+        <div
+          className="onyx-card"
+          style={{
+            padding: "1rem 1.25rem",
+            marginBottom: "1rem",
+            borderColor: "var(--onyx-warning, #d97706)",
+            background: "rgba(217, 119, 6, 0.06)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
+            <div style={{ display: "grid", gap: "0.4rem", maxWidth: "44rem" }}>
+              <span
+                className={`onyx-badge ${clioAutoUpdateUi.badgeClass}`}
+                style={{ width: "fit-content" }}
+              >
+                {clioAutoUpdateUi.badgeLabel}
+              </span>
+              <p style={{ margin: 0, fontWeight: 600 }}>
+                {clioAutoUpdateUi.pageBannerTitle}
+              </p>
+              <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+                {clioAutoUpdateUi.pageBannerDescription}
+              </p>
+            </div>
+            <Link
+              href="/dashboard/settings/billing"
+              className="onyx-btn-primary"
+              style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}
+            >
+              {clioAutoUpdateUi.upgradeCtaLabel}
+            </Link>
+          </div>
+        </div>
+      ) : clioAutoUpdateUi ? (
+        <div
+          style={{
+            marginBottom: "1rem",
+            display: "flex",
+            alignItems: "center",
+            gap: "0.75rem",
+            flexWrap: "wrap",
+          }}
+        >
+          <span className={`onyx-badge ${clioAutoUpdateUi.badgeClass}`}>
+            {clioAutoUpdateUi.badgeLabel}
+          </span>
+          <span style={{ fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+            {clioAutoUpdateUi.inlineDescription}
+          </span>
+        </div>
+      ) : null}
+
       {error && (
         <div className="onyx-card" style={{ padding: "1rem", marginBottom: "1rem", borderColor: "var(--onyx-error)" }}>
           <p style={{ margin: 0, color: "var(--onyx-error)" }}>{error}</p>
@@ -817,6 +919,24 @@ export default function ReviewQueuePage() {
                   <p style={{ margin: 0, fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>
                     Clio write-back
                   </p>
+                  {clioAutoUpdateUi && (
+                    <>
+                      <span
+                        className={`onyx-badge ${clioAutoUpdateUi.badgeClass}`}
+                        style={{ width: "fit-content", fontSize: "0.7rem" }}
+                      >
+                        {clioAutoUpdateUi.badgeLabel}
+                      </span>
+                      <p style={{ margin: 0, fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+                        {clioAutoUpdateUi.inlineDescription}
+                      </p>
+                      {clioAutoUpdateUi.showUpgradeCta && (
+                        <Link href="/dashboard/settings/billing" className="onyx-link" style={{ fontSize: "0.8125rem" }}>
+                          {clioAutoUpdateUi.upgradeCtaLabel}
+                        </Link>
+                      )}
+                    </>
+                  )}
                   {drawerItem.clioWriteBack ? (
                     <>
                       <span className={`onyx-badge ${clioWriteBackBadgeClass(drawerItem.clioWriteBack.outcomeType)}`} style={{ width: "fit-content", fontSize: "0.7rem" }}>

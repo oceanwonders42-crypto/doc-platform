@@ -3121,7 +3121,7 @@ app.get("/me/features", auth, requireRole(Role.STAFF), async (req, res) => {
     const firmId = (req as any).firmId as string;
     const firm = await prisma.firm.findUnique({
       where: { id: firmId },
-      select: { id: true, plan: true },
+      select: { id: true, plan: true, features: true },
     });
     if (!firm) {
       return res.status(404).json({ ok: false, error: "Firm not found" });
