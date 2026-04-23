@@ -166,7 +166,7 @@ async function appendLog(logPath, payload) {
 async function findDemandEnabledCandidate(prisma, jwtSecret, apiBase) {
   const candidates = await prisma.user.findMany({
     where: {
-      firmId: { not: null },
+      NOT: { firmId: null },
       role: { in: [Role.FIRM_ADMIN, Role.PARALEGAL, Role.STAFF] },
     },
     select: {
