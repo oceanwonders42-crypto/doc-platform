@@ -8,6 +8,7 @@ process.env.ENABLE_INLINE_DOCUMENT_WORKER = "false";
 import { pgPool } from "../../db/pg";
 import { prisma } from "../../db/prisma";
 import { signToken } from "../../lib/jwt";
+import { redis } from "../../services/queue";
 import { app } from "../server";
 import { startTestServer, stopTestServer } from "./cases.batchClioRouteTestUtils";
 
@@ -187,10 +188,13 @@ async function main() {
 }
 
 main()
-  .catch((error) => {
+.catch((error) => {
     console.error(error);
     process.exitCode = 1;
   })
   .finally(async () => {
-    await Promise.allSettled([prisma.$disconnect(), pgPool.end()]);
+    await Promise.race([
+      Promise.allSettled([prisma.$disconnect(), pgPool.end(), redis.quit()]),
+      new Promise((resolve) => setTimeout(resolve, 1000)),
+    ]);
   });
