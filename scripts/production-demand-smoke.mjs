@@ -15,6 +15,7 @@ const DEFAULT_LOG_PATH = path.join(config.smokeLogRoot, "demand-narrative-smoke.
 const apiRequire = createRequire(path.join(repoRoot, "apps", "api", "package.json"));
 const jwt = apiRequire("jsonwebtoken");
 const { PrismaClient, Role } = apiRequire("@prisma/client");
+const { PrismaPg } = apiRequire("@prisma/adapter-pg");
 
 function printUsage() {
   console.log(
@@ -446,8 +447,12 @@ async function main() {
   if (!jwtSecret) {
     throw new Error("JWT/SESSION/API secret is missing; cannot sign narrative smoke tokens.");
   }
+  const connectionString = process.env.DATABASE_URL?.trim();
+  if (!connectionString) {
+    throw new Error("DATABASE_URL is missing; cannot run narrative smoke against production data.");
+  }
 
-  const prisma = new PrismaClient();
+  const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
   const startedAt = new Date().toISOString();
   const result = {
     startedAt,
