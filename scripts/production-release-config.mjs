@@ -77,6 +77,12 @@ export function resolveProductionReleaseConfig(options = {}) {
     readEnv("DOC_PROD_WEB_ENV") ??
       (isLinux ? "/root/doc-platform/apps/web/.env.local" : path.join(repoRoot, "apps", "web", ".env.local"))
   );
+  const legacyRuntimeRoots = String(
+    readEnv("DOC_PROD_LEGACY_RUNTIME_ROOTS") ?? (isLinux ? "/root/doc-platform" : "")
+  )
+    .split(",")
+    .map((value) => normalizePath(value.trim()))
+    .filter(Boolean);
 
   return {
     repoRoot,
@@ -88,6 +94,7 @@ export function resolveProductionReleaseConfig(options = {}) {
     stateRoot,
     durableApiEnvPath,
     durableWebEnvPath,
+    legacyRuntimeRoots,
     deployDir: path.join(stateRoot, "deploy"),
     deployHistoryFile: path.join(stateRoot, "deploy", "history.jsonl"),
     latestDeployFile: path.join(stateRoot, "deploy", "latest.json"),

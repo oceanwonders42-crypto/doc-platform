@@ -21,6 +21,7 @@ const rawArgs = new Set(process.argv.slice(2));
 const dryRun = rawArgs.has("--dry-run");
 const allowDirty = rawArgs.has("--allow-dirty");
 const allowStaleMeta = rawArgs.has("--allow-stale-meta");
+const allowLegacyRuntimeBootstrap = rawArgs.has("--allow-legacy-runtime-bootstrap");
 
 const productionConfig = resolveProductionReleaseConfig({ repoRoot });
 const sourceGitState = resolveGitState({ cwd: repoRoot });
@@ -386,9 +387,9 @@ async function verifyLinkedPath(linkPath, expectedTarget) {
   }
 }
 
-async function ensureDurableEnvLinks(nextReleaseRoot) {
-  const apiEnvPath = path.join(nextReleaseRoot, "apps", "api", ".env");
-  const webEnvPath = path.join(nextReleaseRoot, "apps", "web", ".env.local");
+async function ensureDurableEnvLinks(targetRoot) {
+  const apiEnvPath = path.join(targetRoot, "apps", "api", ".env");
+  const webEnvPath = path.join(targetRoot, "apps", "web", ".env.local");
 
   await ensureSymlink(apiEnvPath, productionConfig.durableApiEnvPath);
   await ensureSymlink(webEnvPath, productionConfig.durableWebEnvPath);
@@ -446,19 +447,33 @@ async function assertExistingPm2RuntimePathsAllowed() {
   if (dryRun) return;
   const pm2Apps = await readPm2List();
   const failures = [];
+  const bootstrapWarnings = [];
   for (const app of pm2Apps) {
     if (!targetPm2Apps.some((candidate) => candidate.name === app.name)) continue;
     const actualCwd = app.pm_cwd ?? app.cwd ?? app.pm2_env?.pm_cwd ?? app.pm2_env?.cwd;
     if (!actualCwd) continue;
+    const legacyRuntimeRoot = productionConfig.legacyRuntimeRoots.find((legacyRoot) =>
+      pathWithin(legacyRoot, actualCwd)
+    );
     const allowed =
       pathWithin(productionConfig.releasesRoot, actualCwd) ||
-      pathWithin(productionConfig.canonicalSourceRoot, actualCwd);
+      pathWithin(productionConfig.canonicalSourceRoot, actualCwd) ||
+      (allowLegacyRuntimeBootstrap && legacyRuntimeRoot);
     if (!allowed) {
       failures.push(`${app.name} is running from unexpected path ${actualCwd}`);
+      continue;
+    }
+    if (legacyRuntimeRoot) {
+      bootstrapWarnings.push(`${app.name} is still running from legacy runtime path ${actualCwd}`);
     }
   }
   if (failures.length > 0) {
     throw new Error(failures.join(" | "));
+  }
+  if (bootstrapWarnings.length > 0) {
+    for (const warning of bootstrapWarnings) {
+      printWarn(`${warning}; continuing only because --allow-legacy-runtime-bootstrap was provided.`);
+    }
   }
 }
 
@@ -592,6 +607,7 @@ async function main() {
   assertCleanGitSource();
   assertOriginBranchPinned();
   await assertDurableEnvSourcesExist();
+  await ensureDurableEnvLinks(repoRoot);
   await assertExistingPm2RuntimePathsAllowed();
 
   const checklistArgs = [];
@@ -625,6 +641,7 @@ async function main() {
     },
     allowDirty,
     allowStaleMeta,
+    allowLegacyRuntimeBootstrap,
     status: "deploying",
   };
   await writeLatestDeployRecord(pendingRecord, { config: productionConfig });
