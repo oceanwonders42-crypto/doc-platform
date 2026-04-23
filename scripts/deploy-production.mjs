@@ -198,6 +198,10 @@ async function runChecklist(args = []) {
   await run("node", [path.join("scripts", "deploy-checklist.mjs"), ...args], { cwd: repoRoot });
 }
 
+async function ensureWorkspaceDependencies(targetRoot) {
+  await run("pnpm", ["install", "--frozen-lockfile", "--ignore-scripts"], { cwd: targetRoot });
+}
+
 async function waitForHealth(url, label) {
   logStep(`waiting for ${label}`, { url });
   if (dryRun) return;
@@ -490,7 +494,7 @@ async function createReleaseWorktree() {
 }
 
 async function buildRelease() {
-  await run("pnpm", ["install", "--frozen-lockfile"], { cwd: releaseRoot });
+  await ensureWorkspaceDependencies(releaseRoot);
   await run("pnpm", ["--dir", "apps/api", "exec", "prisma", "generate"], { cwd: releaseRoot });
   await run("pnpm", ["--dir", "apps/api", "exec", "prisma", "migrate", "deploy"], { cwd: releaseRoot });
   await run("pnpm", ["--dir", "apps/api", "build"], { cwd: releaseRoot });
@@ -608,6 +612,7 @@ async function main() {
   assertOriginBranchPinned();
   await assertDurableEnvSourcesExist();
   await ensureDurableEnvLinks(repoRoot);
+  await ensureWorkspaceDependencies(repoRoot);
   await assertExistingPm2RuntimePathsAllowed();
 
   const checklistArgs = [];
