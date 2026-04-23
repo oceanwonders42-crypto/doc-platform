@@ -8,6 +8,7 @@ import {
   repoRoot,
   resolveGitState,
 } from "./deploy-lib.mjs";
+import { runSchemaDriftCheck } from "./schema-drift-lib.mjs";
 import { verifyDeployConfig } from "./verify-deploy-config.mjs";
 
 const rawArgs = new Set(process.argv.slice(2));
@@ -105,6 +106,15 @@ if (apiBuildMeta && webBuildMeta) {
   } else {
     printPass(`api/web build metadata dirty agree on ${apiBuildMeta.dirty === true ? "YES" : "NO"}`);
   }
+}
+
+const schemaDrift = await runSchemaDriftCheck();
+if (schemaDrift.ok) {
+  printPass(
+    `schema drift check passed for ${schemaDrift.checks.length} invariant group${schemaDrift.checks.length === 1 ? "" : "s"}`
+  );
+} else {
+  failures.push(...schemaDrift.failures);
 }
 
 if (failures.length > 0) {
