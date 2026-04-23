@@ -15,21 +15,7 @@ function getBearerAuthorization(req: NextRequest): string | null {
   return value;
 }
 
-function isPlatformAdminAuth(data: unknown): boolean {
-  if (!data || typeof data !== "object") return false;
-  const record = data as {
-    role?: unknown;
-    isPlatformAdmin?: unknown;
-    user?: { role?: unknown } | null;
-  };
-  return (
-    record.isPlatformAdmin === true ||
-    record.role === "PLATFORM_ADMIN" ||
-    record.user?.role === "PLATFORM_ADMIN"
-  );
-}
-
-async function requirePlatformAdmin(req: NextRequest): Promise<
+async function requireAuthorizedBearer(req: NextRequest): Promise<
   | { ok: true; baseUrl: string; authHeader: string }
   | { ok: false; response: NextResponse }
 > {
@@ -55,59 +41,11 @@ async function requirePlatformAdmin(req: NextRequest): Promise<
     };
   }
 
-  try {
-    const authResponse = await fetch(`${baseUrl}/auth/me`, {
-      headers: {
-        Authorization: authHeader,
-        Accept: "application/json",
-      },
-      cache: "no-store",
-    });
-    const authBody = await authResponse.json().catch(() => ({}));
-
-    if (authResponse.status === 401) {
-      return {
-        ok: false,
-        response: NextResponse.json(
-          { ok: false, error: "Unauthorized" },
-          { status: 401 }
-        ),
-      };
-    }
-
-    if (!authResponse.ok) {
-      return {
-        ok: false,
-        response: NextResponse.json(authBody, {
-          status: authResponse.status >= 400 ? authResponse.status : 502,
-        }),
-      };
-    }
-
-    if (!isPlatformAdminAuth(authBody)) {
-      return {
-        ok: false,
-        response: NextResponse.json(
-          { ok: false, error: "Forbidden" },
-          { status: 403 }
-        ),
-      };
-    }
-
-    return { ok: true, baseUrl, authHeader };
-  } catch (error) {
-    return {
-      ok: false,
-      response: NextResponse.json(
-        { ok: false, error: error instanceof Error ? error.message : String(error) },
-        { status: 502 }
-      ),
-    };
-  }
+  return { ok: true, baseUrl, authHeader };
 }
 
 export async function GET(req: NextRequest) {
-  const auth = await requirePlatformAdmin(req);
+  const auth = await requireAuthorizedBearer(req);
   if (!auth.ok) return auth.response;
 
   try {

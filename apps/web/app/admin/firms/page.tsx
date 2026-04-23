@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import {
-  getApiBase,
   getAuthHeader,
   getFetchOptions,
   parseJsonResponse,
@@ -32,23 +31,6 @@ type AdminFirmsResponse = {
   firms: FirmRow[];
   error?: string;
 };
-
-type AuthMeResponse = {
-  ok?: boolean;
-  role?: string;
-  isPlatformAdmin?: boolean;
-  user?: { role?: string };
-};
-
-function isPlatformAdminAuth(data: unknown): boolean {
-  if (!data || typeof data !== "object") return false;
-  const record = data as AuthMeResponse;
-  return (
-    record.isPlatformAdmin === true ||
-    record.role === "PLATFORM_ADMIN" ||
-    record.user?.role === "PLATFORM_ADMIN"
-  );
-}
 
 function isAdminFirmsResponse(data: unknown): data is AdminFirmsResponse {
   return (
@@ -94,25 +76,17 @@ export default function AdminFirmsPage() {
       return;
     }
 
-    const base = getApiBase();
-    if (!base) {
-      setError("API URL is not configured.");
-      setAuthorized(false);
-      setAuthChecked(true);
-      setLoading(false);
-      return;
-    }
-
     setLoading(true);
     setError(null);
 
     try {
-      const authResponse = await fetch(`${base}/auth/me`, {
+      const response = await fetch("/api/admin/firms", {
         headers: authHeader,
         ...getFetchOptions(),
+        cache: "no-store",
       });
 
-      if (authResponse.status === 401) {
+      if (response.status === 401) {
         setAuthorized(false);
         setAuthChecked(true);
         setLoading(false);
@@ -120,23 +94,17 @@ export default function AdminFirmsPage() {
         return;
       }
 
-      const authData = await parseJsonResponse(authResponse);
-      const isPlatformAdmin = authResponse.ok && isPlatformAdminAuth(authData);
-      setAuthChecked(true);
-      setAuthorized(isPlatformAdmin);
-
-      if (!isPlatformAdmin) {
+      if (response.status === 403) {
+        setAuthorized(false);
+        setAuthChecked(true);
         setLoading(false);
         router.replace("/dashboard");
         return;
       }
 
-      const response = await fetch("/api/admin/firms", {
-        headers: authHeader,
-        ...getFetchOptions(),
-        cache: "no-store",
-      });
       const responseData = await parseJsonResponse(response);
+      setAuthChecked(true);
+      setAuthorized(true);
 
       if (!response.ok || !isAdminFirmsResponse(responseData) || !responseData.ok) {
         setError(
