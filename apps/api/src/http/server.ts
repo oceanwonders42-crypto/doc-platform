@@ -62,6 +62,13 @@ import { getPresignedGetUrl } from "../services/storage";
 import { hasFeature } from "../services/featureFlags";
 import { getComposedFeatures } from "../services/featureCompatibility";
 import {
+  findOverlappingActiveFirmFeatureOverride,
+  getEffectiveFirmFeatureAccess,
+  getEffectiveFirmFeatures,
+  isOverridableFeatureKey,
+  OVERRIDABLE_FEATURE_KEYS,
+} from "../services/firmFeatureOverrides";
+import {
   canMarkDocumentExportReady,
   getEffectiveDocumentReviewState,
   getStoredDocumentReviewState,
@@ -232,6 +239,71 @@ function parseCostBucket(value: unknown): "day" | "week" {
 function parseCostLeaderboardGroupBy(value: unknown): "task" | "document" | "case" | "firm" {
   const normalized = String(value ?? "task").trim().toLowerCase();
   return normalized === "document" || normalized === "case" || normalized === "firm" ? normalized : "task";
+}
+
+function parseOptionalDateTime(value: unknown): Date | null | undefined {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string") return undefined;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function serializeFeatureOverride(override: {
+  id: string;
+  featureKey: string;
+  enabled: boolean;
+  isActive: boolean;
+  startsAt: Date | null;
+  endsAt: Date | null;
+  reason: string | null;
+  createdBy: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
+  return {
+    id: override.id,
+    featureKey: override.featureKey,
+    enabled: override.enabled,
+    isActive: override.isActive,
+    startsAt: override.startsAt?.toISOString() ?? null,
+    endsAt: override.endsAt?.toISOString() ?? null,
+    reason: override.reason ?? null,
+    createdBy: override.createdBy ?? null,
+    createdAt: override.createdAt.toISOString(),
+    updatedAt: override.updatedAt.toISOString(),
+  };
+}
+
+function serializeEffectiveFeatureAccessEntry(entry: {
+  featureKey: string;
+  effectiveEnabled: boolean;
+  source: "plan" | "override" | "none" | "entitlement" | "legacy_flag";
+  planEnabled: boolean;
+  overrideId: string | null;
+  overrideEnabled: boolean | null;
+  startsAt: Date | null;
+  endsAt: Date | null;
+  activeNow: boolean;
+  reason: string | null;
+  createdBy: string | null;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+}) {
+  return {
+    featureKey: entry.featureKey,
+    effectiveEnabled: entry.effectiveEnabled,
+    source: entry.source,
+    planEnabled: entry.planEnabled,
+    overrideId: entry.overrideId,
+    overrideEnabled: entry.overrideEnabled,
+    startsAt: entry.startsAt?.toISOString() ?? null,
+    endsAt: entry.endsAt?.toISOString() ?? null,
+    activeNow: entry.activeNow,
+    reason: entry.reason ?? null,
+    createdBy: entry.createdBy ?? null,
+    createdAt: entry.createdAt?.toISOString() ?? null,
+    updatedAt: entry.updatedAt?.toISOString() ?? null,
+  };
 }
 
 app.get("/health", (_req, res) => res.json({ ok: true, build: buildInfo }));
@@ -447,6 +519,7 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
         id: true,
         name: true,
         plan: true,
+        features: true,
         pageLimitMonthly: true,
         retentionDays: true,
         status: true,
@@ -477,6 +550,12 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
       where: { firmId },
       _count: { id: true },
     });
+    const { entries: effectiveFeatureAccess, overrides: featureOverrides } =
+      await getEffectiveFirmFeatureAccess({
+        id: firm.id,
+        plan: firm.plan,
+        features: firm.features,
+      });
 
     res.json({
       ok: true,
@@ -510,6 +589,11 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
         docsProcessed: usageRow?.docsProcessed ?? 0,
         updatedAt: usageRow?.updatedAt?.toISOString() ?? null,
       },
+      featureKeys: OVERRIDABLE_FEATURE_KEYS,
+      effectiveFeatureAccess: effectiveFeatureAccess.map(
+        serializeEffectiveFeatureAccessEntry
+      ),
+      featureOverrides: featureOverrides.map(serializeFeatureOverride),
     });
   } catch (e) {
     console.error("[admin/firms/:firmId]", e);
@@ -546,6 +630,213 @@ app.patch("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async 
 });
 
 // POST /firms — create firm (PLATFORM_ADMIN_API_KEY)
+app.post(
+  "/admin/firms/:firmId/feature-overrides",
+  auth,
+  requireRole(Role.PLATFORM_ADMIN),
+  async (req, res) => {
+    try {
+      const firmId = String(req.params.firmId ?? "");
+      const body = (req.body ?? {}) as {
+        featureKey?: string;
+        enabled?: boolean;
+        isActive?: boolean;
+        startsAt?: string | null;
+        endsAt?: string | null;
+        reason?: string | null;
+      };
+
+      if (!isOverridableFeatureKey(body.featureKey)) {
+        return res.status(400).json({ ok: false, error: "Invalid featureKey" });
+      }
+      if (typeof body.enabled !== "boolean") {
+        return res.status(400).json({ ok: false, error: "enabled must be boolean" });
+      }
+
+      const startsAt = parseOptionalDateTime(body.startsAt);
+      const endsAt = parseOptionalDateTime(body.endsAt);
+      if (startsAt === undefined || endsAt === undefined) {
+        return res.status(400).json({ ok: false, error: "Invalid override timestamp" });
+      }
+      if (startsAt && endsAt && endsAt.getTime() <= startsAt.getTime()) {
+        return res
+          .status(400)
+          .json({ ok: false, error: "endsAt must be later than startsAt" });
+      }
+
+      const firm = await prisma.firm.findUnique({
+        where: { id: firmId },
+        select: { id: true, plan: true, features: true },
+      });
+      if (!firm) {
+        return res.status(404).json({ ok: false, error: "Firm not found" });
+      }
+
+      if (body.isActive !== false) {
+        const overlappingOverride = await findOverlappingActiveFirmFeatureOverride({
+          firmId,
+          featureKey: body.featureKey,
+          startsAt,
+          endsAt,
+        });
+        if (overlappingOverride) {
+          return res.status(400).json({
+            ok: false,
+            error: "An overlapping active override already exists for this feature.",
+          });
+        }
+      }
+
+      const createdBy =
+        typeof (req as any).userId === "string" ? ((req as any).userId as string) : null;
+
+      const override = await prisma.firmFeatureOverride.create({
+        data: {
+          firmId,
+          featureKey: body.featureKey,
+          enabled: body.enabled,
+          isActive: body.isActive !== false,
+          startsAt,
+          endsAt,
+          reason:
+            typeof body.reason === "string" && body.reason.trim()
+              ? body.reason.trim()
+              : null,
+          createdBy,
+        },
+      });
+
+      const { entries } = await getEffectiveFirmFeatureAccess(firm);
+      const effectiveFeature = entries.find(
+        (entry) => entry.featureKey === body.featureKey
+      );
+
+      res.json({
+        ok: true,
+        override: serializeFeatureOverride(override),
+        effectiveFeature: effectiveFeature
+          ? serializeEffectiveFeatureAccessEntry(effectiveFeature)
+          : null,
+      });
+    } catch (e: any) {
+      console.error("[admin/firms/:firmId/feature-overrides POST]", e);
+      res.status(500).json({ ok: false, error: "Failed to create feature override" });
+    }
+  }
+);
+
+app.patch(
+  "/admin/firms/:firmId/feature-overrides/:overrideId",
+  auth,
+  requireRole(Role.PLATFORM_ADMIN),
+  async (req, res) => {
+    try {
+      const firmId = String(req.params.firmId ?? "");
+      const overrideId = String(req.params.overrideId ?? "");
+      const body = (req.body ?? {}) as {
+        enabled?: boolean;
+        isActive?: boolean;
+        startsAt?: string | null;
+        endsAt?: string | null;
+        reason?: string | null;
+      };
+
+      const existingOverride = await prisma.firmFeatureOverride.findFirst({
+        where: { id: overrideId, firmId },
+      });
+      if (!existingOverride) {
+        return res.status(404).json({ ok: false, error: "Feature override not found" });
+      }
+      if (!isOverridableFeatureKey(existingOverride.featureKey)) {
+        return res.status(400).json({ ok: false, error: "Invalid featureKey" });
+      }
+
+      const startsAt =
+        body.startsAt !== undefined
+          ? parseOptionalDateTime(body.startsAt)
+          : existingOverride.startsAt;
+      const endsAt =
+        body.endsAt !== undefined ? parseOptionalDateTime(body.endsAt) : existingOverride.endsAt;
+      if (startsAt === undefined || endsAt === undefined) {
+        return res.status(400).json({ ok: false, error: "Invalid override timestamp" });
+      }
+      if (startsAt && endsAt && endsAt.getTime() <= startsAt.getTime()) {
+        return res
+          .status(400)
+          .json({ ok: false, error: "endsAt must be later than startsAt" });
+      }
+
+      const nextIsActive =
+        typeof body.isActive === "boolean" ? body.isActive : existingOverride.isActive;
+      if (nextIsActive) {
+        const overlappingOverride = await findOverlappingActiveFirmFeatureOverride({
+          firmId,
+          featureKey: existingOverride.featureKey,
+          startsAt,
+          endsAt,
+          excludeId: overrideId,
+        });
+        if (overlappingOverride) {
+          return res.status(400).json({
+            ok: false,
+            error: "An overlapping active override already exists for this feature.",
+          });
+        }
+      }
+
+      const data: {
+        enabled?: boolean;
+        isActive?: boolean;
+        startsAt?: Date | null;
+        endsAt?: Date | null;
+        reason?: string | null;
+      } = {};
+
+      if (typeof body.enabled === "boolean") data.enabled = body.enabled;
+      if (typeof body.isActive === "boolean") data.isActive = body.isActive;
+      if (body.startsAt !== undefined) data.startsAt = startsAt;
+      if (body.endsAt !== undefined) data.endsAt = endsAt;
+      if (body.reason !== undefined) {
+        data.reason =
+          typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : null;
+      }
+
+      if (Object.keys(data).length === 0) {
+        return res.status(400).json({ ok: false, error: "No valid fields to update" });
+      }
+
+      const override = await prisma.firmFeatureOverride.update({
+        where: { id: overrideId },
+        data,
+      });
+
+      const firm = await prisma.firm.findUnique({
+        where: { id: firmId },
+        select: { id: true, plan: true, features: true },
+      });
+      if (!firm) {
+        return res.status(404).json({ ok: false, error: "Firm not found" });
+      }
+
+      const { entries } = await getEffectiveFirmFeatureAccess(firm);
+      const effectiveFeature = entries.find(
+        (entry) => entry.featureKey === override.featureKey
+      );
+
+      res.json({
+        ok: true,
+        override: serializeFeatureOverride(override),
+        effectiveFeature: effectiveFeature
+          ? serializeEffectiveFeatureAccessEntry(effectiveFeature)
+          : null,
+      });
+    } catch (e: any) {
+      console.error("[admin/firms/:firmId/feature-overrides/:overrideId PATCH]", e);
+      res.status(500).json({ ok: false, error: "Failed to update feature override" });
+    }
+  }
+);
+
 app.post("/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   try {
     const { name, plan } = (req.body ?? {}) as { name?: string; plan?: string };
@@ -2759,12 +3050,12 @@ app.get("/me/features", auth, requireRole(Role.STAFF), async (req, res) => {
     const firmId = (req as any).firmId as string;
     const firm = await prisma.firm.findUnique({
       where: { id: firmId },
-      select: { id: true, plan: true },
+      select: { id: true, plan: true, features: true },
     });
     if (!firm) {
       return res.status(404).json({ ok: false, error: "Firm not found" });
     }
-    res.json(await getComposedFeatures(firm));
+    res.json(await getEffectiveFirmFeatures(firm));
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
