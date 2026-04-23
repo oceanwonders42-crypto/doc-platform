@@ -31,6 +31,13 @@ const resolvedOpenAiEnv = {
   OPENAI_ORG_ID: process.env.OPENAI_ORG_ID,
   OPENAI_PROJECT: process.env.OPENAI_PROJECT,
 };
+const resolvedBuildEnv = {
+  DOC_BUILD_SHA: process.env.DOC_BUILD_SHA,
+  DOC_BUILD_TIMESTAMP: process.env.DOC_BUILD_TIMESTAMP,
+  DOC_BUILD_SOURCE: process.env.DOC_BUILD_SOURCE,
+  DOC_BUILD_BRANCH: process.env.DOC_BUILD_BRANCH,
+  DOC_BUILD_DIRTY: process.env.DOC_BUILD_DIRTY,
+};
 
 module.exports = {
   apps: [
@@ -69,6 +76,7 @@ module.exports = {
         DOC_PROD_WEB_ENV: process.env.DOC_PROD_WEB_ENV,
         DOC_PROD_LOG_ROOT: resolvedPm2LogRoot,
         DOC_RUNTIME_RELEASE_LOCK: process.env.DOC_RUNTIME_RELEASE_LOCK ?? "true",
+        ...resolvedBuildEnv,
         ...resolvedOpenAiEnv,
       },
     },
@@ -103,6 +111,7 @@ module.exports = {
         DOC_PROD_WEB_ENV: process.env.DOC_PROD_WEB_ENV,
         DOC_PROD_LOG_ROOT: resolvedPm2LogRoot,
         DOC_RUNTIME_RELEASE_LOCK: process.env.DOC_RUNTIME_RELEASE_LOCK ?? "true",
+        ...resolvedBuildEnv,
         ...resolvedOpenAiEnv,
       },
     },
@@ -137,6 +146,7 @@ module.exports = {
         DOC_PROD_WEB_ENV: process.env.DOC_PROD_WEB_ENV,
         DOC_PROD_LOG_ROOT: resolvedPm2LogRoot,
         DOC_RUNTIME_RELEASE_LOCK: process.env.DOC_RUNTIME_RELEASE_LOCK ?? "true",
+        ...resolvedBuildEnv,
       },
     },
   ],

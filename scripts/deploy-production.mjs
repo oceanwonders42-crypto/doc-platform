@@ -262,6 +262,7 @@ function readScriptEnv(app, env, nestedEnv, key) {
 
 function collectPm2RuntimeFailures(parsedApps, expectedApps, options = {}) {
   const requireOnlineStatus = options.requireOnlineStatus !== false;
+  const checkExpectedEnv = options.checkExpectedEnv !== false;
   const failures = [];
 
   for (const expectedApp of expectedApps) {
@@ -310,9 +311,11 @@ function collectPm2RuntimeFailures(parsedApps, expectedApps, options = {}) {
     if (actualPwd && !samePath(actualPwd, expectedApp.cwd)) {
       failures.push(`PM2 app ${expectedApp.name} env.PWD is ${actualPwd}; expected ${expectedApp.cwd}`);
     }
-    for (const [key, expectedValue] of Object.entries(expectedApp.expectedEnv ?? {})) {
-      if ((actualRuntimeEnv[key] ?? null) !== expectedValue) {
-        failures.push(`PM2 app ${expectedApp.name} env.${key} is ${actualRuntimeEnv[key] ?? "missing"}; expected ${expectedValue}`);
+    if (checkExpectedEnv) {
+      for (const [key, expectedValue] of Object.entries(expectedApp.expectedEnv ?? {})) {
+        if ((actualRuntimeEnv[key] ?? null) !== expectedValue) {
+          failures.push(`PM2 app ${expectedApp.name} env.${key} is ${actualRuntimeEnv[key] ?? "missing"}; expected ${expectedValue}`);
+        }
       }
     }
   }
@@ -320,10 +323,44 @@ function collectPm2RuntimeFailures(parsedApps, expectedApps, options = {}) {
   return failures;
 }
 
+function parsePm2EnvOutput(stdout) {
+  const values = {};
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = line.match(/^([A-Z0-9_]+):\s*(.*)$/);
+    if (!match) continue;
+    values[match[1]] = match[2];
+  }
+  return values;
+}
+
+async function verifyPm2ProcessEnv(appName, pmId, expectedEnv) {
+  const { stdout } = await runAndCapture("pm2", ["env", String(pmId)], {
+    cwd: productionConfig.canonicalSourceRoot,
+  });
+  const actualEnv = parsePm2EnvOutput(stdout);
+  const failures = [];
+  for (const [key, expectedValue] of Object.entries(expectedEnv ?? {})) {
+    const actualValue = actualEnv[key] ?? null;
+    if (actualValue !== expectedValue) {
+      failures.push(`PM2 app ${appName} env.${key} is ${actualValue ?? "missing"}; expected ${expectedValue}`);
+    }
+  }
+  return failures;
+}
+
 async function verifyPm2Runtime(expectedApps) {
   if (dryRun) return;
   const parsed = await readPm2List();
-  const failures = collectPm2RuntimeFailures(parsed, expectedApps);
+  const failures = collectPm2RuntimeFailures(parsed, expectedApps, { checkExpectedEnv: false });
+  for (const expectedApp of expectedApps) {
+    const app = parsed.find((entry) => entry.name === expectedApp.name);
+    const pmId = app?.pm_id ?? app?.pm2_env?.pm_id;
+    if (pmId == null) {
+      failures.push(`PM2 app ${expectedApp.name} is missing pm_id after deploy`);
+      continue;
+    }
+    failures.push(...(await verifyPm2ProcessEnv(expectedApp.name, pmId, expectedApp.expectedEnv)));
+  }
   if (failures.length > 0) {
     throw new Error(failures.join(" | "));
   }
