@@ -4,12 +4,15 @@ import path from "node:path";
 
 import {
   appendDeployRecord,
+  computeVersionLabel,
   fetchVersionInfo,
   inspectDeploySource,
   printFail,
   printPass,
   printWarn,
+  readRemoteTagCommit,
   repoRoot,
+  resolveGitCommitish,
   resolveGitState,
   runGit,
   writeLatestDeployRecord,
@@ -30,14 +33,20 @@ const deploySource = inspectDeploySource(sourceGitState, {
   canonicalRemote: productionConfig.canonicalRemote,
   canonicalBranch: productionConfig.canonicalBranch,
 });
+const lockedReleaseRef = productionConfig.canonicalBranch;
+const lockedReleaseSha = resolveGitCommitish(lockedReleaseRef, { cwd: repoRoot });
 const buildMeta = {
-  sha: sourceGitState.sha,
-  shortSha: sourceGitState.shortSha,
+  sha: lockedReleaseSha ?? "unknown",
+  shortSha: lockedReleaseSha ? lockedReleaseSha.slice(0, 12) : "unknown",
   builtAt: new Date().toISOString(),
   source: "deploy-production",
-  branch: sourceGitState.branch,
-  dirty: sourceGitState.dirty,
-  versionLabel: sourceGitState.versionLabel,
+  branch: lockedReleaseRef,
+  dirty: false,
+  versionLabel: computeVersionLabel({
+    branch: lockedReleaseRef,
+    shortSha: lockedReleaseSha ? lockedReleaseSha.slice(0, 12) : "unknown",
+    dirty: false,
+  }),
 };
 const releaseRoot = path.join(
   productionConfig.releasesRoot,
@@ -451,25 +460,32 @@ function assertCanonicalSource() {
 }
 
 function assertCleanGitSource() {
-  if (buildMeta.sha === "unknown") {
-    throw new Error("Unable to resolve build SHA. Fix git resolution before deploying.");
+  if (sourceGitState.sha === "unknown") {
+    throw new Error("Unable to resolve source checkout HEAD. Fix git resolution before deploying.");
   }
   if (sourceGitState.dirty && !allowDirty) {
     throw new Error(`canonical source working tree is dirty: ${sourceGitState.dirtyEntries.join(", ")}`);
   }
 }
 
-function assertOriginBranchPinned() {
-  const fetchResult = runGit(["fetch", "origin", "--prune"], { cwd: repoRoot });
+function assertLockedCanonicalRefPinned() {
+  const fetchResult = runGit(["fetch", "origin", "--tags", "--prune"], { cwd: repoRoot });
   if (fetchResult.status !== 0) {
-    throw new Error(`git fetch origin --prune failed: ${fetchResult.stderr.trim() || fetchResult.stdout.trim()}`);
+    throw new Error(`git fetch origin --tags --prune failed: ${fetchResult.stderr.trim() || fetchResult.stdout.trim()}`);
   }
-  const remoteHead = runGit(["rev-parse", `origin/${productionConfig.canonicalBranch}`], { cwd: repoRoot });
-  if (remoteHead.status !== 0) {
-    throw new Error(`origin/${productionConfig.canonicalBranch} could not be resolved from canonical source`);
+  const localTagCommit = resolveGitCommitish(lockedReleaseRef, { cwd: repoRoot });
+  if (!localTagCommit) {
+    throw new Error(`locked production ref ${lockedReleaseRef} could not be resolved locally`);
   }
-  if (remoteHead.stdout.trim() !== buildMeta.sha) {
-    throw new Error(`canonical source HEAD ${buildMeta.sha} does not match origin/${productionConfig.canonicalBranch} ${remoteHead.stdout.trim()}`);
+  const remoteTagCommit = readRemoteTagCommit(lockedReleaseRef, { cwd: repoRoot });
+  if (!remoteTagCommit) {
+    throw new Error(`locked production ref ${lockedReleaseRef} could not be resolved from origin tags`);
+  }
+  if (localTagCommit !== buildMeta.sha) {
+    throw new Error(`locked production ref ${lockedReleaseRef} resolves locally to ${localTagCommit}, expected ${buildMeta.sha}`);
+  }
+  if (remoteTagCommit !== buildMeta.sha) {
+    throw new Error(`locked production ref ${lockedReleaseRef} resolves remotely to ${remoteTagCommit}, expected ${buildMeta.sha}`);
   }
 }
 
@@ -646,7 +662,7 @@ async function main() {
 
   assertCanonicalSource();
   assertCleanGitSource();
-  assertOriginBranchPinned();
+  assertLockedCanonicalRefPinned();
   await assertDurableEnvSourcesExist();
   await ensureDurableEnvLinks(repoRoot);
   await ensureWorkspaceDependencies(repoRoot);
@@ -676,6 +692,8 @@ async function main() {
     command: "pnpm deploy:production",
     sourceRoot: repoRoot,
     sourceRemote: deploySource.remoteUrl,
+    releaseRef: lockedReleaseRef,
+    sourceHeadSha: sourceGitState.sha,
     releaseRoot,
     durableEnv: {
       api: productionConfig.durableApiEnvPath,

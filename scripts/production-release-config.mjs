@@ -5,7 +5,8 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = path.dirname(scriptDir);
 
 export const DEFAULT_CANONICAL_REMOTE = "https://github.com/oceanwonders42-crypto/doc-platform.git";
-export const DEFAULT_CANONICAL_BRANCH = "production/demand-bank-canonical-20260423-1";
+export const LOCKED_PRODUCTION_REF_PREFIX = "production-demand-bank-locked-";
+export const DEFAULT_CANONICAL_BRANCH = "production-demand-bank-locked-20260423-1";
 
 function readEnv(name) {
   const value = process.env[name];
@@ -34,6 +35,10 @@ export function normalizeGitRemote(value) {
   next = next.replace(/\.git$/i, "");
   next = next.replace(/\/+$/g, "");
   return next;
+}
+
+export function isLockedProductionRef(value) {
+  return typeof value === "string" && value.trim().startsWith(LOCKED_PRODUCTION_REF_PREFIX);
 }
 
 export function pathWithin(parentPath, candidatePath) {

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  isLockedProductionRef,
   normalizeGitRemote,
   resolveProductionReleaseConfig,
 } from "./production-release-config.mjs";
@@ -88,6 +89,27 @@ export function gitCommitInHistory(commitish, options = {}) {
   return result.status === 0 && result.stdout.trim().length > 0;
 }
 
+export function resolveGitCommitish(commitish, options = {}) {
+  const commit = readString(commitish);
+  if (!commit) return null;
+  const result = runGit(["rev-parse", `${commit}^{commit}`], options);
+  return result.status === 0 ? readString(result.stdout) : null;
+}
+
+export function readRemoteTagCommit(tagName, options = {}) {
+  const tag = readString(tagName);
+  if (!tag) return null;
+  const result = runGit(["ls-remote", "--tags", "origin", `refs/tags/${tag}`], options);
+  if (result.status !== 0) return null;
+  const line = result.stdout
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find(Boolean);
+  if (!line) return null;
+  const [commit] = line.split(/\s+/);
+  return readString(commit);
+}
+
 export function inspectDeploySource(gitStateInput, options = {}) {
   const cwd = options.cwd ?? gitStateInput?.cwd ?? repoRoot;
   const gitState = gitStateInput ?? resolveGitState({ cwd });
@@ -97,6 +119,10 @@ export function inspectDeploySource(gitStateInput, options = {}) {
   const canonicalRemote = normalizeGitRemote(options.canonicalRemote ?? productionConfig.canonicalRemote);
   const canonicalBranch = readString(options.canonicalBranch) ?? productionConfig.canonicalBranch;
   const normalizedRemoteUrl = normalizeGitRemote(remoteUrl);
+
+  if (!isLockedProductionRef(canonicalBranch)) {
+    failures.push(`canonical production ref ${canonicalBranch ?? "missing"} is not locked; expected ${productionConfig.canonicalBranch}.`);
+  }
 
   if (gitState.sha === "unknown") {
     failures.push("git rev-parse HEAD failed; this checkout is missing commit metadata.");
@@ -112,10 +138,6 @@ export function inspectDeploySource(gitStateInput, options = {}) {
     failures.push(`origin remote ${remoteUrl} could not be normalized for canonical verification.`);
   } else if (canonicalRemote && normalizedRemoteUrl !== canonicalRemote) {
     failures.push(`origin remote ${remoteUrl} is not the canonical GitHub source ${canonicalRemote}.`);
-  }
-
-  if (canonicalBranch && gitState.branch !== "unknown" && gitState.branch !== "HEAD" && gitState.branch !== canonicalBranch) {
-    failures.push(`checked out branch ${gitState.branch} does not match canonical production branch ${canonicalBranch}.`);
   }
 
   if (gitState.sha !== "unknown" && !gitCommitExists(gitState.sha, { cwd })) {
