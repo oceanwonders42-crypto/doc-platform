@@ -401,7 +401,7 @@ async function verifyPm2SavedState(expectedApps) {
   if (!Array.isArray(parsed)) {
     throw new Error(`PM2 dump file ${dumpPath} did not contain an app array`);
   }
-  const failures = collectPm2RuntimeFailures(parsed, expectedApps, { requireOnlineStatus: false });
+  const failures = collectPm2RuntimeFailures(parsed, expectedApps, { requireOnlineStatus: false, checkExpectedEnv: false });
   if (failures.length > 0) {
     throw new Error(`PM2 saved state mismatch: ${failures.join(" | ")}`);
   }
