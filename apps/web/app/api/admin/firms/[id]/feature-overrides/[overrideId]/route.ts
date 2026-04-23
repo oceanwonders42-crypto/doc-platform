@@ -106,20 +106,34 @@ async function requirePlatformAdmin(req: NextRequest): Promise<
   }
 }
 
-export async function GET(req: NextRequest) {
+export async function PATCH(
+  req: NextRequest,
+  {
+    params,
+  }: {
+    params: Promise<{ id: string; overrideId: string }>;
+  }
+) {
   const auth = await requirePlatformAdmin(req);
   if (!auth.ok) return auth.response;
 
+  const { id, overrideId } = await params;
   try {
-    const res = await fetch(`${auth.baseUrl}/admin/firms`, {
-      headers: {
-        Authorization: auth.authHeader,
-        Accept: "application/json",
-      },
-      cache: "no-store",
-    });
-    const body = await res.json().catch(() => ({}));
-    return NextResponse.json(body, { status: res.status });
+    const body = await req.json().catch(() => ({}));
+    const response = await fetch(
+      `${auth.baseUrl}/admin/firms/${id}/feature-overrides/${overrideId}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: auth.authHeader,
+          Accept: "application/json",
+        },
+        body: JSON.stringify(body),
+      }
+    );
+    const data = await response.json().catch(() => ({}));
+    return NextResponse.json(data, { status: response.status });
   } catch (error) {
     return NextResponse.json(
       { ok: false, error: error instanceof Error ? error.message : String(error) },

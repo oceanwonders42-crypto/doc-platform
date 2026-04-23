@@ -1,4 +1,15 @@
+"use client";
+
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+
+import {
+  getApiBase,
+  getAuthHeader,
+  getFetchOptions,
+  parseJsonResponse,
+} from "@/lib/api";
 
 type FirmRow = {
   firmId: string;
@@ -22,21 +33,31 @@ type AdminFirmsResponse = {
   error?: string;
 };
 
-async function fetchAdminFirms(): Promise<AdminFirmsResponse> {
-  const base = process.env.DOC_API_URL;
-  const key = process.env.PLATFORM_ADMIN_API_KEY;
-  if (!base || !key) {
-    throw new Error("DOC_API_URL or PLATFORM_ADMIN_API_KEY not set");
-  }
-  const res = await fetch(`${base}/admin/firms`, {
-    headers: { Authorization: `Bearer ${key}` },
-    cache: "no-store",
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    return { ok: false, firms: [], error: data?.error || `HTTP ${res.status}` };
-  }
-  return data as AdminFirmsResponse;
+type AuthMeResponse = {
+  ok?: boolean;
+  role?: string;
+  isPlatformAdmin?: boolean;
+  user?: { role?: string };
+};
+
+function isPlatformAdminAuth(data: unknown): boolean {
+  if (!data || typeof data !== "object") return false;
+  const record = data as AuthMeResponse;
+  return (
+    record.isPlatformAdmin === true ||
+    record.role === "PLATFORM_ADMIN" ||
+    record.user?.role === "PLATFORM_ADMIN"
+  );
+}
+
+function isAdminFirmsResponse(data: unknown): data is AdminFirmsResponse {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "ok" in data &&
+    "firms" in data &&
+    Array.isArray((data as { firms?: unknown }).firms)
+  );
 }
 
 function formatDate(iso: string): string {
@@ -51,45 +72,146 @@ function formatDate(iso: string): string {
   }
 }
 
-export default async function AdminFirmsPage() {
-  let data: AdminFirmsResponse;
-  try {
-    data = await fetchAdminFirms();
-  } catch (e) {
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+export default function AdminFirmsPage() {
+  const router = useRouter();
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authorized, setAuthorized] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [firms, setFirms] = useState<FirmRow[]>([]);
+
+  const loadFirms = useCallback(async () => {
+    const authHeader = getAuthHeader();
+    if (!authHeader.Authorization) {
+      setAuthorized(false);
+      setAuthChecked(true);
+      setLoading(false);
+      router.replace("/login");
+      return;
+    }
+
+    const base = getApiBase();
+    if (!base) {
+      setError("API URL is not configured.");
+      setAuthorized(false);
+      setAuthChecked(true);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const authResponse = await fetch(`${base}/auth/me`, {
+        headers: authHeader,
+        ...getFetchOptions(),
+      });
+
+      if (authResponse.status === 401) {
+        setAuthorized(false);
+        setAuthChecked(true);
+        setLoading(false);
+        router.replace("/login");
+        return;
+      }
+
+      const authData = await parseJsonResponse(authResponse);
+      const isPlatformAdmin = authResponse.ok && isPlatformAdminAuth(authData);
+      setAuthChecked(true);
+      setAuthorized(isPlatformAdmin);
+
+      if (!isPlatformAdmin) {
+        setLoading(false);
+        router.replace("/dashboard");
+        return;
+      }
+
+      const response = await fetch("/api/admin/firms", {
+        headers: authHeader,
+        ...getFetchOptions(),
+        cache: "no-store",
+      });
+      const responseData = await parseJsonResponse(response);
+
+      if (!response.ok || !isAdminFirmsResponse(responseData) || !responseData.ok) {
+        setError(
+          isAdminFirmsResponse(responseData)
+            ? (responseData.error ?? `HTTP ${response.status}`)
+            : `HTTP ${response.status}`
+        );
+        setLoading(false);
+        return;
+      }
+
+      setFirms(responseData.firms);
+    } catch (fetchError) {
+      setError(getErrorMessage(fetchError, "Failed to load platform firms."));
+    } finally {
+      setLoading(false);
+    }
+  }, [router]);
+
+  useEffect(() => {
+    void loadFirms();
+  }, [loadFirms]);
+
+  if (!authChecked || loading) {
     return (
-      <main style={{ padding: 24, maxWidth: 1100, margin: "0 auto", fontFamily: "system-ui, -apple-system" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-          <Link href="/admin/debug" style={{ fontSize: 14, color: "#111", textDecoration: "underline" }}>
-            ← Admin
-          </Link>
-          <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>Platform firms</h1>
-        </div>
-        <p style={{ color: "#c00" }}>{e instanceof Error ? e.message : String(e)}</p>
+      <main
+        style={{
+          padding: 24,
+          maxWidth: 1100,
+          margin: "0 auto",
+          fontFamily: "system-ui, -apple-system",
+        }}
+      >
+        <p style={{ color: "#666", margin: 0 }}>Loading firms...</p>
       </main>
     );
   }
 
-  if (!data.ok || data.error) {
+  if (!authorized) {
+    return null;
+  }
+
+  if (error) {
     return (
-      <main style={{ padding: 24, maxWidth: 1100, margin: "0 auto", fontFamily: "system-ui, -apple-system" }}>
+      <main
+        style={{
+          padding: 24,
+          maxWidth: 1100,
+          margin: "0 auto",
+          fontFamily: "system-ui, -apple-system",
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
           <Link href="/admin/debug" style={{ fontSize: 14, color: "#111", textDecoration: "underline" }}>
-            ← Admin
+            {"<-"} Admin
           </Link>
           <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>Platform firms</h1>
         </div>
-        <p style={{ color: "#c00" }}>{data.error ?? "Failed to load firms"}</p>
+        <p style={{ color: "#c00" }}>{error}</p>
       </main>
     );
   }
-
-  const firms = data.firms;
 
   return (
-    <main style={{ padding: 24, maxWidth: 1100, margin: "0 auto", fontFamily: "system-ui, -apple-system" }}>
-<div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+    <main
+      style={{
+        padding: 24,
+        maxWidth: 1100,
+        margin: "0 auto",
+        fontFamily: "system-ui, -apple-system",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
         <Link href="/admin/debug" style={{ fontSize: 14, color: "#111", textDecoration: "underline" }}>
-            ← Admin
+          {"<-"} Admin
         </Link>
         <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>Platform firms</h1>
         <Link
@@ -126,11 +248,11 @@ export default async function AdminFirmsPage() {
             </tr>
           </thead>
           <tbody>
-            {firms.map((f) => (
-              <tr key={f.firmId} style={{ borderBottom: "1px solid #f0f0f0" }}>
+            {firms.map((firm) => (
+              <tr key={firm.firmId} style={{ borderBottom: "1px solid #f0f0f0" }}>
                 <td style={{ padding: "10px" }}>
-                  <span style={{ fontWeight: 600 }}>{f.firmName}</span>
-                  <div style={{ fontSize: 12, color: "#888" }}>{f.firmId}</div>
+                  <span style={{ fontWeight: 600 }}>{firm.firmName}</span>
+                  <div style={{ fontSize: 12, color: "#888" }}>{firm.firmId}</div>
                 </td>
                 <td style={{ padding: "10px" }}>
                   <span
@@ -139,25 +261,25 @@ export default async function AdminFirmsPage() {
                       padding: "2px 8px",
                       borderRadius: 6,
                       fontSize: 12,
-                      background: f.status === "active" ? "#e8f5e9" : "#fff3e0",
-                      color: f.status === "active" ? "#2e7d32" : "#e65100",
+                      background: firm.status === "active" ? "#e8f5e9" : "#fff3e0",
+                      color: firm.status === "active" ? "#2e7d32" : "#e65100",
                     }}
                   >
-                    {f.status}
+                    {firm.status}
                   </span>
                 </td>
-                <td style={{ padding: "10px" }}>{f.plan}</td>
-                <td style={{ padding: "10px" }}>{f.pageLimitMonthly.toLocaleString()}</td>
-                <td style={{ padding: "10px" }}>{formatDate(f.createdAt)}</td>
+                <td style={{ padding: "10px" }}>{firm.plan}</td>
+                <td style={{ padding: "10px" }}>{firm.pageLimitMonthly.toLocaleString()}</td>
+                <td style={{ padding: "10px" }}>{formatDate(firm.createdAt)}</td>
                 <td style={{ padding: "10px" }}>
-                  {(f.usageStats?.pagesProcessed ?? 0).toLocaleString()}
+                  {(firm.usageStats?.pagesProcessed ?? 0).toLocaleString()}
                 </td>
                 <td style={{ padding: "10px" }}>
                   <Link
-                    href={`/admin/firms/${f.firmId}`}
+                    href={`/admin/firms/${firm.firmId}`}
                     style={{ fontSize: 13, color: "#1565c0", textDecoration: "underline" }}
                   >
-                    View →
+                    View {"->"}
                   </Link>
                 </td>
               </tr>

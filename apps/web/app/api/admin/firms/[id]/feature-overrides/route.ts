@@ -106,20 +106,27 @@ async function requirePlatformAdmin(req: NextRequest): Promise<
   }
 }
 
-export async function GET(req: NextRequest) {
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
   const auth = await requirePlatformAdmin(req);
   if (!auth.ok) return auth.response;
 
+  const { id } = await params;
   try {
-    const res = await fetch(`${auth.baseUrl}/admin/firms`, {
+    const body = await req.json().catch(() => ({}));
+    const response = await fetch(`${auth.baseUrl}/admin/firms/${id}/feature-overrides`, {
+      method: "POST",
       headers: {
+        "Content-Type": "application/json",
         Authorization: auth.authHeader,
         Accept: "application/json",
       },
-      cache: "no-store",
+      body: JSON.stringify(body),
     });
-    const body = await res.json().catch(() => ({}));
-    return NextResponse.json(body, { status: res.status });
+    const data = await response.json().catch(() => ({}));
+    return NextResponse.json(data, { status: response.status });
   } catch (error) {
     return NextResponse.json(
       { ok: false, error: error instanceof Error ? error.message : String(error) },
