@@ -166,7 +166,6 @@ async function appendLog(logPath, payload) {
 async function findDemandEnabledCandidate(prisma, jwtSecret, apiBase) {
   const candidates = await prisma.user.findMany({
     where: {
-      NOT: { firmId: null },
       role: { in: [Role.FIRM_ADMIN, Role.PARALEGAL, Role.STAFF] },
     },
     select: {
@@ -180,6 +179,9 @@ async function findDemandEnabledCandidate(prisma, jwtSecret, apiBase) {
   });
 
   for (const candidate of candidates) {
+    if (!candidate.firmId) {
+      continue;
+    }
     const token = buildToken(
       {
         userId: candidate.id,
