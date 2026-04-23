@@ -32,6 +32,23 @@ async function main() {
     },
   });
 
+  await prisma.user.createMany({
+    data: [
+      {
+        id: requesterUserId,
+        firmId,
+        email: "requester@example.com",
+        role: Role.PARALEGAL,
+      },
+      {
+        id: reviewerUserId,
+        firmId,
+        email: "reviewer@example.com",
+        role: Role.PLATFORM_ADMIN,
+      },
+    ],
+  });
+
   await prisma.legalCase.create({
     data: {
       id: caseId,
@@ -40,6 +57,7 @@ async function main() {
       caseNumber: `DR-${suffix}`,
       clientName: "Dana Review",
       status: "open",
+      assignedUserId: requesterUserId,
     },
   });
 
@@ -431,6 +449,7 @@ async function main() {
     await prisma.notification.deleteMany({ where: { firmId } }).catch(() => {});
     await prisma.document.deleteMany({ where: { firmId, routedCaseId: caseId } }).catch(() => {});
     await prisma.legalCase.deleteMany({ where: { id: caseId } }).catch(() => {});
+    await prisma.user.deleteMany({ where: { firmId, id: { in: [requesterUserId, reviewerUserId] } } }).catch(() => {});
     await prisma.firm.deleteMany({ where: { id: firmId } }).catch(() => {});
   }
 }

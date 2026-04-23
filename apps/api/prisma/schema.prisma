@@ -106,6 +106,8 @@ model Firm {
   appBugReports               AppBugReport[]
   demandPackages              DemandPackage[]
   demandNarrativeDrafts       DemandNarrativeDraft[]
+  demandBankDocuments         DemandBankDocument[]
+  demandBankRuns              DemandBankRun[]
   reviewQueueEvents           ReviewQueueEvent[]
   demandPackageSectionSources DemandPackageSectionSource[]
 }
@@ -981,6 +983,92 @@ model DemandPackageSectionSource {
   demandPackage DemandPackage @relation(fields: [demandPackageId], references: [id], onDelete: Cascade)
 
   @@index([firmId, demandPackageId])
+}
+
+model DemandBankDocument {
+  id                    String   @id @default(cuid())
+  firmId                String
+  matterId              String?
+  sourceDocumentId      String?
+  title                 String
+  fileName              String?
+  originalText          String   @db.Text
+  redactedText          String?  @db.Text
+  summary               String?  @db.Text
+  jurisdiction          String?
+  caseType              String?
+  liabilityType         String?
+  injuryTags            String[] @default([])
+  treatmentTags         String[] @default([])
+  bodyPartTags          String[] @default([])
+  mriPresent            Boolean  @default(false)
+  injectionsPresent     Boolean  @default(false)
+  surgeryPresent        Boolean  @default(false)
+  treatmentDurationDays Int?
+  totalBillsAmount      Float?
+  demandAmount          Float?
+  templateFamily        String?
+  toneStyle             String?
+  qualityScore          Int?
+  approvedForReuse      Boolean  @default(false)
+  blockedForReuse       Boolean  @default(false)
+  reviewStatus          String   @default("pending")
+  reviewedBy            String?
+  reviewedAt            DateTime?
+  createdBy             String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  firm     Firm                @relation(fields: [firmId], references: [id], onDelete: Cascade)
+  sections DemandBankSection[]
+
+  @@index([firmId, createdAt])
+  @@index([firmId, matterId])
+  @@index([firmId, reviewStatus, createdAt])
+  @@index([firmId, approvedForReuse, blockedForReuse, createdAt])
+  @@map("demand_bank_documents")
+}
+
+model DemandBankSection {
+  id                   String   @id @default(cuid())
+  demandBankDocumentId String
+  sectionType          String
+  heading              String?
+  originalText         String   @db.Text
+  redactedText         String?  @db.Text
+  qualityScore         Int?
+  approvedForReuse     Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  document DemandBankDocument @relation(fields: [demandBankDocumentId], references: [id], onDelete: Cascade)
+
+  @@index([demandBankDocumentId, createdAt])
+  @@index([approvedForReuse, sectionType])
+  @@map("demand_bank_sections")
+}
+
+model DemandBankRun {
+  id                  String   @id @default(cuid())
+  matterId            String?
+  firmId              String
+  runType             String
+  templateId          String?
+  inputCaseProfile    Json
+  retrievedDemandIds  Json
+  retrievedSectionIds Json
+  retrievalReasoning  Json?
+  model               String?
+  promptVersion       String?
+  createdBy           String?
+  createdAt           DateTime @default(now())
+
+  firm Firm @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@index([firmId, createdAt])
+  @@index([firmId, matterId, createdAt])
+  @@index([firmId, runType, createdAt])
+  @@map("demand_bank_runs")
 }
 
 model CaseTimelineEvent {

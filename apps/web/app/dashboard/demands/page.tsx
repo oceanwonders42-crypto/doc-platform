@@ -25,6 +25,7 @@ export default function DemandsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [demandNarrativesEnabled, setDemandNarrativesEnabled] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -43,6 +44,16 @@ export default function DemandsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    fetch("/api/me/features", { cache: "no-store" })
+      .then(parseJsonResponse)
+      .then((data: unknown) => {
+        const payload = data as { demand_narratives?: unknown };
+        setDemandNarrativesEnabled(Boolean(payload?.demand_narratives));
+      })
+      .catch(() => setDemandNarrativesEnabled(false));
+  }, []);
 
   const filtered = search.trim()
     ? items.filter(
@@ -94,7 +105,7 @@ export default function DemandsPage() {
       <PageHeader
         breadcrumbs={[{ label: "Demands" }]}
         title="Demands"
-        description="Medical bills, specials, and demand packages. Open a case to view or draft demand sections."
+        description="Case demand work, reusable prior-demand examples, and review-safe drafting live together here."
         action={
           <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
             <input
@@ -105,9 +116,54 @@ export default function DemandsPage() {
               className="onyx-input"
               style={{ minWidth: 220 }}
             />
+            {demandNarrativesEnabled && (
+              <Link
+                href="/dashboard/demands/bank"
+                className="onyx-btn-primary"
+                style={{ textDecoration: "none", whiteSpace: "nowrap" }}
+              >
+                Open Demand Bank
+              </Link>
+            )}
           </div>
         }
       />
+
+      {demandNarrativesEnabled && (
+        <div
+          className="onyx-card"
+          style={{
+            padding: "1rem 1.1rem",
+            marginBottom: "1rem",
+            display: "grid",
+            gap: "0.45rem",
+          }}
+        >
+          <p
+            style={{
+              margin: 0,
+              fontSize: "0.75rem",
+              fontWeight: 700,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--onyx-accent)",
+            }}
+          >
+            Demand Bank Foundation
+          </p>
+          <p style={{ margin: 0, fontSize: "0.9375rem", color: "var(--onyx-text-secondary)" }}>
+            Bank approved prior demands, review reusable sections, and keep style examples separate from current-case facts before drafting.
+          </p>
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+            <Link href="/dashboard/demands/bank" className="onyx-link">
+              Review banked demands
+            </Link>
+            <Link href="/dashboard/review" className="onyx-link">
+              Open review queue
+            </Link>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="onyx-card" style={{ padding: "1rem", marginBottom: "1rem", borderColor: "var(--onyx-error)" }}>

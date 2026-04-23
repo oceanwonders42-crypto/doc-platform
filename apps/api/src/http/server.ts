@@ -82,6 +82,7 @@ import {
 } from "../services/demandNarrativeReview";
 import casesRouter from "./routes/cases";
 import contactsRouter from "./routes/contacts";
+import demandBankRouter from "./routes/demandBank";
 import migrationRouter from "./routes/migration";
 import {
   internalOrderSyncRouter,
@@ -540,6 +541,7 @@ app.get("/auth/microsoft", (req, res) => {
 
 app.use("/cases", casesRouter);
 app.use("/contacts", contactsRouter);
+app.use("/demand-bank", demandBankRouter);
 app.use("/integrations/quickbooks", quickbooksIntegrationRouter);
 app.use("/api/qbo", quickbooksIntegrationRouter);
 app.use("/migration", migrationRouter);

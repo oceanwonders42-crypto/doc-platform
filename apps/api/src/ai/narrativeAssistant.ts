@@ -14,6 +14,10 @@ import {
   OPENAI_TASK_TYPES,
   runOpenAiChatCompletionWithTelemetry,
 } from "../services/aiTaskTelemetry";
+import {
+  buildDemandDraftContext,
+  buildDemandDraftExamplesPromptBlock,
+} from "../services/demandDraftContext";
 
 export type NarrativeType =
   | "treatment_summary"
@@ -174,6 +178,30 @@ export async function generateNarrative(input: NarrativeInput): Promise<Narrativ
   if (events.length === 0) warnings.push("No timeline events found for this case; draft may be generic.");
   if (diagnoses.length === 0 && procedures.length === 0) warnings.push("No diagnoses or procedures in timeline; consider adding medical records.");
 
+  let demandDraftExamplesBlock = "";
+  try {
+    const context = await buildDemandDraftContext({
+      caseId,
+      firmId,
+      template: {
+        narrativeType: type,
+        tone,
+        templateFamilyPreference:
+          type === "response_to_offer"
+            ? "offer_response"
+            : type === "response_to_denial"
+              ? "denial_response"
+              : "pre_suit_demand",
+      },
+      model: NARRATIVE_MODEL,
+      promptVersion: NARRATIVE_PROMPT_VERSION,
+    });
+    demandDraftExamplesBlock = buildDemandDraftExamplesPromptBlock(context);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    warnings.push(`Demand Bank examples unavailable: ${message}`);
+  }
+
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     return {
@@ -207,8 +235,10 @@ export async function generateNarrative(input: NarrativeInput): Promise<Narrativ
     "Diagnoses: " + diagnosesBlock + "\n" +
     "Procedures: " + proceduresBlock + "\n" +
     injuriesBlock + (injuriesBlock ? "\n" : "") +
+    (demandDraftExamplesBlock ? "\n" + demandDraftExamplesBlock + "\n" : "\n") +
     "\n## Task\n" +
     "Write a **" + sectionTitle + "** section (2-4 short paragraphs) for a demand letter. " + toneInstruction + "\n" +
+    "Current case facts are the only source of truth. Prior demand examples are for style and structure only. Never copy facts, providers, bills, dates, diagnoses, or demand values from prior matters.\n" +
     notesBlock + "\n" +
     formatQuestionnaireBlock(questionnaire) + "\n\n" +
     "Output only the draft narrative text, no preamble or labels. Use [BRACKETS] for any missing specific facts.";
