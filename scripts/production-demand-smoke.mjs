@@ -120,7 +120,7 @@ function snippet(value, limit = 220) {
 }
 
 async function fetchJson(url, init = {}) {
-  const response = await fetch(url, init);
+  const response = await fetchWithRetry(url, init);
   const text = await response.text();
   let body = null;
   try {
@@ -138,13 +138,46 @@ async function fetchJson(url, init = {}) {
 }
 
 async function fetchText(url, init = {}) {
-  const response = await fetch(url, init);
+  const response = await fetchWithRetry(url, init);
   return {
     ok: response.ok,
     status: response.status,
     text: await response.text(),
     headers: response.headers,
   };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(url, init = {}, options = {}) {
+  const attempts = options.attempts ?? 5;
+  const retryDelayMs = options.retryDelayMs ?? 1500;
+  let lastResponse = null;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, init);
+      if (![502, 503, 504].includes(response.status) || attempt === attempts) {
+        return response;
+      }
+      lastResponse = response;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt === attempts) {
+        break;
+      }
+    }
+    await sleep(retryDelayMs);
+  }
+
+  if (lastResponse) {
+    return lastResponse;
+  }
+
+  throw new Error(`fetch failed for ${url}: ${lastError?.message ?? "unknown error"}`);
 }
 
 function assertCondition(condition, message, details) {
@@ -459,7 +492,7 @@ async function main() {
   const startedAt = new Date().toISOString();
   const result = {
     startedAt,
-    publicPage: null,
+    pageLoad: null,
     generation: null,
     retrievalPreview: null,
     feedback: null,
@@ -498,14 +531,14 @@ async function main() {
     });
     createdIds = fixtures.createdIds;
 
-    const publicPage = await fetchText(joinUrl(options.publicWebUrl, `/cases/${encodeURIComponent(fixtures.caseId)}/narrative`));
-    assertCondition(publicPage.ok, "narrative page did not return HTTP 200", `status=${publicPage.status}`);
+    const pageLoad = await fetchText(joinUrl(options.localWebUrl, `/cases/${encodeURIComponent(fixtures.caseId)}/narrative`));
+    assertCondition(pageLoad.ok, "narrative page did not return HTTP 200", `status=${pageLoad.status}`);
     assertCondition(
-      /Demand Narrative Assistant|Loading feature access/i.test(publicPage.text),
+      /Demand Narrative Assistant|Loading feature access/i.test(pageLoad.text),
       "narrative page did not render expected content",
-      snippet(publicPage.text)
+      snippet(pageLoad.text)
     );
-    result.publicPage = { status: publicPage.status, snippet: snippet(publicPage.text) };
+    result.pageLoad = { baseUrl: options.localWebUrl, status: pageLoad.status, snippet: snippet(pageLoad.text) };
 
     const generateResponse = await fetchJson(joinUrl(options.localApiUrl, `/cases/${encodeURIComponent(fixtures.caseId)}/narrative`), {
       method: "POST",
