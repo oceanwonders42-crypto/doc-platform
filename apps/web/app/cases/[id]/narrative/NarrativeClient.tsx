@@ -112,6 +112,10 @@ type AuthMeResponse = {
   isPlatformAdmin?: boolean;
 };
 
+type FeaturesResponse = {
+  demand_narratives?: boolean;
+};
+
 const STATUS_LABELS: Record<NormalizedDemandStatus, string> = {
   pending_dev_review: "Pending internal review",
   approved: "Approved",
@@ -144,11 +148,12 @@ function previewSnippet(value: string | null, limit = 320) {
 
 export default function NarrativePageClient({
   caseId,
-  enabled = true,
+  enabled = null,
 }: {
   caseId: string;
-  enabled?: boolean;
+  enabled?: boolean | null;
 }) {
+  const [featureEnabled, setFeatureEnabled] = useState<boolean | null>(enabled);
   const [type, setType] = useState<string>("treatment_summary");
   const [tone, setTone] = useState<string>("neutral");
   const [notes, setNotes] = useState("");
@@ -172,6 +177,8 @@ export default function NarrativePageClient({
   const [retrievalError, setRetrievalError] = useState<string | null>(null);
   const [retrievalStatusMessage, setRetrievalStatusMessage] = useState<string | null>(null);
   const [retrievalActionKey, setRetrievalActionKey] = useState<string | null>(null);
+  const featureResolved = featureEnabled !== null;
+  const demandNarrativesEnabled = featureEnabled === true;
   const visibleDraftItems = useMemo(() => {
     if (isPlatformReviewer) return draftItems;
     return draftItems.filter((item) => normalizeDemandStatus(item.status) === "released");
@@ -225,6 +232,23 @@ export default function NarrativePageClient({
     }
   }
 
+  async function loadFeatureState() {
+    if (enabled !== null) {
+      setFeatureEnabled(enabled);
+      return;
+    }
+    try {
+      const response = await fetch(`${getApiBase()}/me/features`, {
+        headers: getAuthHeader(),
+        ...getFetchOptions(),
+      });
+      const data = (await parseJsonResponse(response)) as FeaturesResponse;
+      setFeatureEnabled(response.ok && data.demand_narratives === true);
+    } catch {
+      setFeatureEnabled(false);
+    }
+  }
+
   async function loadDrafts(preferredDraftId?: string | null) {
     try {
       const response = await fetch(`${getApiBase()}/cases/${encodeURIComponent(caseId)}/demand-narratives`, {
@@ -249,16 +273,20 @@ export default function NarrativePageClient({
   }
 
   useEffect(() => {
-    if (!enabled) {
+    if (!featureResolved) {
+      void loadFeatureState();
+      return;
+    }
+    if (!demandNarrativesEnabled) {
       setAuthChecked(true);
       return;
     }
     void loadAuthState();
     void loadDrafts();
-  }, [caseId, enabled]);
+  }, [caseId, demandNarrativesEnabled, featureResolved]);
 
   useEffect(() => {
-    if (!enabled || !selectedDraft?.id) {
+    if (!demandNarrativesEnabled || !selectedDraft?.id) {
       setRetrievalPreview(null);
       setRetrievalError(null);
       setRetrievalStatusMessage(null);
@@ -299,10 +327,10 @@ export default function NarrativePageClient({
     return () => {
       active = false;
     };
-  }, [caseId, enabled, selectedDraft?.id]);
+  }, [caseId, demandNarrativesEnabled, selectedDraft?.id]);
 
   async function handleGenerate() {
-    if (!enabled) return;
+    if (!demandNarrativesEnabled) return;
     setLoading(true);
     setError(null);
     setStatusMessage(null);
@@ -491,7 +519,15 @@ export default function NarrativePageClient({
         Generate draft narrative sections from case timeline and extracted fields. Every generated demand stays blocked in internal developer review until a platform reviewer approves and releases it.
       </p>
 
-      {!enabled && (
+      {!featureResolved && (
+        <div style={{ padding: 16, marginBottom: 24, background: "#f8f9fa", border: "1px solid #d0d7de", borderRadius: 8 }}>
+          <p style={{ margin: 0, fontSize: 14, color: "#666" }}>
+            Checking Demand Narrative Assistant access for this firm.
+          </p>
+        </div>
+      )}
+
+      {featureResolved && !demandNarrativesEnabled && (
         <div style={{ padding: 16, marginBottom: 24, background: "#fff8e6", border: "1px solid #e6d68a", borderRadius: 8 }}>
           <p style={{ margin: 0, fontSize: 14, color: "#666" }}>
             The Demand Narrative Assistant add-on is not enabled for your firm. Contact your administrator to enable it.
@@ -506,7 +542,7 @@ export default function NarrativePageClient({
         <select
           value={type}
           onChange={(e) => setType(e.target.value)}
-          disabled={!enabled}
+          disabled={!demandNarrativesEnabled}
           style={{
             padding: "8px 12px",
             fontSize: 14,
@@ -530,7 +566,7 @@ export default function NarrativePageClient({
         <select
           value={tone}
           onChange={(e) => setTone(e.target.value)}
-          disabled={!enabled}
+          disabled={!demandNarrativesEnabled}
           style={{
             padding: "8px 12px",
             fontSize: 14,
@@ -565,7 +601,7 @@ export default function NarrativePageClient({
               onChange={(e) => setMainInjuries(e.target.value)}
               placeholder="e.g. Cervical strain, lumbar disc herniation"
               rows={2}
-              disabled={!enabled}
+              disabled={!demandNarrativesEnabled}
               style={{
                 width: "100%",
                 maxWidth: 500,
@@ -585,7 +621,7 @@ export default function NarrativePageClient({
               onChange={(e) => setTreatmentHighlights(e.target.value)}
               placeholder="e.g. 12 PT sessions, MRI, pain management"
               rows={2}
-              disabled={!enabled}
+              disabled={!demandNarrativesEnabled}
               style={{
                 width: "100%",
                 maxWidth: 500,
@@ -603,7 +639,7 @@ export default function NarrativePageClient({
             <select
               value={lostWagesYesNo}
               onChange={(e) => setLostWagesYesNo((e.target.value || "") as "" | "yes" | "no")}
-              disabled={!enabled}
+              disabled={!demandNarrativesEnabled}
               style={{
                 padding: "8px 12px",
                 fontSize: 14,
@@ -623,7 +659,7 @@ export default function NarrativePageClient({
                 value={lostWagesAmount}
                 onChange={(e) => setLostWagesAmount(e.target.value)}
                 placeholder="Amount (optional)"
-                disabled={!enabled}
+                disabled={!demandNarrativesEnabled}
                 style={{
                   padding: "8px 12px",
                   fontSize: 14,
@@ -643,7 +679,7 @@ export default function NarrativePageClient({
               value={currentDemandAmount}
               onChange={(e) => setCurrentDemandAmount(e.target.value)}
               placeholder="e.g. $50,000"
-              disabled={!enabled}
+              disabled={!demandNarrativesEnabled}
               style={{
                 width: "100%",
                 maxWidth: 200,
@@ -663,7 +699,7 @@ export default function NarrativePageClient({
               onChange={(e) => setKeyLiabilityFacts(e.target.value)}
               placeholder="e.g. Defendant ran red light; witness statements"
               rows={2}
-              disabled={!enabled}
+              disabled={!demandNarrativesEnabled}
               style={{
                 width: "100%",
                 maxWidth: 500,
@@ -686,7 +722,7 @@ export default function NarrativePageClient({
           onChange={(e) => setNotes(e.target.value)}
           placeholder="e.g. Emphasize ongoing PT; mention lost wages"
           rows={3}
-          disabled={!enabled}
+          disabled={!demandNarrativesEnabled}
           style={{
             width: "100%",
             maxWidth: 500,
@@ -701,16 +737,16 @@ export default function NarrativePageClient({
       <button
         type="button"
         onClick={handleGenerate}
-        disabled={loading || !enabled || !authChecked}
+        disabled={loading || !demandNarrativesEnabled || !authChecked}
         style={{
           padding: "10px 20px",
           fontSize: 14,
           fontWeight: 600,
           border: "1px solid #111",
           borderRadius: 8,
-          background: loading || !enabled || !authChecked ? "#ccc" : "#111",
+          background: loading || !demandNarrativesEnabled || !authChecked ? "#ccc" : "#111",
           color: "#fff",
-          cursor: loading || !enabled || !authChecked ? "not-allowed" : "pointer",
+          cursor: loading || !demandNarrativesEnabled || !authChecked ? "not-allowed" : "pointer",
         }}
       >
         {loading ? "Generating…" : "Generate draft"}
