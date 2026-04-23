@@ -18,6 +18,7 @@ import {
   writeLatestDeployRecord,
 } from "./deploy-lib.mjs";
 import { resolveProductionReleaseConfig, buildReleaseName, normalizePath, pathWithin } from "./production-release-config.mjs";
+import { enforceSchemaDriftGuardBeforeActivation } from "./release-activation-guard.mjs";
 import { verifyDeployConfig } from "./verify-deploy-config.mjs";
 
 const rawArgs = new Set(process.argv.slice(2));
@@ -676,6 +677,13 @@ async function main() {
   await createReleaseWorktree();
   await buildRelease();
   await verifyReleaseBuild();
+  await enforceSchemaDriftGuardBeforeActivation({
+    releaseRoot,
+    stdio: dryRun ? "pipe" : "inherit",
+  });
+  logStep("verified required schema drift guard before release activation", {
+    releaseRoot,
+  });
   const pendingRecord = {
     deployedAt: buildMeta.builtAt,
     commitSha: buildMeta.sha,

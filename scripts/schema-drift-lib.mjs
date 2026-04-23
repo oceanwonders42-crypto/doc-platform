@@ -11,6 +11,71 @@ export const criticalSchemaInvariants = [
     table: "email_messages",
     columns: ["is_fax", "client_name_extracted"],
   },
+  {
+    key: "mailbox_connections_runtime",
+    migrationName: "20260309000000_mailbox_email_tables",
+    table: "mailbox_connections",
+    columns: [
+      "firm_id",
+      "provider",
+      "imap_host",
+      "imap_port",
+      "imap_secure",
+      "imap_username",
+      "imap_password",
+      "folder",
+      "status",
+      "last_uid",
+      "last_sync_at",
+      "last_error",
+      "updated_at",
+    ],
+  },
+  {
+    key: "deferred_job_telemetry_post_route_sync",
+    migrationName: "20260619020000_add_deferred_job_telemetry",
+    table: "DeferredJobTelemetry",
+    columns: [
+      "jobType",
+      "action",
+      "queuedAt",
+      "startedAt",
+      "finishedAt",
+      "waitMs",
+      "runMs",
+      "success",
+      "meta",
+      "createdAt",
+    ],
+  },
+  {
+    key: "case_assignment_visibility",
+    migrationName: "20260624000000_case_assignment_visibility",
+    table: "Case",
+    columns: [
+      "assignedUserId",
+      "clioResponsibleAttorneyId",
+      "clioResponsibleAttorneyEmail",
+      "clioAssignmentSyncedAt",
+    ],
+  },
+  {
+    key: "firm_feature_overrides_runtime",
+    migrationName: "20260626000000_firm_feature_overrides",
+    table: "firm_feature_overrides",
+    columns: [
+      "firmId",
+      "featureKey",
+      "enabled",
+      "isActive",
+      "startsAt",
+      "endsAt",
+      "reason",
+      "createdBy",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
 ];
 
 const apiEnvFiles = [path.join(repoRoot, "apps", "api", ".env"), path.join(repoRoot, "apps", "api", ".env.local")];
@@ -115,11 +180,11 @@ export function evaluateSchemaDrift({
   const failures = checks
     .filter((check) => check.status === "FAIL")
     .map((check) => {
-      const qualifiedColumns = check.missingColumns.map((columnName) => `${check.table}.${columnName}`).join(", ");
+      const missingColumns = check.missingColumns.join(", ");
       if (check.migrationRecorded) {
-        return `migration ${check.migrationName} is recorded as applied but missing ${qualifiedColumns}`;
+        return `migration ${check.migrationName} is recorded as applied but table ${check.table} is missing columns: ${missingColumns}`;
       }
-      return `required schema columns are missing: ${qualifiedColumns}`;
+      return `required schema columns are missing from ${check.table}: ${missingColumns}`;
     });
 
   return {

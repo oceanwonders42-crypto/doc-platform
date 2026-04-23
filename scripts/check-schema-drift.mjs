@@ -18,7 +18,7 @@ for (const failure of result.failures) {
 for (const check of result.checks) {
   if (check.status === "FAIL") {
     printFail(
-      `${check.table}: missing ${check.missingColumns.join(", ")}`,
+      `${check.table}: migration ${check.migrationName ?? "unknown"} missing ${check.missingColumns.join(", ")}`,
       check.migrationRecorded
         ? `Migration ${check.migrationName} is already recorded as applied; verify the physical schema on the target database.`
         : "Verify the target database is using the expected migrations and schema."
