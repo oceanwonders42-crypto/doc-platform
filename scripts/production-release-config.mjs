@@ -7,6 +7,7 @@ const defaultRepoRoot = path.dirname(scriptDir);
 export const DEFAULT_CANONICAL_REMOTE = "https://github.com/oceanwonders42-crypto/doc-platform.git";
 export const LOCKED_PRODUCTION_REF_PREFIX = "production-demand-bank-locked-";
 export const DEFAULT_CANONICAL_BRANCH = "production-demand-bank-locked-20260423-1";
+export const DEFAULT_LOCKED_COMMIT_SHA = "424bd54f5c437ebf17124063b8d0e41fd5a977e4";
 
 function readEnv(name) {
   const value = process.env[name];
@@ -94,6 +95,7 @@ export function resolveProductionReleaseConfig(options = {}) {
     isLinux,
     canonicalRemote: normalizeGitRemote(readEnv("DOC_PROD_CANONICAL_REMOTE") ?? DEFAULT_CANONICAL_REMOTE),
     canonicalBranch: readEnv("DOC_PROD_CANONICAL_BRANCH") ?? DEFAULT_CANONICAL_BRANCH,
+    canonicalCommitSha: readEnv("DOC_PROD_CANONICAL_SHA") ?? DEFAULT_LOCKED_COMMIT_SHA,
     canonicalSourceRoot,
     releasesRoot,
     stateRoot,

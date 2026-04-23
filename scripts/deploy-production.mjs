@@ -35,7 +35,7 @@ const deploySource = inspectDeploySource(sourceGitState, {
   canonicalBranch: productionConfig.canonicalBranch,
 });
 const lockedReleaseRef = productionConfig.canonicalBranch;
-const lockedReleaseSha = resolveGitCommitish(lockedReleaseRef, { cwd: repoRoot });
+const lockedReleaseSha = productionConfig.canonicalCommitSha;
 const buildMeta = {
   sha: lockedReleaseSha ?? "unknown",
   shortSha: lockedReleaseSha ? lockedReleaseSha.slice(0, 12) : "unknown",
@@ -69,6 +69,7 @@ const sharedRuntimeEnv = {
   DOC_PROD_CANONICAL_SOURCE: productionConfig.canonicalSourceRoot,
   DOC_PROD_CANONICAL_REMOTE: productionConfig.canonicalRemote,
   DOC_PROD_CANONICAL_BRANCH: productionConfig.canonicalBranch,
+  DOC_PROD_CANONICAL_SHA: productionConfig.canonicalCommitSha,
   DOC_PROD_API_ENV: productionConfig.durableApiEnvPath,
   DOC_PROD_WEB_ENV: productionConfig.durableWebEnvPath,
   DOC_PROD_LOG_ROOT: productionConfig.pm2LogRoot,
@@ -463,6 +464,10 @@ function assertCanonicalSource() {
 function assertCleanGitSource() {
   if (sourceGitState.sha === "unknown") {
     throw new Error("Unable to resolve source checkout HEAD. Fix git resolution before deploying.");
+  }
+  const pinnedCommit = resolveGitCommitish(buildMeta.sha, { cwd: repoRoot });
+  if (!pinnedCommit || pinnedCommit !== buildMeta.sha) {
+    throw new Error(`locked production commit ${buildMeta.sha} is not present in the canonical source checkout`);
   }
   if (sourceGitState.dirty && !allowDirty) {
     throw new Error(`canonical source working tree is dirty: ${sourceGitState.dirtyEntries.join(", ")}`);
