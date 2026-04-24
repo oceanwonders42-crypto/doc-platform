@@ -110,6 +110,27 @@ model Firm {
   demandBankRuns              DemandBankRun[]
   reviewQueueEvents           ReviewQueueEvent[]
   demandPackageSectionSources DemandPackageSectionSource[]
+  featureOverrides            FirmFeatureOverride[]
+}
+
+model FirmFeatureOverride {
+  id        String   @id @default(cuid())
+  firmId     String
+  featureKey String
+  enabled    Boolean
+  isActive   Boolean  @default(true)
+  startsAt   DateTime?
+  endsAt     DateTime?
+  reason     String?  @db.Text
+  createdBy  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  firm Firm @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@index([firmId, featureKey, isActive])
+  @@index([firmId, isActive, startsAt, endsAt])
+  @@map("firm_feature_overrides")
 }
 
 enum JobStatus {
@@ -970,7 +991,6 @@ model DemandNarrativeDraft {
   @@index([firmId, caseId, status, createdAt])
   @@index([demandBankRunId])
 }
-
 model DemandPackageSectionSource {
   id              String   @id @default(cuid())
   firmId          String
