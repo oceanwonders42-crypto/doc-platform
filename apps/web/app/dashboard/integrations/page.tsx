@@ -304,7 +304,7 @@ export default function IntegrationsPage() {
   return (
     <div style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
       <PageHeader
-        breadcrumbs={[{ label: "Integrations" }]}
+        breadcrumbs={[{ label: "Connect to Clio" }]}
         title="Connect to Clio"
         description="Make Clio the live case system for this firm, then keep intake and sync health visible from one place."
         action={

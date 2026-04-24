@@ -108,8 +108,8 @@ const PRIMARY_ITEMS: NavItem[] = [
 const SECONDARY_ITEMS: NavItem[] = [
   { href: "/dashboard/records-requests", label: "Records Requests", icon: <IconClipboard /> },
   { href: "/dashboard/migration", label: "Migration", icon: <IconArchive />, staffOnly: true },
-  { href: "/dashboard/settings", label: "Settings", icon: <IconSettings /> },
   { href: "/dashboard/team", label: "Team", icon: <IconUsers />, teamOnly: true },
+  { href: "/dashboard/settings", label: "Settings", icon: <IconSettings /> },
   { href: "/dashboard/billing", label: "Billing", icon: <IconDollar />, billingOnly: true },
 ];
 

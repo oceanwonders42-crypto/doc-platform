@@ -111,49 +111,32 @@ export default function CaseDetailPage() {
   const [allowClioReexport, setAllowClioReexport] = useState(false);
   const [chronologyRebuilding, setChronologyRebuilding] = useState(false);
   const [chronologyExporting, setChronologyExporting] = useState<"pdf" | "docx" | null>(null);
-  const [summarizeLoading, setSummarizeLoading] = useState(false);
-  const [summarizeResult, setSummarizeResult] = useState<{
+  const summarizeLoading = false;
+  const summarizeResult = null as {
     body: string;
-    sections: { conciseNarrative: string; injuries: string[]; providersInvolved: string[]; treatmentTimelineSummary: string; latestOffer: { amount: number; date: string; source?: string } | null };
+    sections: {
+      conciseNarrative: string;
+      injuries: string[];
+      providersInvolved: string[];
+      treatmentTimelineSummary: string;
+      latestOffer: { amount: number; date: string; source?: string } | null;
+    };
     documentSummaries: { documentId: string; originalName: string | null; summary: string }[];
     hasContent: boolean;
-  } | null>(null);
-  const [summarizeError, setSummarizeError] = useState<string | null>(null);
-  const [extractLoading, setExtractLoading] = useState(false);
-  const [extractResultState, setExtractResult] = useState<{
-    providers: { name: string; source: string }[];
-    dates: { date: string; label: string; source?: string }[];
-    costs: { amount: number; label: string; source?: string }[];
-    hasContent: boolean;
-  } | null>(null);
-  const [extractError, setExtractError] = useState<string | null>(null);
-  const [missingLoading, setMissingLoading] = useState(false);
-  const [missingResultState, setMissingResult] = useState<{
-    flags: { category: string; reason: string; confidence?: string; providerName?: string | null; recordsRequestId?: string | null }[];
-    hasEvidence: boolean;
-    message?: string;
-  } | null>(null);
-  const [missingError, setMissingError] = useState<string | null>(null);
-  const [compareLoading, setCompareLoading] = useState(false);
-  const [compareResultState, setCompareResult] = useState<{
-    flags: { category: string; reason: string; confidence?: string; providerName?: string | null; documentId?: string | null; dateContext?: string | null }[];
-    hasEvidence: boolean;
-    message?: string;
-  } | null>(null);
-  const [compareError, setCompareError] = useState<string | null>(null);
+  } | null;
+  const summarizeError = null as string | null;
+  const extractLoading = false;
+  const extractError = null as string | null;
+  const missingLoading = false;
+  const missingError = null as string | null;
+  const compareLoading = false;
+  const compareError = null as string | null;
   const [draftSectionKey, setDraftSectionKey] = useState<string>("treatment_summary");
-  const [draftLoading, setDraftLoading] = useState(false);
-  const [draftResultState, setDraftResult] = useState<{
-    sectionKey: string;
-    title: string;
-    draftText: string;
-    warnings?: string[];
-  } | null>(null);
-  const [draftError, setDraftError] = useState<string | null>(null);
+  const draftLoading = false;
+  const draftError = null as string | null;
   const [questionInput, setQuestionInput] = useState("");
-  const [answerLoading, setAnswerLoading] = useState(false);
-  const [answerResultState, setAnswerResult] = useState<{ answer: string; sourcesUsed: string[]; warnings?: string[] } | null>(null);
-  const [answerError, setAnswerError] = useState<string | null>(null);
+  const answerLoading = false;
+  const answerError = null as string | null;
   const [packetType, setPacketType] = useState<"records" | "bills" | "combined">("combined");
   const [trackFilter, setTrackFilter] = useState<string>("all");
   const [providerFilter, setProviderFilter] = useState<string>("");
@@ -263,222 +246,12 @@ export default function CaseDetailPage() {
       .finally(() => setChronologyRebuilding(false));
   }, [caseApiBase, id]);
 
-  const runSummarize = useCallback(() => {
-    if (!id) return;
-    setSummarizeError(null);
-    setSummarizeResult(null);
-    setSummarizeLoading(true);
-    fetch(`${caseApiBase}/summarize`, {
-      method: "POST",
-      headers: getAuthHeader(),
-      ...getFetchOptions(),
-    })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
-        const r = res as { ok?: boolean; error?: string; body?: string; sections?: unknown; documentSummaries?: unknown[]; hasContent?: boolean };
-        if (r.ok && r.body != null) {
-          setSummarizeResult({
-            body: r.body,
-            sections: (r.sections ?? { conciseNarrative: "", injuries: [], providersInvolved: [], treatmentTimelineSummary: "", latestOffer: null }) as {
-              conciseNarrative: string;
-              injuries: string[];
-              providersInvolved: string[];
-              treatmentTimelineSummary: string;
-              latestOffer: { amount: number; date: string; source?: string } | null;
-            },
-            documentSummaries: Array.isArray(r.documentSummaries) ? r.documentSummaries as { documentId: string; originalName: string | null; summary: string }[] : [],
-            hasContent: r.hasContent ?? true,
-          });
-        } else {
-          setSummarizeError(r.error ?? "No summary returned");
-        }
-      })
-      .catch((e) => setSummarizeError(e?.message ?? "Request failed"))
-      .finally(() => setSummarizeLoading(false));
-  }, [caseApiBase, id]);
-
-  const runExtract = useCallback(() => {
-    if (!id) return;
-    setExtractError(null);
-    setExtractResult(null);
-    setExtractLoading(true);
-    fetch(`${caseApiBase}/extract-entities`, {
-      method: "POST",
-      headers: getAuthHeader(),
-      ...getFetchOptions(),
-    })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
-        const r = res as { ok?: boolean; error?: string; providers?: unknown[]; dates?: unknown[]; costs?: unknown[]; hasContent?: boolean };
-        if (r.ok && Array.isArray(r.providers)) {
-          setExtractResult({
-            providers: r.providers as { name: string; source: string }[],
-            dates: Array.isArray(r.dates) ? (r.dates as { date: string; label: string; source?: string }[]) : [],
-            costs: Array.isArray(r.costs) ? (r.costs as { amount: number; label: string; source?: string }[]) : [],
-            hasContent: r.hasContent ?? true,
-          });
-        } else {
-          setExtractError(r.error ?? "No data returned");
-        }
-      })
-      .catch((e) => setExtractError(e?.message ?? "Request failed"))
-      .finally(() => setExtractLoading(false));
-  }, [caseApiBase, id]);
-
-  const runMissingRecords = useCallback(() => {
-    if (!id) return;
-    setMissingError(null);
-    setMissingResult(null);
-    setMissingLoading(true);
-    fetch(`${caseApiBase}/identify-missing-records`, {
-      method: "POST",
-      headers: getAuthHeader(),
-      ...getFetchOptions(),
-    })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
-        const r = res as {
-          ok?: boolean;
-          error?: string;
-          flags?: unknown[];
-          hasEvidence?: boolean;
-          message?: string;
-        };
-        if (r.ok && Array.isArray(r.flags)) {
-          setMissingResult({
-            flags: r.flags as {
-              category: string;
-              reason: string;
-              confidence?: string;
-              providerName?: string | null;
-              recordsRequestId?: string | null;
-            }[],
-            hasEvidence: r.hasEvidence ?? true,
-            message: r.message,
-          });
-        } else {
-          setMissingError(r.error ?? "No result returned");
-        }
-      })
-      .catch((e) => setMissingError(e?.message ?? "Request failed"))
-      .finally(() => setMissingLoading(false));
-  }, [caseApiBase, id]);
-
-  const runCompare = useCallback(() => {
-    if (!id) return;
-    setCompareError(null);
-    setCompareResult(null);
-    setCompareLoading(true);
-    fetch(`${caseApiBase}/compare-bills-treatment`, {
-      method: "POST",
-      headers: getAuthHeader(),
-      ...getFetchOptions(),
-    })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
-        const r = res as {
-          ok?: boolean;
-          error?: string;
-          flags?: unknown[];
-          hasEvidence?: boolean;
-          message?: string;
-        };
-        if (r.ok && Array.isArray(r.flags)) {
-          setCompareResult({
-            flags: r.flags as {
-              category: string;
-              reason: string;
-              confidence?: string;
-              providerName?: string | null;
-              documentId?: string | null;
-              dateContext?: string | null;
-            }[],
-            hasEvidence: r.hasEvidence ?? true,
-            message: r.message,
-          });
-        } else {
-          setCompareError(r.error ?? "No result returned");
-        }
-      })
-      .catch((e) => setCompareError(e?.message ?? "Request failed"))
-      .finally(() => setCompareLoading(false));
-  }, [caseApiBase, id]);
-
-  const runDraft = useCallback(
-    (sectionKey?: string) => {
-      if (!id) return;
-      const key = sectionKey ?? draftSectionKey;
-      setDraftError(null);
-      setDraftResult(null);
-      setDraftLoading(true);
-      fetch(`${caseApiBase}/draft-demand-section`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeader() },
-        ...getFetchOptions(),
-        body: JSON.stringify({ sectionKey: key }),
-      })
-        .then(parseJsonResponse)
-        .then((res: unknown) => {
-          const r = res as {
-            ok?: boolean;
-            error?: string;
-            sectionKey?: string;
-            title?: string;
-            draftText?: string;
-            warnings?: string[];
-          };
-          if (r.ok && r.draftText != null) {
-            setDraftResult({
-              sectionKey: r.sectionKey ?? key,
-              title: r.title ?? "Draft",
-              draftText: r.draftText,
-              warnings: Array.isArray(r.warnings) ? r.warnings : undefined,
-            });
-          } else {
-            setDraftError(r.error ?? "No draft returned");
-          }
-        })
-        .catch((e) => setDraftError(e?.message ?? "Request failed"))
-        .finally(() => setDraftLoading(false));
-    },
-    [caseApiBase, id, draftSectionKey]
-  );
-
-  const runAnswerQuestion = useCallback(() => {
-    if (!id) return;
-    const q = questionInput.trim();
-    if (!q) return;
-    setAnswerError(null);
-    setAnswerResult(null);
-    setAnswerLoading(true);
-    fetch(`${caseApiBase}/answer-question`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      ...getFetchOptions(),
-      body: JSON.stringify({ question: q }),
-    })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
-        const r = res as {
-          ok?: boolean;
-          error?: string;
-          answer?: string;
-          sourcesUsed?: string[];
-          warnings?: string[];
-        };
-        if (r.ok && r.answer != null) {
-          setAnswerResult({
-            answer: r.answer,
-            sourcesUsed: Array.isArray(r.sourcesUsed) ? r.sourcesUsed : [],
-            warnings: Array.isArray(r.warnings) && r.warnings.length > 0 ? r.warnings : undefined,
-          });
-        } else {
-          setAnswerError(r.error ?? "No answer returned");
-        }
-      })
-      .catch((e) => setAnswerError(e?.message ?? "Request failed"))
-      .finally(() => setAnswerLoading(false));
-  }, [caseApiBase, id, questionInput]);
+  const runSummarize = useCallback(() => undefined, []);
+  const runExtract = useCallback(() => undefined, []);
+  const runMissingRecords = useCallback(() => undefined, []);
+  const runCompare = useCallback(() => undefined, []);
+  const runDraft = useCallback((_sectionKey?: string) => undefined, []);
+  const runAnswerQuestion = useCallback(() => undefined, []);
 
   const startCaseFileExport = useCallback(
     async (kind: "contacts" | "matters" | "offers") => {
@@ -659,16 +432,38 @@ export default function CaseDetailPage() {
   const isError = error || !caseData;
   const title = caseData ? (caseData.clientName || caseData.title || caseData.caseNumber || "Case") : "";
   const clioExportLocked = caseData?.clioHandoff?.alreadyExported && !allowClioReexport;
-  const hasExtractResult = extractResultState != null;
-  const extractResult = extractResultState ?? { providers: [], dates: [], costs: [], hasContent: false };
-  const hasMissingResult = missingResultState != null;
-  const missingResult = missingResultState ?? { flags: [], hasEvidence: false, message: undefined };
-  const hasCompareResult = compareResultState != null;
-  const compareResult = compareResultState ?? { flags: [], hasEvidence: false, message: undefined };
-  const hasDraftResult = draftResultState != null;
-  const draftResult = draftResultState ?? { sectionKey: draftSectionKey, title: "", draftText: "", warnings: [] };
-  const hasAnswerResult = answerResultState != null;
-  const answerResult = answerResultState ?? { answer: "", sourcesUsed: [], warnings: [] };
+  const hasExtractResult = false;
+  const extractResult: {
+    providers: { name: string; source: string }[];
+    dates: { date: string; label: string; source?: string }[];
+    costs: { amount: number; label: string; source?: string }[];
+    hasContent: boolean;
+  } = { providers: [], dates: [], costs: [], hasContent: false };
+  const hasMissingResult = false;
+  const missingResult: {
+    flags: { category: string; reason: string; confidence?: string; providerName?: string | null; recordsRequestId?: string | null }[];
+    hasEvidence: boolean;
+    message?: string;
+  } = { flags: [], hasEvidence: false, message: undefined };
+  const hasCompareResult = false;
+  const compareResult: {
+    flags: { category: string; reason: string; confidence?: string; providerName?: string | null; documentId?: string | null; dateContext?: string | null }[];
+    hasEvidence: boolean;
+    message?: string;
+  } = { flags: [], hasEvidence: false, message: undefined };
+  const hasDraftResult = false;
+  const draftResult: { sectionKey: string; title: string; draftText: string; warnings?: string[] } = {
+    sectionKey: draftSectionKey,
+    title: "",
+    draftText: "",
+    warnings: [],
+  };
+  const hasAnswerResult = false;
+  const answerResult: { answer: string; sourcesUsed: string[]; warnings?: string[] } = {
+    answer: "",
+    sourcesUsed: [],
+    warnings: [],
+  };
   const errorMsgStyle = { margin: 0, color: "var(--onyx-error)", fontSize: "0.875rem" } as const;
   const insufficientStyle = { margin: "0 0 0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" } as const;
   const sourcesLabelStyle = { margin: 0, fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" } as const;
