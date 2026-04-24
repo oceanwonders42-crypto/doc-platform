@@ -2,6 +2,13 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import {
+  formatApiClientError,
+  getApiBase,
+  getAuthHeader,
+  getFetchOptions,
+  parseJsonResponse,
+} from "@/lib/api";
 
 const MIN_CONF = 0.5;
 const MAX_CONF = 0.99;
@@ -23,52 +30,90 @@ export default function RoutingSettingsPage() {
   const [autoRouteEnabled, setAutoRouteEnabled] = useState(false);
   const [minAutoRouteConfidence, setMinAutoRouteConfidence] = useState(0.9);
   const [autoCreateCaseFromDoc, setAutoCreateCaseFromDoc] = useState(false);
+  const base = getApiBase();
+
+  function applyRules(data: RoutingRules) {
+    setRules(data);
+    setAutoRouteEnabled(data.autoRouteEnabled);
+    setMinAutoRouteConfidence(
+      Math.max(MIN_CONF, Math.min(MAX_CONF, data.minAutoRouteConfidence ?? 0.9))
+    );
+    setAutoCreateCaseFromDoc(data.autoCreateCaseFromDoc ?? false);
+    setAutoRoutedThisMonth(data.autoRoutedThisMonth ?? 0);
+  }
 
   useEffect(() => {
-    fetch("/api/settings/routing")
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed to load settings");
-        return res.json();
-      })
-      .then((data: RoutingRules) => {
-        setRules(data);
-        setAutoRouteEnabled(data.autoRouteEnabled);
-        setMinAutoRouteConfidence(
-          Math.max(MIN_CONF, Math.min(MAX_CONF, data.minAutoRouteConfidence ?? 0.9))
-        );
-        setAutoCreateCaseFromDoc(data.autoCreateCaseFromDoc ?? false);
-        setAutoRoutedThisMonth(data.autoRoutedThisMonth ?? 0);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
+    if (!base) {
+      setError(
+        "Frontend configuration: API URL is not set. This is not a routing settings error. Set NEXT_PUBLIC_API_URL and reload."
+      );
+      setLoading(false);
+      return;
+    }
+
+    fetch(`${base}/routing-rule`, {
+      headers: {
+        Accept: "application/json",
+        ...getAuthHeader(),
+      },
+      ...getFetchOptions(),
+    })
+      .then(parseJsonResponse)
+      .then((data) => applyRules(data as RoutingRules))
+      .catch((e) =>
+        setError(
+          formatApiClientError(
+            e,
+            "Failed to load routing settings.",
+            {
+              deploymentMessage:
+                "The routing settings API returned HTML instead of JSON. Check the live API target and the deployed build.",
+            }
+          )
+        )
+      )
       .finally(() => setLoading(false));
-  }, []);
+  }, [base]);
 
   const handleSave = () => {
     setSaving(true);
     setError(null);
-    fetch("/api/settings/routing", {
+    if (!base) {
+      setError(
+        "Frontend configuration: API URL is not set. This is not a routing settings error. Set NEXT_PUBLIC_API_URL and reload."
+      );
+      setSaving(false);
+      return;
+    }
+
+    fetch(`${base}/routing-rule`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        ...getAuthHeader(),
+      },
       body: JSON.stringify({
         autoRouteEnabled,
         minAutoRouteConfidence: Math.max(MIN_CONF, Math.min(MAX_CONF, minAutoRouteConfidence)),
         autoCreateCaseFromDoc,
       }),
+      ...getFetchOptions(),
     })
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed to save");
-        return res.json();
-      })
-      .then((data: RoutingRules) => {
-        setRules(data);
-        setAutoRouteEnabled(data.autoRouteEnabled);
-        setMinAutoRouteConfidence(
-          Math.max(MIN_CONF, Math.min(MAX_CONF, data.minAutoRouteConfidence ?? 0.9))
-        );
-        setAutoCreateCaseFromDoc(data.autoCreateCaseFromDoc ?? false);
-        setAutoRoutedThisMonth(data.autoRoutedThisMonth ?? 0);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to save"))
+      .then(parseJsonResponse)
+      .then((data) => applyRules(data as RoutingRules))
+      .catch((e) =>
+        setError(
+          formatApiClientError(
+            e,
+            "Failed to save routing settings.",
+            {
+              deploymentMessage:
+                "The routing settings API returned HTML instead of JSON while saving. Check the live API target and the deployed build.",
+            }
+          )
+        )
+      )
       .finally(() => setSaving(false));
   };
 
