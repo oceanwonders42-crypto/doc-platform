@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readlink, rm, symlink } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, readlink, rm, symlink } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
@@ -10,7 +10,6 @@ import {
   printFail,
   printPass,
   printWarn,
-  readRemoteTagCommit,
   repoRoot,
   resolveGitCommitish,
   resolveGitState,
@@ -34,18 +33,21 @@ const deploySource = inspectDeploySource(sourceGitState, {
   canonicalRemote: productionConfig.canonicalRemote,
   canonicalBranch: productionConfig.canonicalBranch,
 });
-const lockedReleaseRef = productionConfig.canonicalBranch;
-const lockedReleaseSha = productionConfig.canonicalCommitSha;
+const explicitSourceBranch = productionConfig.canonicalBranch;
+const explicitSourceSha = productionConfig.canonicalCommitSha;
+const selectedSourceBranch = sourceGitState.branch;
+const selectedSourceSha = sourceGitState.sha;
+const selectedSourceShortSha = selectedSourceSha && selectedSourceSha !== "unknown" ? selectedSourceSha.slice(0, 12) : "unknown";
 const buildMeta = {
-  sha: lockedReleaseSha ?? "unknown",
-  shortSha: lockedReleaseSha ? lockedReleaseSha.slice(0, 12) : "unknown",
+  sha: selectedSourceSha ?? "unknown",
+  shortSha: selectedSourceShortSha,
   builtAt: new Date().toISOString(),
   source: "deploy-production",
-  branch: lockedReleaseRef,
+  branch: selectedSourceBranch,
   dirty: false,
   versionLabel: computeVersionLabel({
-    branch: lockedReleaseRef,
-    shortSha: lockedReleaseSha ? lockedReleaseSha.slice(0, 12) : "unknown",
+    branch: selectedSourceBranch,
+    shortSha: selectedSourceShortSha,
     dirty: false,
   }),
 };
@@ -68,8 +70,8 @@ const sharedRuntimeEnv = {
   DOC_PROD_RELEASE_ROOT: releaseRoot,
   DOC_PROD_CANONICAL_SOURCE: productionConfig.canonicalSourceRoot,
   DOC_PROD_CANONICAL_REMOTE: productionConfig.canonicalRemote,
-  DOC_PROD_CANONICAL_BRANCH: productionConfig.canonicalBranch,
-  DOC_PROD_CANONICAL_SHA: productionConfig.canonicalCommitSha,
+  DOC_PROD_CANONICAL_BRANCH: buildMeta.branch,
+  DOC_PROD_CANONICAL_SHA: buildMeta.sha,
   DOC_PROD_API_ENV: productionConfig.durableApiEnvPath,
   DOC_PROD_WEB_ENV: productionConfig.durableWebEnvPath,
   DOC_PROD_LOG_ROOT: productionConfig.pm2LogRoot,
@@ -439,17 +441,56 @@ async function verifyLinkedPath(linkPath, expectedTarget) {
   }
 }
 
+async function ensureCopiedPath(filePath, expectedSource) {
+  const stats = await lstat(filePath);
+  if (!stats.isFile()) {
+    throw new Error(`${filePath} must be a file copied from ${expectedSource}`);
+  }
+}
+
+async function ensureDurableEnvFile(targetPath, sourcePath) {
+  if (samePath(targetPath, sourcePath)) {
+    logStep("durable env already present at target path; skipping mount", {
+      mode: "skip-same-path",
+      targetPath,
+      sourcePath,
+    });
+    return;
+  }
+
+  if (process.platform === "win32") {
+    logStep("preparing durable env file", {
+      mode: dryRun ? "copy-dry-run" : "copy",
+      targetPath,
+      sourcePath,
+    });
+    if (dryRun) return;
+    const existing = await lstat(targetPath).catch(() => null);
+    if (existing) {
+      await rm(targetPath, { recursive: true, force: true });
+    }
+    await copyFile(sourcePath, targetPath);
+    await ensureCopiedPath(targetPath, sourcePath);
+    return;
+  }
+
+  logStep("preparing durable env file", {
+    mode: dryRun ? "symlink-dry-run" : "symlink",
+    targetPath,
+    sourcePath,
+  });
+  await ensureSymlink(targetPath, sourcePath);
+  if (!dryRun) {
+    await verifyLinkedPath(targetPath, sourcePath);
+  }
+}
+
 async function ensureDurableEnvLinks(targetRoot) {
   const apiEnvPath = path.join(targetRoot, "apps", "api", ".env");
   const webEnvPath = path.join(targetRoot, "apps", "web", ".env.local");
 
-  await ensureSymlink(apiEnvPath, productionConfig.durableApiEnvPath);
-  await ensureSymlink(webEnvPath, productionConfig.durableWebEnvPath);
-
-  if (!dryRun) {
-    await verifyLinkedPath(apiEnvPath, productionConfig.durableApiEnvPath);
-    await verifyLinkedPath(webEnvPath, productionConfig.durableWebEnvPath);
-  }
+  await ensureDurableEnvFile(apiEnvPath, productionConfig.durableApiEnvPath);
+  await ensureDurableEnvFile(webEnvPath, productionConfig.durableWebEnvPath);
 }
 
 function assertCanonicalSource() {
@@ -465,33 +506,42 @@ function assertCleanGitSource() {
   if (sourceGitState.sha === "unknown") {
     throw new Error("Unable to resolve source checkout HEAD. Fix git resolution before deploying.");
   }
-  const pinnedCommit = resolveGitCommitish(buildMeta.sha, { cwd: repoRoot });
-  if (!pinnedCommit || pinnedCommit !== buildMeta.sha) {
-    throw new Error(`locked production commit ${buildMeta.sha} is not present in the canonical source checkout`);
+  if (explicitSourceBranch && explicitSourceBranch !== sourceGitState.branch) {
+    throw new Error(
+      `explicit deploy branch pin ${explicitSourceBranch} does not match current branch ${sourceGitState.branch}; unset DOC_PROD_CANONICAL_BRANCH or checkout the pinned branch`
+    );
+  }
+  if (explicitSourceSha && explicitSourceSha !== sourceGitState.sha) {
+    throw new Error(
+      `explicit deploy commit pin ${explicitSourceSha} does not match current HEAD ${sourceGitState.sha}; unset DOC_PROD_CANONICAL_SHA or checkout the pinned commit`
+    );
+  }
+  const selectedCommit = resolveGitCommitish(buildMeta.sha, { cwd: repoRoot });
+  if (!selectedCommit || selectedCommit !== buildMeta.sha) {
+    throw new Error(`selected deploy commit ${buildMeta.sha} is not present in the canonical source checkout`);
   }
   if (sourceGitState.dirty && !allowDirty) {
     throw new Error(`canonical source working tree is dirty: ${sourceGitState.dirtyEntries.join(", ")}`);
   }
 }
 
-function assertLockedCanonicalRefPinned() {
+function assertExplicitPinnedSourceIfPresent() {
+  if (!explicitSourceBranch && !explicitSourceSha) return;
   const fetchResult = runGit(["fetch", "origin", "--tags", "--prune"], { cwd: repoRoot });
   if (fetchResult.status !== 0) {
     throw new Error(`git fetch origin --tags --prune failed: ${fetchResult.stderr.trim() || fetchResult.stdout.trim()}`);
   }
-  const localTagCommit = resolveGitCommitish(lockedReleaseRef, { cwd: repoRoot });
-  if (!localTagCommit) {
-    throw new Error(`locked production ref ${lockedReleaseRef} could not be resolved locally`);
+  if (explicitSourceBranch) {
+    const localBranchCommit = resolveGitCommitish(explicitSourceBranch, { cwd: repoRoot });
+    if (!localBranchCommit) {
+      throw new Error(`explicit deploy branch ${explicitSourceBranch} could not be resolved locally`);
+    }
+    if (localBranchCommit !== buildMeta.sha) {
+      throw new Error(`explicit deploy branch ${explicitSourceBranch} resolves locally to ${localBranchCommit}, expected ${buildMeta.sha}`);
+    }
   }
-  const remoteTagCommit = readRemoteTagCommit(lockedReleaseRef, { cwd: repoRoot });
-  if (!remoteTagCommit) {
-    throw new Error(`locked production ref ${lockedReleaseRef} could not be resolved from origin tags`);
-  }
-  if (localTagCommit !== buildMeta.sha) {
-    throw new Error(`locked production ref ${lockedReleaseRef} resolves locally to ${localTagCommit}, expected ${buildMeta.sha}`);
-  }
-  if (remoteTagCommit !== buildMeta.sha) {
-    throw new Error(`locked production ref ${lockedReleaseRef} resolves remotely to ${remoteTagCommit}, expected ${buildMeta.sha}`);
+  if (explicitSourceSha && explicitSourceSha !== buildMeta.sha) {
+    throw new Error(`explicit deploy commit ${explicitSourceSha} does not match selected commit ${buildMeta.sha}`);
   }
 }
 
@@ -665,10 +715,19 @@ async function main() {
     canonicalSourceRoot: productionConfig.canonicalSourceRoot,
     releaseRoot,
   });
+  logStep("selected deploy source", {
+    selectedBranch: buildMeta.branch,
+    selectedSha: buildMeta.sha,
+    localHead: sourceGitState.sha,
+    remoteTrackingBranch: deploySource.upstreamRef ?? null,
+    dirtyState: sourceGitState.dirty ? "dirty" : "clean",
+    explicitPinnedBranch: explicitSourceBranch ?? null,
+    explicitPinnedSha: explicitSourceSha ?? null,
+  });
 
   assertCanonicalSource();
   assertCleanGitSource();
-  assertLockedCanonicalRefPinned();
+  assertExplicitPinnedSourceIfPresent();
   await assertDurableEnvSourcesExist();
   await ensureDurableEnvLinks(repoRoot);
   await ensureWorkspaceDependencies(repoRoot);
@@ -705,7 +764,7 @@ async function main() {
     command: "pnpm deploy:production",
     sourceRoot: repoRoot,
     sourceRemote: deploySource.remoteUrl,
-    releaseRef: lockedReleaseRef,
+    releaseRef: buildMeta.branch,
     sourceHeadSha: sourceGitState.sha,
     releaseRoot,
     durableEnv: {

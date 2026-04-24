@@ -75,6 +75,11 @@ export function readGitRemote(name = "origin", options = {}) {
   return result.status === 0 ? readString(result.stdout) : null;
 }
 
+export function readGitUpstreamRef(options = {}) {
+  const result = runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], options);
+  return result.status === 0 ? readString(result.stdout) : null;
+}
+
 export function gitCommitExists(commitish, options = {}) {
   const commit = readString(commitish);
   if (!commit) return false;
@@ -116,13 +121,10 @@ export function inspectDeploySource(gitStateInput, options = {}) {
   const failures = [];
   const warnings = [];
   const remoteUrl = readGitRemote("origin", { cwd });
+  const upstreamRef = readGitUpstreamRef({ cwd });
   const canonicalRemote = normalizeGitRemote(options.canonicalRemote ?? productionConfig.canonicalRemote);
   const canonicalBranch = readString(options.canonicalBranch) ?? productionConfig.canonicalBranch;
   const normalizedRemoteUrl = normalizeGitRemote(remoteUrl);
-
-  if (!isLockedProductionRef(canonicalBranch)) {
-    failures.push(`canonical production ref ${canonicalBranch ?? "missing"} is not locked; expected ${productionConfig.canonicalBranch}.`);
-  }
 
   if (gitState.sha === "unknown") {
     failures.push("git rev-parse HEAD failed; this checkout is missing commit metadata.");
@@ -152,12 +154,17 @@ export function inspectDeploySource(gitStateInput, options = {}) {
     warnings.push(`git status is dirty (${gitState.dirtyEntries.length} entries).`);
   }
 
+  if (canonicalBranch && isLockedProductionRef(canonicalBranch)) {
+    warnings.push(`explicit locked production ref override detected: ${canonicalBranch}`);
+  }
+
   return {
     ok: failures.length === 0,
     failures,
     warnings,
     gitState,
     remoteUrl,
+    upstreamRef,
     normalizedRemoteUrl,
     canonicalRemote,
     canonicalBranch,
