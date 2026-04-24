@@ -89,8 +89,10 @@ import {
   updateDemandNarrativeRetrievalFeedback,
 } from "../services/demandNarrativeRetrieval";
 import casesRouter from "./routes/cases";
+import clioRouter from "./routes/clio";
 import contactsRouter from "./routes/contacts";
 import demandBankRouter from "./routes/demandBank";
+import integrationsRouter from "./routes/integrations";
 import migrationRouter from "./routes/migration";
 import {
   internalOrderSyncRouter,
@@ -995,8 +997,11 @@ app.post("/team/invite/accept", async (req, res) => {
 });
 
 app.use("/cases", casesRouter);
+app.use("/clio", clioRouter);
+app.use("/api/clio", clioRouter);
 app.use("/contacts", contactsRouter);
 app.use("/demand-bank", demandBankRouter);
+app.use("/integrations", integrationsRouter);
 app.use("/integrations/quickbooks", quickbooksIntegrationRouter);
 app.use("/api/qbo", quickbooksIntegrationRouter);
 app.use("/migration", migrationRouter);

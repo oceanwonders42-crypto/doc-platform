@@ -14,10 +14,29 @@ type EmailProvider = "GMAIL" | "OUTLOOK" | "IMAP" | null;
 type MailboxCreateResponse = {
   ok?: boolean;
   error?: string;
+  details?: string;
+  mailboxId?: string;
   mailbox?: {
     id: string;
+    emailAddress?: string;
+    provider?: string;
+    active?: boolean;
     status: string;
   };
+};
+
+type ClioConnectStartResponse = {
+  ok?: boolean;
+  error?: string;
+  authorizeUrl?: string;
+  redirectUri?: string | null;
+};
+
+type ClioStatusResponse = {
+  ok?: boolean;
+  connected?: boolean;
+  accountName?: string | null;
+  error?: string;
 };
 
 const labelStyle = {
@@ -43,8 +62,7 @@ export default function IntegrationsSetupPage() {
   const [imapPort, setImapPort] = useState("993");
   const [imapUsername, setImapUsername] = useState("");
   const [imapPassword, setImapPassword] = useState("");
-  const [apiProvider, setApiProvider] = useState<"CLIO" | "FILEVINE" | "GENERIC">("CLIO");
-  const [apiKey, setApiKey] = useState("");
+  const [apiProvider, setApiProvider] = useState<"CLIO">("CLIO");
   const [defaultReviewQueue, setDefaultReviewQueue] = useState("default");
   const [autoSync, setAutoSync] = useState(true);
   const [unmatchedHandling, setUnmatchedHandling] = useState("review_queue");
@@ -85,6 +103,8 @@ export default function IntegrationsSetupPage() {
       const mailboxPayload =
         emailProvider === "IMAP"
           ? {
+              emailAddress,
+              provider: emailProvider,
               imapHost: imapHost || "imap.example.com",
               imapPort: parseInt(imapPort, 10) || 993,
               imapSecure: true,
@@ -93,41 +113,28 @@ export default function IntegrationsSetupPage() {
               folder: "INBOX",
             }
           : {
-              imapHost: emailProvider === "GMAIL" ? "imap.gmail.com" : "outlook.office365.com",
-              imapPort: 993,
-              imapSecure: true,
-              imapUsername: emailAddress,
+              emailAddress,
+              provider: emailProvider,
               imapPassword,
               folder: "INBOX",
             };
 
-      const res = await fetch("/api/mailboxes", {
+      const res = await fetch(`${getApiBase()}/integrations/connect-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeader() } as HeadersInit,
         body: JSON.stringify(mailboxPayload),
-        ...getFetchOptions(),
+        ...getFetchOptions({ cache: "no-store" }),
       });
       const data = (await parseJsonResponse(res)) as MailboxCreateResponse;
-      if (!data.ok || !data.mailbox?.id) {
-        throw new Error(data.error || "Email connection could not be created.");
+      if (!res.ok || !data.ok || !data.mailbox?.id) {
+        throw new Error(data.details || data.error || "Email connection could not be created.");
       }
 
       const mailboxId = data.mailbox.id;
       setConnectedMailboxId(mailboxId);
-
-      const testRes = await fetch(`/api/mailboxes/${mailboxId}/test`, {
-        method: "POST",
-        headers: getAuthHeader(),
-        ...getFetchOptions(),
-      });
-      const testData = (await parseJsonResponse(testRes)) as { ok?: boolean; error?: string };
-      if (!testData.ok) {
-        throw new Error(testData.error || "Mailbox connection test failed.");
-      }
-
       setTestResult({ ok: true });
       if (emailFlowRequested) {
-        router.push("/dashboard/integrations?focus=email");
+        router.push("/dashboard/integrations?focus=email&emailStatus=connected");
         return;
       }
       setStep(3);
@@ -135,7 +142,7 @@ export default function IntegrationsSetupPage() {
       setError(
         formatApiClientError(e, "Connect Email failed.", {
           deploymentMessage:
-            "The email connection proxy reached the wrong server target. Check the mounted /mailboxes API route and the active web build.",
+            "The email connection flow reached the wrong server target. Check the mounted /integrations/connect-email route and the active web build.",
         })
       );
     } finally {
@@ -144,18 +151,22 @@ export default function IntegrationsSetupPage() {
   }
 
   async function connectApi() {
-    if (!apiKey) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${getApiBase()}/integrations/connect-api`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeader() } as HeadersInit,
-        body: JSON.stringify({ provider: apiProvider, apiKey }),
+      if (apiProvider !== "CLIO") {
+        throw new Error("Only the Clio OAuth flow is available on this setup screen.");
+      }
+      const res = await fetch(`${getApiBase()}/clio/connect`, {
+        method: "GET",
+        headers: getAuthHeader(),
+        ...getFetchOptions({ cache: "no-store" }),
       });
-      const data = (await parseJsonResponse(res)) as { ok?: boolean; error?: string };
-      if (!data.ok) throw new Error(data.error || "Connect failed");
-      setStep(3);
+      const data = (await parseJsonResponse(res)) as ClioConnectStartResponse;
+      if (!res.ok || !data.ok || !data.authorizeUrl) {
+        throw new Error(data.error || "Failed to start the Clio OAuth flow.");
+      }
+      window.location.assign(data.authorizeUrl);
     } catch (e) {
       setError(
         formatApiClientError(e, "Connect to Clio failed.", {
@@ -192,21 +203,17 @@ export default function IntegrationsSetupPage() {
         return;
       }
 
-      const res = await fetch(`${getApiBase()}/integrations/health`, { headers: getAuthHeader() });
-      const data = (await parseJsonResponse(res)) as {
-        ok?: boolean;
-        error?: string;
-        connections?: { id: string }[];
-      };
-      if (!data.ok) throw new Error(data.error || "Health check failed");
-
-      const testRes = await fetch(`${getApiBase()}/integrations/test`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeader() } as HeadersInit,
-        body: JSON.stringify({ integrationId: data.connections?.[0]?.id }),
+      const res = await fetch(`${getApiBase()}/clio/status`, {
+        headers: getAuthHeader(),
+        ...getFetchOptions({ cache: "no-store" }),
       });
-      const testData = (await parseJsonResponse(testRes)) as { ok?: boolean; error?: string };
-      setTestResult({ ok: !!testData.ok, error: testData.error });
+      const data = (await parseJsonResponse(res)) as ClioStatusResponse;
+      setTestResult({
+        ok: !!data.connected,
+        error: data.connected
+          ? undefined
+          : data.error || "Clio is not connected yet. Complete the OAuth callback first.",
+      });
     } catch (e) {
       setTestResult({
         ok: false,
@@ -412,37 +419,27 @@ export default function IntegrationsSetupPage() {
 
             {(choice === "api" || choice === "both") && (
               <DashboardCard title="Clio connection">
+                <p style={{ margin: "0 0 1rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.6 }}>
+                  Clio uses OAuth. We will start the secure authorization flow, redirect you to Clio, and return here only after the callback stores the firm-level connection.
+                </p>
                 <div style={fieldGap}>
                   <label style={labelStyle}>Provider</label>
                   <select
                     value={apiProvider}
-                    onChange={(e) => setApiProvider(e.target.value as "CLIO" | "FILEVINE" | "GENERIC")}
+                    onChange={(e) => setApiProvider(e.target.value as "CLIO")}
                     className="onyx-input"
                     style={{ width: "100%" }}
                   >
                     <option value="CLIO">Clio</option>
-                    <option value="FILEVINE">Filevine</option>
-                    <option value="GENERIC">Generic API</option>
                   </select>
-                </div>
-                <div style={fieldGap}>
-                  <label style={labelStyle}>API key</label>
-                  <input
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    className="onyx-input"
-                    style={{ width: "100%" }}
-                    placeholder="Stored encrypted"
-                  />
                 </div>
                 <button
                   type="button"
                   onClick={connectApi}
-                  disabled={loading || !apiKey}
+                  disabled={loading}
                   className="onyx-btn-primary"
                 >
-                  {loading ? "Connecting..." : "Connect to Clio"}
+                  {loading ? "Redirecting..." : "Connect to Clio"}
                 </button>
               </DashboardCard>
             )}
