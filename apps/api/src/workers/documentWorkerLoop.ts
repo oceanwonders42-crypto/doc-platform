@@ -685,11 +685,16 @@ async function handleClassificationJob(documentId: string, firmId: string): Prom
     documentId,
     ...recognitionPrompt,
   });
+  const hasStructuredRecognitionSignals =
+    typeof existingRecognition?.client_name === "string" && existingRecognition.client_name.trim().length > 0 ||
+    typeof existingRecognition?.case_number === "string" && existingRecognition.case_number.trim().length > 0 ||
+    typeof existingRecognition?.incident_date === "string" && existingRecognition.incident_date.trim().length > 0;
   const canReuseRecognition =
     existingRecognition != null &&
     Boolean(existingRecognition.doc_type) &&
     existingRecognition.suggested_matter_type != null &&
-    recognitionCacheState.cacheUsed;
+    recognitionCacheState.cacheUsed &&
+    hasStructuredRecognitionSignals;
 
   await prisma.document.updateMany({
     where: { id: documentId, firmId },
