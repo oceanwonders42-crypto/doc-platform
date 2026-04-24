@@ -291,6 +291,21 @@ export function getWorkerCaseMatchSkipReason(
   return null;
 }
 
+export function getWorkerExtractionCompletionUpdate(
+  doc: Pick<WorkerRoutingStateDocument, "routedCaseId">
+): { processingStage: "complete"; status?: "UPLOADED" } {
+  if (doc.routedCaseId) {
+    return {
+      status: "UPLOADED",
+      processingStage: "complete",
+    };
+  }
+
+  return {
+    processingStage: "complete",
+  };
+}
+
 export function inferWorkerOcrMimeType(
   doc: Pick<WorkerOcrDocument, "mimeType" | "originalName">
 ): string | undefined {
@@ -1189,7 +1204,7 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
 
   await prisma.document.updateMany({
     where: { id: documentId, firmId },
-    data: { processingStage: "complete" },
+    data: getWorkerExtractionCompletionUpdate(doc),
   });
   console.log(`Extraction done asynchronously: ${documentId}`);
   logInfo("transfer_fast_path_async", {
@@ -1226,6 +1241,19 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
   }
   const caseMatchSkipReason = getWorkerCaseMatchSkipReason(existingDocument);
   if (caseMatchSkipReason === "already_routed") {
+    await prisma.document.updateMany({
+      where: { id: documentId, firmId },
+      data: {
+        status: "UPLOADED",
+        processingStage: "complete",
+      },
+    });
+    emitWebhookEvent(firmId, "document.processed", {
+      documentId,
+      status: "UPLOADED",
+      processingStage: "complete",
+      caseId: existingDocument.routedCaseId ?? undefined,
+    }).catch((e) => console.warn("[webhooks] document.processed emit failed", e));
     console.log(`Case match skipped (already routed): ${documentId} -> ${existingDocument.routedCaseId}`);
     logInfo("transfer_fast_path_async", {
       jobType: "case_match",
@@ -1260,7 +1288,7 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
   if (matterRows[0]?.suggested_matter_type === "TRAFFIC") {
     await prisma.document.updateMany({
       where: { id: documentId, firmId },
-      data: { processingStage: "complete" },
+      data: { status: "UPLOADED", processingStage: "complete" },
     });
     emitWebhookEvent(firmId, "document.processed", {
       documentId,
@@ -1372,7 +1400,7 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
         ).catch((e) => console.warn("[notifications] case_created_from_doc failed", e));
         await prisma.document.updateMany({
           where: { id: documentId, firmId },
-          data: { processingStage: "complete" },
+          data: { status: "UPLOADED", processingStage: "complete" },
         });
         emitWebhookEvent(firmId, "document.processed", {
           documentId,
@@ -1421,7 +1449,7 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
       console.log(`Auto-routed document ${documentId} to case ${matchedCaseId}`);
       await prisma.document.updateMany({
         where: { id: documentId, firmId },
-        data: { processingStage: "complete" },
+        data: { status: "UPLOADED", processingStage: "complete" },
       });
       emitWebhookEvent(firmId, "document.processed", {
         documentId,

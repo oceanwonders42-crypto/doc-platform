@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+  getWorkerExtractionCompletionUpdate,
   getWorkerCaseMatchSkipReason,
   getPostRouteClioAutoUpdateGateSource,
   isWorkerReviewFallbackRecorded,
@@ -149,6 +150,26 @@ async function main() {
     }),
     null,
     "Expected in-flight documents to continue through case matching."
+  );
+
+  assert.deepEqual(
+    getWorkerExtractionCompletionUpdate({
+      routedCaseId: "case-123",
+    }),
+    {
+      status: "UPLOADED",
+      processingStage: "complete",
+    },
+    "Expected already-routed documents to normalize back to a completed uploaded state after extraction finishes."
+  );
+  assert.deepEqual(
+    getWorkerExtractionCompletionUpdate({
+      routedCaseId: null,
+    }),
+    {
+      processingStage: "complete",
+    },
+    "Expected unresolved documents to leave status changes to the case-match leg."
   );
 
   console.log("documentWorkerLoop email pipeline orchestration tests passed");

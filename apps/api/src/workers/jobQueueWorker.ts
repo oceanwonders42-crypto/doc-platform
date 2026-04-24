@@ -29,8 +29,8 @@ async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function runOne(): Promise<boolean> {
-  const job = await claimNextJob(WORKER_ID);
+async function runOne(workerId: string): Promise<boolean> {
+  const job = await claimNextJob(workerId);
   if (!job) return false;
 
   const { id: jobId, type, payload, firmId, attempts, maxAttempts } = job;
@@ -91,21 +91,28 @@ async function runOne(): Promise<boolean> {
   return true;
 }
 
-async function run() {
-  console.log("[job-queue-worker] started", { workerId: WORKER_ID, pollMs: POLL_MS });
+export async function startJobQueueWorker(options?: {
+  workerId?: string;
+  pollMs?: number;
+}): Promise<void> {
+  const workerId = options?.workerId ?? WORKER_ID;
+  const pollMs = options?.pollMs ?? POLL_MS;
+  console.log("[job-queue-worker] started", { workerId, pollMs });
 
   while (true) {
     try {
-      const didWork = await runOne();
-      if (!didWork) await sleep(POLL_MS);
+      const didWork = await runOne(workerId);
+      if (!didWork) await sleep(pollMs);
     } catch (e) {
       console.error("[job-queue-worker] iteration error", e);
-      await sleep(POLL_MS);
+      await sleep(pollMs);
     }
   }
 }
 
-run().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (require.main === module) {
+  startJobQueueWorker().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
