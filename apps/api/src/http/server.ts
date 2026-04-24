@@ -99,7 +99,7 @@ import {
 } from "./routes/quickbooks";
 import recordsRequestsRouter from "./routes/recordsRequests";
 import trafficRouter from "./routes/traffic";
-import { DemandReviewStatus, Prisma, Role } from "@prisma/client";
+import { DemandReviewStatus, DocumentStatus, Prisma, Role } from "@prisma/client";
 import { generateClioContactsCsv, generateClioMattersCsv } from "../exports/clioExport";
 import { importClioMappingsFromCsv } from "../services/clioMappingsImport";
 import { logSystemError } from "../services/errorLog";
@@ -167,6 +167,13 @@ import {
   type CanIngestResult,
 } from "../services/billingPlans";
 import { enqueueJob, getJobCounts } from "../services/jobQueue";
+import {
+  acceptTeamInvite,
+  createTeamInviteForSession,
+  inspectTeamInvite,
+  listTeamMembersForSession,
+  updateTeamMemberForSession,
+} from "../services/teamInvites";
 
 export const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -419,6 +426,64 @@ function buildRoutingExplanationFromSnapshot(
     },
     { minConfidence }
   );
+}
+function getBearerTokenFromRequest(req: express.Request): string | null {
+  const header = req.headers.authorization ?? req.headers.Authorization;
+  const match = header?.toString().match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || null;
+}
+
+function resolveWebBaseUrl(req: express.Request): string {
+  const configuredBaseUrl =
+    process.env.DOC_WEB_BASE_URL?.trim() ||
+    process.env.NEXT_PUBLIC_DOC_WEB_BASE_URL?.trim() ||
+    process.env.NEXT_PUBLIC_WEB_BASE_URL?.trim();
+  if (configuredBaseUrl) {
+    return configuredBaseUrl.replace(/\/$/, "");
+  }
+  const host = req.get("host");
+  if (host) {
+    return `${req.protocol}://${host}`.replace(/\/$/, "");
+  }
+  return "http://localhost:3000";
+}
+
+function sendTeamInviteError(res: express.Response, error: unknown): void {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof (error as { status?: unknown }).status === "number" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const inviteError = error as { status: number; message: string };
+    res.status(inviteError.status).json({ ok: false, error: inviteError.message });
+    return;
+  }
+  const fallbackMessage =
+    error instanceof Error ? error.message : typeof error === "string" ? error : "Unexpected team invite error";
+  res.status(500).json({ ok: false, error: fallbackMessage });
+}
+
+function normalizeBillingPlanSlug(planSlug: string | null | undefined): string {
+  const normalized = getPlanMetadata(planSlug ?? "")?.slug ?? "essential";
+  return normalized === "starter" ? "essential" : normalized;
+}
+
+function getJsonRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function decimalToNullableNumber(value: Prisma.Decimal | number | null | undefined): number | null {
+  if (value == null) return null;
+  return typeof value === "number" ? value : value.toNumber();
+}
+
+function toIsoString(value: Date | null | undefined): string | null {
+  return value ? value.toISOString() : null;
 }
 
 function buildVersionPayload(service: string) {
@@ -677,6 +742,79 @@ app.get("/auth/microsoft", (req, res) => {
   const redirectUri = typeof req.query.redirect_uri === "string" ? req.query.redirect_uri : "";
   if (redirectUri) res.redirect(302, `${redirectUri}?error=oauth_not_implemented`);
   else res.status(501).json({ ok: false, error: "OAuth not configured; use email/password" });
+});
+
+app.get("/me/team", auth, async (req, res) => {
+  const authToken = getBearerTokenFromRequest(req);
+  if (!authToken) {
+    return res.status(401).json({ ok: false, error: "Missing bearer token" });
+  }
+  try {
+    const response = await listTeamMembersForSession(authToken);
+    res.json(response);
+  } catch (error) {
+    sendTeamInviteError(res, error);
+  }
+});
+
+app.post("/me/team/invite", auth, async (req, res) => {
+  const authToken = getBearerTokenFromRequest(req);
+  if (!authToken) {
+    return res.status(401).json({ ok: false, error: "Missing bearer token" });
+  }
+  try {
+    const body = (req.body ?? {}) as { email?: string; role?: string };
+    const response = await createTeamInviteForSession({
+      authToken,
+      email: String(body.email ?? ""),
+      role: String(body.role ?? "STAFF"),
+      baseUrl: resolveWebBaseUrl(req),
+    });
+    res.json(response);
+  } catch (error) {
+    sendTeamInviteError(res, error);
+  }
+});
+
+app.patch("/me/team/:userId", auth, async (req, res) => {
+  const authToken = getBearerTokenFromRequest(req);
+  if (!authToken) {
+    return res.status(401).json({ ok: false, error: "Missing bearer token" });
+  }
+  try {
+    const body = (req.body ?? {}) as { role?: string };
+    const response = await updateTeamMemberForSession({
+      authToken,
+      userId: String(req.params.userId ?? ""),
+      role: String(body.role ?? ""),
+    });
+    res.json(response);
+  } catch (error) {
+    sendTeamInviteError(res, error);
+  }
+});
+
+app.get("/team/invite/accept", async (req, res) => {
+  try {
+    const token = typeof req.query.token === "string" ? req.query.token : "";
+    const response = await inspectTeamInvite(token);
+    res.json(response);
+  } catch (error) {
+    sendTeamInviteError(res, error);
+  }
+});
+
+app.post("/team/invite/accept", async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as { token?: string; password?: string };
+    const response = await acceptTeamInvite({
+      token: String(body.token ?? ""),
+      password: String(body.password ?? ""),
+    });
+    res.json(response);
+  } catch (error) {
+    sendTeamInviteError(res, error);
+  }
 });
 
 app.use("/cases", casesRouter);
@@ -2536,6 +2674,57 @@ app.get("/billing/plans", auth, requireRole(Role.STAFF), async (_req, res) => {
   }
 });
 
+app.get("/me/billing", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const firm = await prisma.firm.findUnique({
+      where: { id: firmId },
+      select: {
+        name: true,
+        plan: true,
+        billingStatus: true,
+        billingCustomerId: true,
+        settings: true,
+      },
+    });
+    if (!firm) return res.status(404).json({ ok: false, error: "Firm not found" });
+
+    const settings =
+      firm.settings && typeof firm.settings === "object" && !Array.isArray(firm.settings)
+        ? (firm.settings as Record<string, unknown>)
+        : null;
+    const billingEmail =
+      typeof settings?.billingEmail === "string" && settings.billingEmail.trim()
+        ? settings.billingEmail.trim()
+        : null;
+
+    res.json({
+      ok: true,
+      firmName: firm.name,
+      billing: {
+        plan: normalizeBillingPlanSlug(firm.plan),
+        status: firm.billingStatus,
+        subscriptionStatus: firm.billingStatus,
+        billingEmail,
+        stripeCustomerId: firm.billingCustomerId ?? null,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/billing/plans", auth, requireRole(Role.STAFF), async (_req, res) => {
+  try {
+    res.json({
+      ok: true,
+      plans: listPlansForDisplay(),
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // Billing status (plan, usage, limit, status, trial end)
 app.get("/billing/status", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
@@ -2603,12 +2792,50 @@ app.get("/me/documents", auth, requireRole(Role.STAFF), async (req, res) => {
 
   const limitRaw = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
   const cursorRaw = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
+  const statusRaw = Array.isArray(req.query.status) ? req.query.status[0] : req.query.status;
+  const caseSearchRaw = Array.isArray(req.query.caseId) ? req.query.caseId[0] : req.query.caseId;
 
   const limit = Math.min(Math.max(parseInt(String(limitRaw ?? "25"), 10) || 25, 1), 100);
   const cursor = cursorRaw ? String(cursorRaw) : null;
+  const status = typeof statusRaw === "string" && statusRaw.trim() ? statusRaw.trim().toUpperCase() : null;
+  const caseSearch = typeof caseSearchRaw === "string" && caseSearchRaw.trim() ? caseSearchRaw.trim() : null;
+  const validDocumentStatuses = new Set<DocumentStatus>([
+    DocumentStatus.RECEIVED,
+    DocumentStatus.PROCESSING,
+    DocumentStatus.NEEDS_REVIEW,
+    DocumentStatus.UPLOADED,
+    DocumentStatus.FAILED,
+    DocumentStatus.UNMATCHED,
+  ]);
+
+  if (status && !validDocumentStatuses.has(status as DocumentStatus)) {
+    return res.status(400).json({ ok: false, error: "Invalid document status filter" });
+  }
+
+  let routedCaseIds: string[] | null = null;
+  if (caseSearch) {
+    const matchingCases = await prisma.legalCase.findMany({
+      where: {
+        firmId,
+        OR: [
+          { id: caseSearch },
+          { title: { contains: caseSearch, mode: "insensitive" } },
+          { caseNumber: { contains: caseSearch, mode: "insensitive" } },
+          { clientName: { contains: caseSearch, mode: "insensitive" } },
+        ],
+      },
+      select: { id: true },
+      take: 50,
+    });
+    routedCaseIds = Array.from(new Set([caseSearch, ...matchingCases.map((item) => item.id)]));
+  }
 
   const docs = await prisma.document.findMany({
-    where: { firmId },
+    where: {
+      firmId,
+      ...(status ? { status: status as DocumentStatus } : {}),
+      ...(routedCaseIds ? { routedCaseId: { in: routedCaseIds } } : {}),
+    },
     orderBy: { createdAt: "desc" },
     take: limit + 1,
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
@@ -5077,7 +5304,6 @@ app.post("/documents/:id/reprocess", auth, requireRole(Role.STAFF), async (req, 
     res.status(500).json({ ok: false, error: errMsg });
   }
 });
-
 app.post("/documents/:id/approve", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
