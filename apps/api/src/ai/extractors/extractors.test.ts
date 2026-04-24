@@ -7,6 +7,7 @@ function assert(condition: boolean, message: string) {
 
 const ER_FIXTURE = `
 SYNTHETIC TEST DOCUMENT - NOT REAL DATA
+Generated for live QA on 2026-04-24T19:55:16Z
 Emergency Department Report - Metro General Hospital
 Client Jordan Alvarez
 Incident Date 2026-03-18

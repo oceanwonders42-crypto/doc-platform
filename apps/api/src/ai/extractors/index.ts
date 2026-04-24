@@ -37,7 +37,7 @@ export function runExtractors(
   if (docType === "medical_record" || docType === "medical" || docType === "police_report") {
     const medical = extractMedicalRecord(text);
     merged.medicalRecord = medical;
-    if (medical.visitDate) merged.incidentDate = medical.visitDate;
+    if (medical.visitDate && merged.incidentDate == null) merged.incidentDate = medical.visitDate;
     if (medical.provider) merged.providerName = medical.provider;
   }
   return merged;

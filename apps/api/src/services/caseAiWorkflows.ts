@@ -161,6 +161,21 @@ function extractProviderHints(extractedFields: unknown): string[] {
     .map((value) => value.trim());
 }
 
+function extractMedicalDiagnoses(extractedFields: unknown): string[] {
+  if (!extractedFields || typeof extractedFields !== "object" || Array.isArray(extractedFields)) {
+    return [];
+  }
+  const record = extractedFields as Record<string, unknown>;
+  const medicalRecord =
+    record.medicalRecord && typeof record.medicalRecord === "object" && !Array.isArray(record.medicalRecord)
+      ? (record.medicalRecord as Record<string, unknown>)
+      : null;
+
+  return [medicalRecord?.diagnosis, record.diagnosis]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => value.trim());
+}
+
 async function loadCaseAiContext(caseId: string, firmId: string): Promise<LoadedCaseAiContext> {
   const [
     legalCase,
@@ -515,10 +530,11 @@ function buildDocumentSourceMap(context: LoadedCaseAiContext): Map<string, strin
   return new Map(context.documents.map((document) => [document.id, document.originalName]));
 }
 
-function chooseAnswerTopic(question: string): "missing" | "billing" | "providers" | "demands" | "timeline" | "summary" {
+function chooseAnswerTopic(question: string): "missing" | "billing" | "providers" | "demands" | "timeline" | "injuries" | "summary" {
   const normalized = question.trim().toLowerCase();
   if (/(missing|gap|records request|records)/.test(normalized)) return "missing";
   if (/(bill|billing|medical specials|specials|cost|liens|settlement)/.test(normalized)) return "billing";
+  if (/(injur|symptom|diagnos|documented)/.test(normalized)) return "injuries";
   if (/(provider|doctor|clinic|facility)/.test(normalized)) return "providers";
   if (/(demand|draft|package)/.test(normalized)) return "demands";
   if (/(timeline|chronology|when|date|treatment)/.test(normalized)) return "timeline";
@@ -602,6 +618,33 @@ export async function answerCaseQuestion(
         }
       }
       answer = parts.join(" ");
+      break;
+    }
+    case "injuries": {
+      const diagnosisEntries = context.documents.flatMap((document) =>
+        extractMedicalDiagnoses(document.extractedFields).map((diagnosis) => ({
+          diagnosis,
+          documentId: document.id,
+          label: document.originalName,
+        }))
+      );
+      const uniqueEntries = Array.from(
+        new Map(diagnosisEntries.map((entry) => [entry.diagnosis.toLowerCase(), entry])).values()
+      );
+
+      if (uniqueEntries.length === 0) {
+        answer = "I do not have any extracted injury or diagnosis details stored for this case yet.";
+        warnings.push("Upload or reprocess medical records before relying on this answer.");
+      } else {
+        const topDiagnoses = uniqueEntries.slice(0, 3);
+        answer = [
+          `The current case documents describe ${uniqueEntries.length} documented injury or diagnosis item${uniqueEntries.length === 1 ? "" : "s"}.`,
+          ...topDiagnoses.map((entry) => entry.diagnosis),
+        ].join(" ");
+        topDiagnoses.forEach((entry) => {
+          sources.push({ kind: "document", label: entry.label, documentId: entry.documentId });
+        });
+      }
       break;
     }
     case "providers": {

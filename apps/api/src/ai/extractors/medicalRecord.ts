@@ -12,8 +12,13 @@ export interface MedicalRecordExtracted {
   billingAmount?: string | null;
 }
 
-const VISIT_DATE =
-  /\b(?:date of service|dos|visit date|service date|date of visit|admission date|discharge date|incident date|dated|on)\s*[:\-]?\s*([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[\/\-][0-9]{1,2}[\/\-][0-9]{2,4})/i;
+const VISIT_DATE_PATTERNS = [
+  /\b(?:date of service|dos|visit date|service date|date of visit|admission date|discharge date|treatment date|evaluation date)\s*[:\-]?\s*([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[\/\-][0-9]{1,2}[\/\-][0-9]{2,4})/i,
+  /\b(?:emergency department|evaluation|consultation|follow-up visits?|follow up visits?|initial evaluation|mri(?: cervical spine)?|radiology report)\s+(?:dated|on)\s*([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[\/\-][0-9]{1,2}[\/\-][0-9]{2,4})/i,
+  /\bdated\s*[:\-]?\s*([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[\/\-][0-9]{1,2}[\/\-][0-9]{2,4})/i,
+] as const;
+const INCIDENT_DATE =
+  /\bincident date\s*[:\-]?\s*([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[\/\-][0-9]{1,2}[\/\-][0-9]{2,4})/i;
 const HEADER_FACILITY =
   /\b(?:emergency department report|mri report|radiology report|chiropractic progress notes?|treatment notes?)\s*[-:]\s*([A-Z][A-Za-z0-9\s&.'\-]{3,80}?)(?=\s+(?:Client|Patient|DOB|Incident Date)\b|$)/i;
 const PROVIDER =
@@ -36,8 +41,17 @@ export function extractMedicalRecord(text: string): MedicalRecordExtracted {
   const t = text.replace(/\s+/g, " ").trim();
   const tMultiline = text.trim();
 
-  const visitMatch = t.match(VISIT_DATE);
-  if (visitMatch) out.visitDate = visitMatch[1].trim();
+  for (const pattern of VISIT_DATE_PATTERNS) {
+    const visitMatch = t.match(pattern);
+    if (visitMatch) {
+      out.visitDate = visitMatch[1].trim();
+      break;
+    }
+  }
+  if (!out.visitDate) {
+    const incidentMatch = t.match(INCIDENT_DATE);
+    if (incidentMatch) out.visitDate = incidentMatch[1].trim();
+  }
 
   const headerFacilityMatch = t.match(HEADER_FACILITY);
   if (headerFacilityMatch) {

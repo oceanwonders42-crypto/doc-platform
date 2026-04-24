@@ -53,10 +53,12 @@ const MEDICAL_RECORD_KEYWORDS = [
 ];
 
 const INSURANCE_LETTER_KEYWORDS = [
+  "insurance adjuster letter",
   "claim number",
   "policy number",
   "policy holder",
   "adjuster",
+  "assigned adjuster",
   "reservation of rights",
   "coverage",
   "denial",
@@ -65,6 +67,10 @@ const INSURANCE_LETTER_KEYWORDS = [
   "offer to settle",
   "claim adjuster",
   "insurance company",
+  "bodily injury claim",
+  "dear counsel",
+  "we acknowledge",
+  "please provide complete treatment records",
   "declarations page",
   "dec page",
   "effective date",
@@ -74,7 +80,9 @@ const INSURANCE_LETTER_KEYWORDS = [
 
 const INSURANCE_LETTER_STRONG_KEYWORDS = [
   "insurance letter",
+  "insurance adjuster letter",
   "adjuster",
+  "assigned adjuster",
   "reservation of rights",
   "coverage",
   "denial",
@@ -82,6 +90,8 @@ const INSURANCE_LETTER_STRONG_KEYWORDS = [
   "settlement offer",
   "offer to settle",
   "claim adjuster",
+  "dear counsel",
+  "bodily injury claim",
   "we are writing regarding",
   "claim reference",
 ] as const;
@@ -123,6 +133,8 @@ const BILLING_STATEMENT_KEYWORDS = [
   "statement",
   "billing ledger",
   "ledger",
+  "billed",
+  "billed $",
   "amount due",
   "balance due",
   "total due",
@@ -198,6 +210,23 @@ export function classify(extractedText: string, filename: string = ""): Classifi
   const raw = (extractedText || "").replace(/\s+/g, " ").trim();
   const text = `${(filename || "").toLowerCase()} ${raw}`;
   const combined = text.toLowerCase();
+  const billedAmountHits = (combined.match(/\bbilled\s+\$?[0-9,]+(?:\.[0-9]{2})?/g) ?? []).length;
+  const currencyHits = (combined.match(/\$[0-9,]+(?:\.[0-9]{2})?/g) ?? []).length;
+
+  if (
+    /(billing ledger|combined provider ledger|statement of charges|patient account statement)/i.test(combined)
+    || billedAmountHits >= 2
+    || (currencyHits >= 2 && /(billing|ledger|amount due|balance due|charges)/i.test(combined))
+  ) {
+    return { docType: "billing_statement", confidence: 0.95 };
+  }
+
+  if (
+    /(insurance adjuster letter|dear counsel|assigned adjuster|claim adjuster)/i.test(combined)
+    && /(claim number|policy number|bodily injury claim|please provide complete treatment records|we acknowledge)/i.test(combined)
+  ) {
+    return { docType: "insurance_letter", confidence: 0.92 };
+  }
 
   const medicalSignal =
     hasAnyKeyword(combined, [
@@ -276,6 +305,20 @@ export function classify(extractedText: string, filename: string = ""): Classifi
     const courtCandidate = candidates.find((candidate) => candidate.docType === "court_filing");
     if (courtCandidate) {
       courtCandidate.score = 0;
+    }
+  }
+
+  if (billingSignal && (billedAmountHits >= 1 || currencyHits >= 2)) {
+    const medicalCandidate = candidates.find((candidate) => candidate.docType === "medical_record");
+    if (medicalCandidate) {
+      medicalCandidate.score = Math.max(0, medicalCandidate.score - 0.18);
+    }
+  }
+
+  if (insuranceLetterSignal && /(dear counsel|assigned adjuster|bodily injury claim)/i.test(combined)) {
+    const medicalCandidate = candidates.find((candidate) => candidate.docType === "medical_record");
+    if (medicalCandidate) {
+      medicalCandidate.score = Math.max(0, medicalCandidate.score - 0.14);
     }
   }
 

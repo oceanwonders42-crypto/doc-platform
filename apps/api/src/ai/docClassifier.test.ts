@@ -60,6 +60,27 @@ Provider Assessment cervical sprain/strain, lumbar sprain/strain, post-traumatic
 Range of motion remains reduced.
 `;
 
+const SYNTHETIC_BILLING_FIXTURE = `
+SYNTHETIC TEST DOCUMENT - NOT REAL DATA
+Billing Ledger - Jordan Alvarez
+Client Jordan Alvarez
+Incident Date 2026-03-18
+Metro General Hospital billed $3,450.00 for emergency department evaluation on 2026-03-18.
+North Bay Imaging billed $2,200.00 for cervical MRI on 2026-03-22.
+Seaside Spine & Rehab billed $1,260.00 for three chiropractic visits on 2026-03-25, 2026-03-29, and 2026-04-05.
+`;
+
+const SYNTHETIC_INSURANCE_FIXTURE = `
+Insurance Adjuster Letter - Safe Harbor Insurance
+SYNTHETIC TEST DOCUMENT - NOT REAL DATA
+Dear Counsel:
+We acknowledge the bodily injury claim for Jordan Alvarez.
+Assigned adjuster: Morgan Lee.
+Claim number QA-2026-0418.
+Policy number SH-88421-FL.
+Please provide complete treatment records and billing.
+`;
+
 console.log("docClassifier + extractors tests");
 
 const courtOut = classify(COURT_FIXTURE, "notice_of_hearing.pdf");
@@ -90,6 +111,20 @@ assert(
   `Expected synthetic chiropractic notes to classify as medical_record, got ${syntheticChiroOut.docType}`
 );
 console.log("  classifier: synthetic chiropractic notes -> medical_record");
+
+const syntheticBillingOut = classify(SYNTHETIC_BILLING_FIXTURE, "04_billing_ledger.pdf");
+assert(
+  syntheticBillingOut.docType === "billing_statement",
+  `Expected synthetic billing ledger to classify as billing_statement, got ${syntheticBillingOut.docType}`
+);
+console.log("  classifier: synthetic billing ledger -> billing_statement");
+
+const syntheticInsuranceOut = classify(SYNTHETIC_INSURANCE_FIXTURE, "05_insurance_adjuster_letter.pdf");
+assert(
+  syntheticInsuranceOut.docType === "insurance_letter",
+  `Expected synthetic insurance letter to classify as insurance_letter, got ${syntheticInsuranceOut.docType}`
+);
+console.log("  classifier: synthetic insurance letter -> insurance_letter");
 
 const courtFields = extractCourt(COURT_FIXTURE);
 assert(courtFields.caseNumber != null, "Expected caseNumber");
