@@ -249,13 +249,27 @@ function formatDateTime(value: string | null | undefined): string {
 }
 
 function demandStatusTone(status: string): "neutral" | "warning" | "success" | "error" {
-  if (status === "released_to_requester" || status === "released") return "success";
-  if (status === "dev_approved" || status === "pending_dev_review") return "warning";
+  if (
+    status === "released_to_requester" ||
+    status === "released" ||
+    status === "dev_approved" ||
+    status === "pending_dev_review"
+  ) {
+    return "warning";
+  }
   if (status === "failed") return "error";
   return "neutral";
 }
 
 function demandStatusLabel(status: string): string {
+  if (
+    status === "released_to_requester" ||
+    status === "released" ||
+    status === "dev_approved" ||
+    status === "pending_dev_review"
+  ) {
+    return "Review Required";
+  }
   return status
     .replace(/_/g, " ")
     .replace(/\b\w/g, (value) => value.toUpperCase());

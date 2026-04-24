@@ -409,15 +409,15 @@ export async function generateDemandPackage(
     createNotification(
       firmId,
       "demand_package_ready",
-      "Demand package awaiting internal review",
-      `Demand package "${pkg.title}" has been generated and is blocked pending internal developer approval.`,
+      "Demand package ready for review",
+      `Demand package "${pkg.title}" has been generated and is ready for attorney or firm-admin review.`,
       { caseId, demandPackageId: packageId, status: "pending_dev_review" }
     ).catch(() => {});
     logActivity({
       firmId,
       caseId,
       type: "demand_package_generated",
-      title: "Demand package generated for internal review",
+      title: "Demand package generated for review",
       meta: {
         demandPackageId: packageId,
         documentId: doc.id,

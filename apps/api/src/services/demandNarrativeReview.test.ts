@@ -14,12 +14,14 @@ import {
 
 async function main() {
   assert.equal(isDemandReviewerRole(Role.PLATFORM_ADMIN), true);
-  assert.equal(isDemandReviewerRole(Role.FIRM_ADMIN), false);
-  assert.equal(canViewDemandNarrativeText(DemandReviewStatus.PENDING_DEV_REVIEW, Role.FIRM_ADMIN), false);
+  assert.equal(isDemandReviewerRole(Role.FIRM_ADMIN), true);
+  assert.equal(isDemandReviewerRole("ATTORNEY"), true);
+  assert.equal(canViewDemandNarrativeText(DemandReviewStatus.PENDING_DEV_REVIEW, Role.FIRM_ADMIN), true);
+  assert.equal(canViewDemandNarrativeText(DemandReviewStatus.PENDING_DEV_REVIEW, "ATTORNEY"), true);
   assert.equal(canViewDemandNarrativeText(DemandReviewStatus.PENDING_DEV_REVIEW, Role.PLATFORM_ADMIN), true);
   assert.equal(canViewDemandNarrativeText(DemandReviewStatus.RELEASED_TO_REQUESTER, Role.FIRM_ADMIN), true);
-  assert.equal(canAccessDemandNarrativeDraft(DemandReviewStatus.PENDING_DEV_REVIEW, Role.FIRM_ADMIN), false);
-  assert.equal(canAccessDemandNarrativeDraft(DemandReviewStatus.DEV_APPROVED, Role.FIRM_ADMIN), false);
+  assert.equal(canAccessDemandNarrativeDraft(DemandReviewStatus.PENDING_DEV_REVIEW, Role.FIRM_ADMIN), true);
+  assert.equal(canAccessDemandNarrativeDraft(DemandReviewStatus.DEV_APPROVED, Role.FIRM_ADMIN), true);
   assert.equal(canAccessDemandNarrativeDraft(DemandReviewStatus.RELEASED_TO_REQUESTER, Role.FIRM_ADMIN), true);
 
   assert.equal(normalizeDemandNarrativeStatus(DemandReviewStatus.PENDING_DEV_REVIEW), "pending_dev_review");
@@ -82,8 +84,8 @@ async function main() {
 
   const requesterView = serializeDemandNarrativeDraft(baseDraft, Role.FIRM_ADMIN);
   assert.equal(requesterView.status, "pending_dev_review");
-  assert.equal(requesterView.canViewText, false);
-  assert.equal(requesterView.text, null);
+  assert.equal(requesterView.canViewText, true);
+  assert.equal(requesterView.text, "Internal draft text");
   assert.deepEqual(requesterView.warnings, ["OPENAI_API_KEY not configured."]);
   assert.equal(requesterView.usedEvents.length, 1);
 
@@ -100,8 +102,8 @@ async function main() {
     Role.FIRM_ADMIN
   );
   assert.equal(approvedView.status, "dev_approved");
-  assert.equal(approvedView.canViewText, false);
-  assert.equal(approvedView.text, null);
+  assert.equal(approvedView.canViewText, true);
+  assert.equal(approvedView.text, "Internal draft text");
 
   const releasedView = serializeDemandNarrativeDraft(
     { ...baseDraft, status: DemandReviewStatus.RELEASED_TO_REQUESTER, releasedAt: new Date("2026-04-21T13:00:00.000Z") },

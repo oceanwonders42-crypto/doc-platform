@@ -89,7 +89,7 @@ function readUsedEvents(value: Prisma.JsonValue | null): DemandNarrativeUsedEven
 }
 
 export function isDemandReviewerRole(role: Role | string | null | undefined): boolean {
-  return role === Role.PLATFORM_ADMIN;
+  return role === Role.PLATFORM_ADMIN || role === Role.FIRM_ADMIN || role === "ATTORNEY";
 }
 
 export function canViewDemandNarrativeText(

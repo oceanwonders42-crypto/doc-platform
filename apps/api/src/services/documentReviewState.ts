@@ -10,6 +10,9 @@ export type DocumentReviewStateValue = (typeof DOCUMENT_REVIEW_STATES)[number];
 type ReviewableDocument = {
   reviewState?: string | null;
   status?: string | null;
+  processingStage?: string | null;
+  routedCaseId?: string | null;
+  processedAt?: string | Date | null;
 };
 
 export function isDocumentReviewState(value: unknown): value is DocumentReviewStateValue {
@@ -33,6 +36,37 @@ export function getEffectiveDocumentReviewState(
     return "IN_REVIEW";
   }
   return null;
+}
+
+function hasDocumentProcessedAt(value: string | Date | null | undefined): boolean {
+  if (value instanceof Date) {
+    return !Number.isNaN(value.getTime());
+  }
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function getNormalizedDocumentStatus(
+  doc: ReviewableDocument
+): string | null {
+  const storedStatus = typeof doc.status === "string" ? doc.status : null;
+  if (storedStatus !== "PROCESSING") return storedStatus;
+
+  const storedReviewState = getStoredDocumentReviewState(doc.reviewState);
+  if (storedReviewState === "APPROVED" || storedReviewState === "EXPORT_READY") {
+    return "UPLOADED";
+  }
+  if (storedReviewState === "IN_REVIEW" || storedReviewState === "REJECTED") {
+    return "NEEDS_REVIEW";
+  }
+
+  if (
+    doc.routedCaseId &&
+    (doc.processingStage === "complete" || hasDocumentProcessedAt(doc.processedAt))
+  ) {
+    return "UPLOADED";
+  }
+
+  return storedStatus;
 }
 
 export function canMarkDocumentExportReady(reviewState: unknown): boolean {

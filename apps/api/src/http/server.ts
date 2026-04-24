@@ -73,6 +73,7 @@ import { getClioAutoUpdateGateState } from "../services/clioAutoUpdateGate";
 import {
   canMarkDocumentExportReady,
   getEffectiveDocumentReviewState,
+  getNormalizedDocumentStatus,
   getStoredDocumentReviewState,
   isDocumentReviewState,
   type DocumentReviewStateValue,
@@ -299,9 +300,55 @@ async function enforceDemandPackageDocumentAccess(
   if (!demandPackage || !isDemandPackageReleaseBlocked(demandPackage.status)) return true;
   res.status(403).json({
     ok: false,
-    error: `Demand package "${demandPackage.title}" is blocked pending internal developer approval and cannot be ${options.action} yet.`,
+    error: `Demand package "${demandPackage.title}" is pending attorney or firm-admin review and cannot be ${options.action} yet.`,
   });
   return false;
+}
+
+async function normalizeLegacyDocumentStatuses<
+  T extends {
+    id: string;
+    status?: string | null;
+    reviewState?: string | null;
+    processingStage?: string | null;
+    routedCaseId?: string | null;
+    processedAt?: string | Date | null;
+  }
+>(firmId: string, items: T[]): Promise<Map<string, string>> {
+  const normalizedById = new Map<string, string>();
+  const updatesByStatus = new Map<string, string[]>();
+
+  for (const item of items) {
+    const nextStatus = getNormalizedDocumentStatus(item);
+    const currentStatus = typeof item.status === "string" ? item.status : null;
+    if (!nextStatus || nextStatus === currentStatus) continue;
+    normalizedById.set(item.id, nextStatus);
+    const group = updatesByStatus.get(nextStatus) ?? [];
+    group.push(item.id);
+    updatesByStatus.set(nextStatus, group);
+  }
+
+  if (updatesByStatus.size === 0) return normalizedById;
+
+  await Promise.all(
+    [...updatesByStatus.entries()].map(([nextStatus, ids]) =>
+      prisma.document
+        .updateMany({
+          where: { firmId, id: { in: ids } },
+          data: { status: nextStatus as DocumentStatus },
+        })
+        .catch((error) => {
+          console.warn("[documents] failed to normalize legacy status", {
+            firmId,
+            ids,
+            nextStatus,
+            error,
+          });
+        })
+    )
+  );
+
+  return normalizedById;
 }
 
 function serializeDemandPackageReviewItem(pkg: {
@@ -3357,6 +3404,7 @@ app.get("/me/documents", auth, requireRole(Role.STAFF), async (req, res) => {
 
   const hasMore = docs.length > limit;
   const page = hasMore ? docs.slice(0, limit) : docs;
+  const normalizedStatusById = await normalizeLegacyDocumentStatuses(firmId, page);
   const visiblePage = await filterVisibleDemandPackageDocuments(firmId, authRole, page);
   const nextCursor = hasMore ? page[page.length - 1].id : null;
   const docIds = visiblePage.map((d: { id: string }) => d.id);
@@ -3443,7 +3491,7 @@ app.get("/me/documents", auth, requireRole(Role.STAFF), async (req, res) => {
     originalName: d.originalName,
     mimeType: d.mimeType,
     pageCount: d.pageCount,
-    status: d.status,
+    status: normalizedStatusById.get(d.id) ?? d.status,
     spacesKey: d.spacesKey,
     routedCaseId: d.routedCaseId ?? null,
     createdAt: d.createdAt,
@@ -7934,18 +7982,26 @@ app.get("/cases/:id/documents", auth, requireRole(Role.STAFF), async (req, res) 
         originalName: true,
         status: true,
         reviewState: true,
+        routedCaseId: true,
+        processedAt: true,
+        processingStage: true,
         createdAt: true,
         pageCount: true,
       },
       orderBy: { createdAt: "desc" },
     });
+    const normalizedStatusById = await normalizeLegacyDocumentStatuses(firmId, items);
     const visibleItems = await filterVisibleDemandPackageDocuments(firmId, authRole, items);
 
     res.json({
       ok: true,
       items: visibleItems.map((item) => ({
-        ...item,
+        id: item.id,
+        originalName: item.originalName,
+        status: normalizedStatusById.get(item.id) ?? item.status,
         reviewState: getEffectiveDocumentReviewState(item),
+        createdAt: item.createdAt,
+        pageCount: item.pageCount,
       })),
     });
   } catch (e: any) {
@@ -8477,10 +8533,19 @@ app.get("/documents/:id/recognition", auth, requireRole(Role.STAFF), async (req,
         duplicateOfId: true,
         pageCount: true,
         ingestedAt: true,
+        processedAt: true,
+        processingStage: true,
       },
     });
     if (!doc) {
       return res.status(404).json({ ok: false, error: "document not found" });
+    }
+    const normalizedStatus = getNormalizedDocumentStatus(doc) ?? doc.status;
+    if (normalizedStatus !== doc.status) {
+      await prisma.document.updateMany({
+        where: { id: documentId, firmId },
+        data: { status: normalizedStatus as DocumentStatus },
+      });
     }
 
     const { rows } = await pgPool.query(
@@ -8495,7 +8560,7 @@ app.get("/documents/:id/recognition", auth, requireRole(Role.STAFF), async (req,
       document: {
         id: doc.id,
         originalName: doc.originalName,
-        status: doc.status,
+        status: normalizedStatus,
         reviewState: getEffectiveDocumentReviewState(doc),
         routedCaseId: doc.routedCaseId ?? null,
         routingStatus: doc.routingStatus ?? null,
