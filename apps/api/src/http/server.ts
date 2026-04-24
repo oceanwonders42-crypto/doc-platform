@@ -172,8 +172,6 @@ import {
 import {
   canIngestDocument,
   getFirmBillingUsageSnapshot,
-  getPlanMetadata,
-  listPlansForDisplay,
   normalizePlanSlug,
   type CanIngestResult,
 } from "../services/billingPlans";
@@ -477,8 +475,9 @@ function sendTeamInviteError(res: express.Response, error: unknown): void {
   res.status(500).json({ ok: false, error: fallbackMessage });
 }
 function normalizeBillingPlanSlug(planSlug: string | null | undefined): string {
-  const normalized = getPlanMetadata(planSlug ?? "")?.slug ?? "essential";
-  return normalized === "starter" ? "essential" : normalized;
+  const rawPlan = typeof planSlug === "string" ? planSlug.trim().toLowerCase() : "";
+  if (rawPlan === "starter") return "essential";
+  return getPlanMetadata(rawPlan)?.slug ?? "essential";
 }
 
 function getJsonRecord(value: unknown): Record<string, unknown> {
