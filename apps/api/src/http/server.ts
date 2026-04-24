@@ -183,6 +183,11 @@ import {
   listTeamMembersForSession,
   updateTeamMemberForSession,
 } from "../services/teamInvites";
+import {
+  analyzeBillsVsTreatment,
+  analyzeMissingRecords,
+  answerCaseQuestion,
+} from "../services/caseAiWorkflows";
 
 export const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -205,6 +210,45 @@ type CaseAccessContext = {
   userId: string | null;
   apiKeyId: string | null;
 };
+
+async function getDashboardFeatureFlagsForFirm(firmId: string) {
+  const [
+    exportsEnabled,
+    migrationBatchEnabled,
+    trafficEnabled,
+    providersEnabled,
+    providersMapEnabled,
+    caseQaEnabled,
+    missingRecordsEnabled,
+    billsVsTreatmentEnabled,
+    demandDraftsEnabled,
+    demandAuditEnabled,
+  ] = await Promise.all([
+    hasFeature(firmId, "exports_enabled"),
+    hasFeature(firmId, "migration_batch_enabled"),
+    hasFeature(firmId, "traffic_enabled"),
+    hasFeature(firmId, "providers_enabled"),
+    hasFeature(firmId, "providers_map_enabled"),
+    hasFeature(firmId, "case_qa_enabled"),
+    hasFeature(firmId, "missing_records_enabled"),
+    hasFeature(firmId, "bills_vs_treatment_enabled"),
+    hasFeature(firmId, "demand_drafts_enabled"),
+    hasFeature(firmId, "demand_audit_enabled"),
+  ]);
+
+  return {
+    exports_enabled: exportsEnabled,
+    migration_batch_enabled: migrationBatchEnabled,
+    traffic_enabled: trafficEnabled,
+    providers_enabled: providersEnabled,
+    providers_map_enabled: providersMapEnabled,
+    case_qa_enabled: caseQaEnabled,
+    missing_records_enabled: missingRecordsEnabled,
+    bills_vs_treatment_enabled: billsVsTreatmentEnabled,
+    demand_drafts_enabled: demandDraftsEnabled,
+    demand_audit_enabled: demandAuditEnabled,
+  };
+}
 
 async function getDemandPackageAccessRecord(
   firmId: string,
@@ -849,6 +893,7 @@ app.get("/auth/me", auth, async (req, res) => {
     }
     const role = (user?.role ?? authRole) as string;
     const isPlatformAdmin = role === Role.PLATFORM_ADMIN;
+    const featureFlags = await getDashboardFeatureFlagsForFirm(firm.id);
     return res.json({
       ok: true,
       user: user
@@ -857,6 +902,7 @@ app.get("/auth/me", auth, async (req, res) => {
       firm: { id: firm.id, name: firm.name, plan: firm.plan, status: firm.status },
       role,
       isPlatformAdmin,
+      featureFlags,
     });
   } catch (e: any) {
     return res.status(500).json({ ok: false, error: String(e?.message ?? e) });
@@ -7216,11 +7262,15 @@ app.post("/cases/:id/demand-packages", auth, requireRole(Role.STAFF), async (req
     if (!accessContext) return;
     const { firmId } = accessContext;
 
-    const allowed = await hasFeature(firmId, "demand_narratives");
+    const [legacyDemandNarrativesEnabled, demandDraftsEnabled] = await Promise.all([
+      hasFeature(firmId, "demand_narratives"),
+      hasFeature(firmId, "demand_drafts_enabled"),
+    ]);
+    const allowed = legacyDemandNarrativesEnabled || demandDraftsEnabled;
     if (!allowed) {
       return res.status(403).json({
         ok: false,
-        error: "Demand narratives add-on is not enabled for this firm.",
+        error: "Demand drafts are not enabled for this firm.",
       });
     }
 
@@ -7294,6 +7344,18 @@ app.get("/cases/:id/demand-packages", auth, requireRole(Role.STAFF), async (req,
     if (!accessContext) return;
     const { firmId } = accessContext;
 
+    const [legacyDemandNarrativesEnabled, demandDraftsEnabled] = await Promise.all([
+      hasFeature(firmId, "demand_narratives"),
+      hasFeature(firmId, "demand_drafts_enabled"),
+    ]);
+    const allowed = legacyDemandNarrativesEnabled || demandDraftsEnabled;
+    if (!allowed) {
+      return res.status(403).json({
+        ok: false,
+        error: "Demand drafts are not enabled for this firm.",
+      });
+    }
+
     const packages = await prisma.demandPackage.findMany({
       where: { firmId, caseId },
       orderBy: [{ updatedAt: "desc" }],
@@ -7312,6 +7374,77 @@ app.get("/cases/:id/demand-packages", auth, requireRole(Role.STAFF), async (req,
       ok: true,
       items: packages.map((pkg) => serializeDemandPackageReviewItem(pkg)),
     });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/cases/:id/missing-records-analysis", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const caseId = String(req.params.id ?? "");
+    const accessContext = await ensureVisibleCase(req, res, caseId);
+    if (!accessContext) return;
+    const { firmId } = accessContext;
+
+    const allowed = await hasFeature(firmId, "missing_records_enabled");
+    if (!allowed) {
+      return res.status(403).json({
+        ok: false,
+        error: "Missing records analysis is not enabled for this firm.",
+      });
+    }
+
+    const result = await analyzeMissingRecords(caseId, firmId);
+    res.json({ ok: true, item: result });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/cases/:id/bills-vs-treatment-analysis", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const caseId = String(req.params.id ?? "");
+    const accessContext = await ensureVisibleCase(req, res, caseId);
+    if (!accessContext) return;
+    const { firmId } = accessContext;
+
+    const allowed = await hasFeature(firmId, "bills_vs_treatment_enabled");
+    if (!allowed) {
+      return res.status(403).json({
+        ok: false,
+        error: "Bills vs treatment analysis is not enabled for this firm.",
+      });
+    }
+
+    const result = await analyzeBillsVsTreatment(caseId, firmId);
+    res.json({ ok: true, item: result });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/cases/:id/qa", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const caseId = String(req.params.id ?? "");
+    const accessContext = await ensureVisibleCase(req, res, caseId);
+    if (!accessContext) return;
+    const { firmId } = accessContext;
+
+    const allowed = await hasFeature(firmId, "case_qa_enabled");
+    if (!allowed) {
+      return res.status(403).json({
+        ok: false,
+        error: "Case Q&A is not enabled for this firm.",
+      });
+    }
+
+    const question = typeof req.body?.question === "string" ? req.body.question.trim() : "";
+    if (!question) {
+      return res.status(400).json({ ok: false, error: "question is required" });
+    }
+
+    const result = await answerCaseQuestion(caseId, firmId, question);
+    res.json({ ok: true, item: result });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
