@@ -129,6 +129,17 @@ import {
 } from "../services/aiTaskTelemetry";
 import { getDeferredJobTelemetryOverview } from "../services/deferredJobTelemetry";
 import { buildWeeklyOperatorReport } from "../services/operatorWeeklyReport";
+import { getPlanMetadata, listPlansForDisplay } from "../services/billingPlans";
+import { getSystemHealth } from "../services/systemHealth";
+import { getAbuseStats } from "../services/abuseTracking";
+import {
+  applyFilePattern,
+  applyFolderPattern,
+  buildDocumentNamingContext,
+  getFirmExportNamingRules,
+  getFolderForDocType,
+  getRecognitionForDocument,
+} from "../services/export";
 import { buildVisibleCaseWhere } from "../services/caseVisibility";
 import { syncClioCaseAssignmentsIfStale } from "../services/clioCaseAssignments";
 import { buildRoutingExplanation } from "../services/documentRoutingDecision";
@@ -465,7 +476,6 @@ function sendTeamInviteError(res: express.Response, error: unknown): void {
     error instanceof Error ? error.message : typeof error === "string" ? error : "Unexpected team invite error";
   res.status(500).json({ ok: false, error: fallbackMessage });
 }
-
 function normalizeBillingPlanSlug(planSlug: string | null | undefined): string {
   const normalized = getPlanMetadata(planSlug ?? "")?.slug ?? "essential";
   return normalized === "starter" ? "essential" : normalized;
@@ -485,7 +495,6 @@ function decimalToNullableNumber(value: Prisma.Decimal | number | null | undefin
 function toIsoString(value: Date | null | undefined): string | null {
   return value ? value.toISOString() : null;
 }
-
 function buildVersionPayload(service: string) {
   return {
     ok: true,
@@ -1429,6 +1438,219 @@ app.get("/admin/errors", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res
     res.json({ ok: true, errors: logs });
   } catch (e) {
     next(e);
+  }
+});
+
+app.get("/admin/system/health", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res) => {
+  try {
+    const health = await getSystemHealth();
+    const staleCutoff = new Date(Date.now() - 15 * 60 * 1000);
+    const stuckProcessingCount = await prisma.document.count({
+      where: {
+        status: "PROCESSING",
+        createdAt: { lt: staleCutoff },
+      },
+    });
+
+    const enrichedHealth = {
+      ...health,
+      documentPipelineDegraded:
+        health.redis !== "up" ||
+        health.database !== "up" ||
+        stuckProcessingCount > 0 ||
+        health.recentOpenCriticalErrorsCount > 0,
+      stuckProcessingCount,
+      workerLastSeenAt: null as string | null,
+      workerStale: false,
+    };
+
+    res.json({
+      ok: true,
+      ...enrichedHealth,
+      health: enrichedHealth,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/admin/support/bug-reports", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit), 10) || 100, 200);
+    const statusFilter =
+      typeof req.query.status === "string" && req.query.status.trim() ? req.query.status.trim() : null;
+    const priorityFilter =
+      typeof req.query.priority === "string" && req.query.priority.trim() ? req.query.priority.trim() : null;
+    const firmIdFilter =
+      typeof req.query.firmId === "string" && req.query.firmId.trim() ? req.query.firmId.trim() : null;
+
+    const reports = await prisma.appBugReport.findMany({
+      where: {
+        ...(statusFilter ? { status: statusFilter } : {}),
+        ...(priorityFilter ? { priority: priorityFilter } : {}),
+        ...(firmIdFilter ? { firmId: firmIdFilter } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
+
+    res.json({
+      ok: true,
+      reports: reports.map((report) => ({
+        id: report.id,
+        firmId: report.firmId,
+        userId: report.userId,
+        title: report.title,
+        description: report.description,
+        pageUrl: report.pageUrl,
+        screenshotUrl: report.screenshotUrl,
+        status: report.status,
+        priority: report.priority,
+        createdAt: report.createdAt.toISOString(),
+        updatedAt: report.updatedAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/admin/security/activity", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res) => {
+  try {
+    const abuse = getAbuseStats();
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const events = await prisma.systemErrorLog.findMany({
+      where: {
+        createdAt: { gte: since },
+        OR: [
+          { area: "security" },
+          { message: { contains: "Abuse threshold exceeded" } },
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+
+    res.json({
+      ok: true,
+      abuse,
+      events: events.map((event) => ({
+        id: event.id,
+        service: event.service,
+        message: event.message,
+        area: event.area ?? null,
+        route: event.route ?? null,
+        method: event.method ?? null,
+        severity: event.severity ?? null,
+        status: event.status ?? null,
+        createdAt: event.createdAt.toISOString(),
+        resolvedAt: toIsoString(event.resolvedAt),
+      })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/admin/incidents", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit), 10) || 100, 200);
+    const statusFilter =
+      typeof req.query.status === "string" && req.query.status.trim() ? req.query.status.trim() : null;
+    const severityFilter =
+      typeof req.query.severity === "string" && req.query.severity.trim() ? req.query.severity.trim() : null;
+
+    const incidents = await prisma.systemIncident.findMany({
+      where: {
+        ...(statusFilter ? { status: statusFilter } : {}),
+        ...(severityFilter ? { severity: severityFilter } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
+
+    res.json({
+      ok: true,
+      incidents: incidents.map((incident) => ({
+        id: incident.id,
+        severity: incident.severity,
+        title: incident.title,
+        description: incident.description ?? null,
+        status: incident.status,
+        relatedErrorId: incident.relatedErrorId ?? null,
+        createdAt: incident.createdAt.toISOString(),
+        resolvedAt: toIsoString(incident.resolvedAt),
+      })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/admin/incidents/:id", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const incidentId = String(req.params.id ?? "");
+    const incident = await prisma.systemIncident.findUnique({
+      where: { id: incidentId },
+    });
+
+    if (!incident) {
+      return res.status(404).json({ ok: false, error: "Incident not found" });
+    }
+
+    res.json({
+      ok: true,
+      incident: {
+        id: incident.id,
+        severity: incident.severity,
+        title: incident.title,
+        description: incident.description ?? null,
+        status: incident.status,
+        relatedErrorId: incident.relatedErrorId ?? null,
+        createdAt: incident.createdAt.toISOString(),
+        resolvedAt: toIsoString(incident.resolvedAt),
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/admin/incidents/:id", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const incidentId = String(req.params.id ?? "");
+    const body = (req.body ?? {}) as { status?: string };
+    const nextStatus = typeof body.status === "string" ? body.status.trim().toUpperCase() : "";
+    if (!["OPEN", "MITIGATING", "RESOLVED"].includes(nextStatus)) {
+      return res.status(400).json({ ok: false, error: "Invalid incident status" });
+    }
+
+    const incident = await prisma.systemIncident.update({
+      where: { id: incidentId },
+      data: {
+        status: nextStatus,
+        resolvedAt: nextStatus === "RESOLVED" ? new Date() : null,
+      },
+    });
+
+    res.json({
+      ok: true,
+      incident: {
+        id: incident.id,
+        severity: incident.severity,
+        title: incident.title,
+        description: incident.description ?? null,
+        status: incident.status,
+        relatedErrorId: incident.relatedErrorId ?? null,
+        createdAt: incident.createdAt.toISOString(),
+        resolvedAt: toIsoString(incident.resolvedAt),
+      },
+    });
+  } catch (e: any) {
+    if (e?.code === "P2025") {
+      return res.status(404).json({ ok: false, error: "Incident not found" });
+    }
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
@@ -3557,6 +3779,114 @@ app.get("/me/features", auth, requireRole(Role.STAFF), async (req, res) => {
   }
 });
 
+app.get("/me/firm/settings", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const firm = await prisma.firm.findUnique({
+      where: { id: firmId },
+      select: {
+        id: true,
+        name: true,
+        plan: true,
+        pageLimitMonthly: true,
+        retentionDays: true,
+        settings: true,
+      },
+    });
+    if (!firm) return res.status(404).json({ ok: false, error: "Firm not found" });
+
+    const settings = getJsonRecord(firm.settings);
+    const billingEmail =
+      typeof settings.billingEmail === "string" && settings.billingEmail.trim()
+        ? settings.billingEmail.trim()
+        : null;
+
+    res.json({
+      ok: true,
+      firm: {
+        id: firm.id,
+        name: firm.name,
+        billingEmail,
+        plan: normalizeBillingPlanSlug(firm.plan),
+        pageLimitMonthly: firm.pageLimitMonthly,
+        retentionDays: firm.retentionDays,
+        settings,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/me/firm/settings", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const body = (req.body ?? {}) as { name?: string; billingEmail?: string | null };
+    const currentFirm = await prisma.firm.findUnique({
+      where: { id: firmId },
+      select: {
+        id: true,
+        name: true,
+        plan: true,
+        pageLimitMonthly: true,
+        retentionDays: true,
+        settings: true,
+      },
+    });
+    if (!currentFirm) return res.status(404).json({ ok: false, error: "Firm not found" });
+
+    const nextName =
+      typeof body.name === "string" && body.name.trim() ? body.name.trim() : currentFirm.name;
+    const currentSettings = getJsonRecord(currentFirm.settings);
+    const nextSettings: Record<string, unknown> = { ...currentSettings };
+    if (body.billingEmail !== undefined) {
+      const nextBillingEmail =
+        typeof body.billingEmail === "string" && body.billingEmail.trim()
+          ? body.billingEmail.trim()
+          : null;
+      if (nextBillingEmail) nextSettings.billingEmail = nextBillingEmail;
+      else delete nextSettings.billingEmail;
+    }
+
+    const firm = await prisma.firm.update({
+      where: { id: firmId },
+      data: {
+        name: nextName,
+        settings: nextSettings as Prisma.InputJsonValue,
+      },
+      select: {
+        id: true,
+        name: true,
+        plan: true,
+        pageLimitMonthly: true,
+        retentionDays: true,
+        settings: true,
+      },
+    });
+
+    const settings = getJsonRecord(firm.settings);
+    const billingEmail =
+      typeof settings.billingEmail === "string" && settings.billingEmail.trim()
+        ? settings.billingEmail.trim()
+        : null;
+
+    res.json({
+      ok: true,
+      firm: {
+        id: firm.id,
+        name: firm.name,
+        billingEmail,
+        plan: normalizeBillingPlanSlug(firm.plan),
+        pageLimitMonthly: firm.pageLimitMonthly,
+        retentionDays: firm.retentionDays,
+        settings,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.get("/me/settings", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -5589,6 +5919,126 @@ app.get("/documents/:id/download", auth, requireRole(Role.STAFF), async (req, re
   }
 });
 
+app.get("/documents/:id/export-preview", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: {
+        id: true,
+        originalName: true,
+        routedCaseId: true,
+        extractedFields: true,
+        metaJson: true,
+      },
+    });
+    if (!doc) {
+      return res.status(404).json({ ok: false, error: "document not found" });
+    }
+
+    const meta = getJsonRecord(doc.metaJson);
+    const exportFileNameOverride =
+      meta.exportFileNameOverride != null ? String(meta.exportFileNameOverride).trim() || "" : "";
+    const exportFolderPathOverride =
+      meta.exportFolderPathOverride != null ? String(meta.exportFolderPathOverride).trim() || "" : "";
+
+    if (!doc.routedCaseId) {
+      return res.json({
+        ok: true,
+        needsRouting: true,
+        message: "Assign a case to preview export naming.",
+        fileName: null,
+        folderPath: null,
+        context: null,
+        exportFileNameOverride,
+        exportFolderPathOverride,
+      });
+    }
+
+    const legalCase = await prisma.legalCase.findFirst({
+      where: { id: doc.routedCaseId, firmId },
+      select: { id: true, caseNumber: true, clientName: true, title: true },
+    });
+    if (!legalCase) {
+      return res.status(404).json({ ok: false, error: "Case not found" });
+    }
+
+    const [rules, recognition] = await Promise.all([
+      getFirmExportNamingRules(firmId),
+      getRecognitionForDocument(documentId),
+    ]);
+    const growthExtraction = getJsonRecord(getJsonRecord(doc.extractedFields).growthExtraction);
+    const serviceDates = getJsonRecord(growthExtraction.serviceDates);
+    const growthPrimaryServiceDate =
+      typeof serviceDates.primaryServiceDate === "string" && serviceDates.primaryServiceDate.trim()
+        ? serviceDates.primaryServiceDate.trim()
+        : undefined;
+    const exportedAtIso = new Date().toISOString();
+    const ctx = buildDocumentNamingContext(
+      {
+        caseNumber: legalCase.caseNumber,
+        clientName: legalCase.clientName,
+        title: legalCase.title,
+      },
+      { id: doc.id, originalName: doc.originalName },
+      recognition,
+      exportedAtIso,
+      growthPrimaryServiceDate
+    );
+    const caseCtx = buildDocumentNamingContext(
+      {
+        caseNumber: legalCase.caseNumber,
+        clientName: legalCase.clientName,
+        title: legalCase.title,
+      },
+      { id: "", originalName: null },
+      null,
+      exportedAtIso
+    );
+
+    const ext = (doc.originalName ?? "").split(".").pop()?.toLowerCase() || "bin";
+    const fileName =
+      exportFileNameOverride !== ""
+        ? exportFileNameOverride.includes(".")
+          ? exportFileNameOverride
+          : `${exportFileNameOverride}.${ext}`
+        : (() => {
+            const baseName = applyFilePattern(rules, ctx);
+            return baseName.toLowerCase().endsWith(`.${ext}`) ? baseName : `${baseName}.${ext}`;
+          })();
+
+    const folderPath =
+      exportFolderPathOverride !== ""
+        ? exportFolderPathOverride
+        : [applyFolderPattern(rules, caseCtx), getFolderForDocType(rules, ctx.documentType)]
+            .filter(Boolean)
+            .join("/") || null;
+
+    res.json({
+      ok: true,
+      needsRouting: false,
+      message: null,
+      fileName,
+      folderPath,
+      context: {
+        caseNumber: ctx.caseNumber,
+        clientName: ctx.clientName,
+        caseTitle: ctx.caseTitle,
+        documentType: ctx.documentType,
+        providerName: ctx.providerName,
+        serviceDate: ctx.serviceDate,
+        originalName: ctx.originalName,
+      },
+      exportFileNameOverride,
+      exportFolderPathOverride,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.patch("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -5605,11 +6055,13 @@ app.patch("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
       routedCaseId?: string | null;
       routingStatus?: string | null;
       reviewState?: string | null;
+      exportFileNameOverride?: string | null;
+      exportFolderPathOverride?: string | null;
     };
 
     const doc = await prisma.document.findFirst({
       where: { id: documentId, firmId },
-      select: { id: true, status: true, routedCaseId: true, routingStatus: true, reviewState: true },
+      select: { id: true, status: true, routedCaseId: true, routingStatus: true, reviewState: true, metaJson: true },
     });
     if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
 
@@ -5701,6 +6153,26 @@ app.patch("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
     }
     if (requestedReviewState !== undefined) {
       updates.reviewState = requestedReviewState;
+    }
+    if (body.exportFileNameOverride !== undefined || body.exportFolderPathOverride !== undefined) {
+      const nextMeta = getJsonRecord(doc.metaJson);
+      if (body.exportFileNameOverride !== undefined) {
+        const exportFileNameOverride =
+          typeof body.exportFileNameOverride === "string" && body.exportFileNameOverride.trim()
+            ? body.exportFileNameOverride.trim()
+            : null;
+        if (exportFileNameOverride) nextMeta.exportFileNameOverride = exportFileNameOverride;
+        else delete nextMeta.exportFileNameOverride;
+      }
+      if (body.exportFolderPathOverride !== undefined) {
+        const exportFolderPathOverride =
+          typeof body.exportFolderPathOverride === "string" && body.exportFolderPathOverride.trim()
+            ? body.exportFolderPathOverride.trim()
+            : null;
+        if (exportFolderPathOverride) nextMeta.exportFolderPathOverride = exportFolderPathOverride;
+        else delete nextMeta.exportFolderPathOverride;
+      }
+      updates.metaJson = nextMeta as Prisma.InputJsonValue;
     }
 
     if (Object.keys(updates).length > 0) {
@@ -5914,6 +6386,114 @@ app.get("/cases/:id/insights", auth, requireRole(Role.STAFF), async (req, res) =
       sourceDocumentIds: insight.documentIds ?? [],
     }));
     res.json({ ok: true, insights: items });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/cases/:id/financial", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+
+    const legalCase = await prisma.legalCase.findFirst({
+      where: { id: caseId, firmId },
+      select: { id: true },
+    });
+    if (!legalCase) {
+      return res.status(404).json({ ok: false, error: "Case not found" });
+    }
+
+    const [financial, billLineAggregate, latestOffer] = await Promise.all([
+      prisma.caseFinancial.findFirst({
+        where: { caseId, firmId },
+        select: {
+          medicalBillsTotal: true,
+          liensTotal: true,
+          settlementOffer: true,
+          settlementAccepted: true,
+          attorneyFees: true,
+          costs: true,
+          netToClient: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.medicalBillLineItem.aggregate({
+        where: { caseId, firmId },
+        _sum: { lineTotal: true },
+      }),
+      pgPool.query<{ amount: number }>(
+        `select (dr.insurance_fields->>'settlementOffer')::float as amount
+         from "Document" d
+         join document_recognition dr on dr.document_id = d.id
+         where d."firmId" = $1 and d."routedCaseId" = $2
+           and dr.insurance_fields is not null
+           and (dr.insurance_fields->>'settlementOffer') is not null
+           and (dr.insurance_fields->>'settlementOffer')::float > 0
+         order by coalesce(d."processedAt", d."createdAt") desc
+         limit 1`,
+        [firmId, caseId]
+      ),
+    ]);
+
+    const fallbackMedicalBills = decimalToNullableNumber(billLineAggregate._sum.lineTotal) ?? 0;
+    const latestSettlementOffer =
+      latestOffer.rows[0]?.amount != null && Number.isFinite(Number(latestOffer.rows[0].amount))
+        ? Number(latestOffer.rows[0].amount)
+        : null;
+
+    res.json({
+      ok: true,
+      item: {
+        medicalBillsTotal: financial?.medicalBillsTotal ?? fallbackMedicalBills,
+        liensTotal: financial?.liensTotal ?? 0,
+        settlementOffer: financial?.settlementOffer ?? latestSettlementOffer,
+        settlementAccepted: financial?.settlementAccepted ?? null,
+        attorneyFees: financial?.attorneyFees ?? null,
+        costs: financial?.costs ?? null,
+        netToClient: financial?.netToClient ?? null,
+        updatedAt: toIsoString(financial?.updatedAt),
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/cases/:id/bill-line-items", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const caseId = String(req.params.id ?? "");
+
+    const legalCase = await prisma.legalCase.findFirst({
+      where: { id: caseId, firmId },
+      select: { id: true },
+    });
+    if (!legalCase) {
+      return res.status(404).json({ ok: false, error: "Case not found" });
+    }
+
+    const items = await prisma.medicalBillLineItem.findMany({
+      where: { caseId, firmId },
+      orderBy: [{ serviceDate: "desc" }, { createdAt: "desc" }],
+    });
+
+    res.json({
+      ok: true,
+      items: items.map((item) => ({
+        id: item.id,
+        documentId: item.documentId,
+        providerName: item.providerName ?? null,
+        serviceDate: toIsoString(item.serviceDate),
+        cptCode: item.cptCode ?? null,
+        procedureDescription: item.procedureDescription ?? null,
+        amountCharged: decimalToNullableNumber(item.amountCharged),
+        amountPaid: decimalToNullableNumber(item.amountPaid),
+        balance: decimalToNullableNumber(item.balance),
+        lineTotal: decimalToNullableNumber(item.lineTotal),
+        createdAt: toIsoString(item.createdAt ?? null),
+      })),
+    });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
