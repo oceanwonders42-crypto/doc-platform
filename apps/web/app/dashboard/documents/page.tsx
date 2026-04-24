@@ -66,7 +66,7 @@ function formatUploadError(params: {
   const { responseStatus, responseCode, responseError, thrownError } = params;
 
   if (responseCode === "PAYLOAD_TOO_LARGE" || responseStatus === 413) {
-    return "One or more files were larger than the 100MB upload limit. Split them or upload fewer files at once.";
+    return "One or more files were larger than the 25MB upload limit. Split them or upload fewer files at once.";
   }
 
   if (
@@ -98,6 +98,49 @@ function formatUploadSummary(results: UploadResultItem[]): string {
   if (duplicates > 0) parts.push(`${duplicates} duplicate${duplicates === 1 ? "" : "s"} linked to existing documents`);
   if (failed > 0) parts.push(`${failed} failed`);
   return parts.join(" • ");
+}
+
+function createUploadForm(files: File[]): FormData {
+  const form = new FormData();
+  files.forEach((file) => form.append("files", file));
+  return form;
+}
+
+async function requestUpload(files: File[]): Promise<{ response: Response; json: UploadResponse }> {
+  const base = getApiBase();
+  const endpoints = base ? [`${base}/me/ingest/bulk`, "/api/ingest/bulk"] : ["/api/ingest/bulk"];
+  const requestInit = {
+    method: "POST",
+    headers: getAuthHeader(),
+    ...getFetchOptions(),
+  };
+
+  let lastError: unknown = null;
+  for (const endpoint of endpoints) {
+    const response = await fetch(endpoint, {
+      ...requestInit,
+      body: createUploadForm(files),
+    });
+
+    try {
+      const json = (await parseJsonResponse(response)) as UploadResponse;
+      return { response, json };
+    } catch (requestError) {
+      const shouldTryProxy =
+        endpoint !== "/api/ingest/bulk" &&
+        requestError instanceof Error &&
+        requestError.message.includes("Server returned HTML instead of JSON");
+
+      if (shouldTryProxy) {
+        lastError = requestError;
+        continue;
+      }
+
+      throw requestError;
+    }
+  }
+
+  throw lastError ?? new Error("Upload failed.");
 }
 
 export default function DocumentsPage() {
@@ -174,23 +217,13 @@ export default function DocumentsPage() {
       if (!fileList || fileList.length === 0) return;
 
       const files = Array.from(fileList);
-      const base = getApiBase();
-      const uploadEndpoint = base ? `${base}/me/ingest/bulk` : "/me/ingest/bulk";
-      const form = new FormData();
-      files.forEach((file) => form.append("files", file));
 
       setUploading(true);
       setUploadNotice(null);
       setUploadResults([]);
 
       try {
-        const response = await fetch(uploadEndpoint, {
-          method: "POST",
-          headers: getAuthHeader(),
-          ...getFetchOptions(),
-          body: form,
-        });
-        const json = (await parseJsonResponse(response)) as UploadResponse;
+        const { response, json } = await requestUpload(files);
 
         const duplicateIndexSet = new Set(json.duplicateIndices ?? []);
         const failedByFile = new Map(
@@ -387,7 +420,7 @@ export default function DocumentsPage() {
           {uploading ? "Uploading documents…" : "Drop files here or click to upload"}
         </p>
         <p style={{ margin: 0, fontSize: "0.9rem", color: "var(--onyx-text-muted)", lineHeight: 1.55 }}>
-          Bulk upload posts directly to <code>/me/ingest/bulk</code> and each file result is shown below.
+          Bulk upload targets the live ingest API and retries through the JSON-safe proxy if the direct API target drifts.
         </p>
       </div>
 

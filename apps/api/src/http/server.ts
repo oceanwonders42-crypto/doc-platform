@@ -589,6 +589,129 @@ function buildUploadBillingPayload(result: CanIngestResult) {
   };
 }
 
+type IncomingUploadFile = {
+  originalname: string;
+  buffer: Buffer;
+  mimetype: string;
+};
+
+type IngestUploadedFileResult =
+  | {
+      duplicate: true;
+      documentId: string;
+      existingId: string;
+      spacesKey: string;
+    }
+  | {
+      duplicate: false;
+      documentId: string;
+      spacesKey: string;
+    };
+
+async function ingestUploadedFile(params: {
+  firmId: string;
+  file: IncomingUploadFile;
+  source: string;
+  externalId?: string | null;
+}): Promise<IngestUploadedFileResult> {
+  const { firmId, file, source, externalId } = params;
+  const fileSha256 = crypto.createHash("sha256").update(file.buffer).digest("hex");
+  const fileSizeBytes = file.buffer.length;
+
+  const duplicatesEnabled = await hasFeature(firmId, "duplicates_detection");
+  if (duplicatesEnabled) {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const existing = await prisma.document.findFirst({
+      where: {
+        firmId,
+        file_sha256: fileSha256,
+        fileSizeBytes,
+        ingestedAt: { gte: since },
+      },
+      orderBy: { ingestedAt: "desc" },
+      select: { id: true, spacesKey: true },
+    });
+
+    if (existing) {
+      const ym = `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, "0")}`;
+      await prisma.usageMonthly.upsert({
+        where: { firmId_yearMonth: { firmId, yearMonth: ym } },
+        create: {
+          firmId,
+          yearMonth: ym,
+          pagesProcessed: 0,
+          docsProcessed: 0,
+          insuranceDocsExtracted: 0,
+          courtDocsExtracted: 0,
+          narrativeGenerated: 0,
+          duplicateDetected: 1,
+        },
+        update: { duplicateDetected: { increment: 1 } },
+      });
+      await prisma.document.updateMany({
+        where: { id: existing.id, firmId },
+        data: { duplicateMatchCount: { increment: 1 } },
+      });
+
+      const doc = await prisma.document.create({
+        data: {
+          firmId,
+          source,
+          spacesKey: existing.spacesKey,
+          originalName: file.originalname,
+          mimeType: file.mimetype || "application/octet-stream",
+          pageCount: 0,
+          status: "UPLOADED",
+          processingStage: "complete",
+          external_id: externalId ?? null,
+          file_sha256: fileSha256,
+          fileSizeBytes,
+          duplicateOfId: existing.id,
+          ingestedAt: new Date(),
+          processedAt: new Date(),
+        },
+      });
+
+      return {
+        duplicate: true,
+        documentId: doc.id,
+        existingId: existing.id,
+        spacesKey: existing.spacesKey,
+      };
+    }
+  }
+
+  const documentId = crypto.randomUUID();
+  const key = buildDocumentStorageKey({
+    firmId,
+    caseId: null,
+    documentId,
+    originalName: file.originalname,
+  });
+
+  await putObject(key, file.buffer, file.mimetype || "application/octet-stream");
+
+  const doc = await prisma.document.create({
+    data: {
+      id: documentId,
+      firmId,
+      source,
+      spacesKey: key,
+      originalName: file.originalname,
+      mimeType: file.mimetype || "application/octet-stream",
+      pageCount: 0,
+      status: "RECEIVED",
+      external_id: externalId ?? null,
+      file_sha256: fileSha256,
+      fileSizeBytes,
+      ingestedAt: new Date(),
+    },
+  });
+
+  await enqueueDocumentJob({ documentId: doc.id, firmId });
+  return { duplicate: false, documentId: doc.id, spacesKey: key };
+}
+
 function isLoopbackAddress(value: string | null | undefined): boolean {
   if (!value) return false;
   const normalized = value.replace(/^::ffff:/, "").replace(/^\[|\]$/g, "").trim().toLowerCase();
@@ -2342,6 +2465,109 @@ app.post("/ingest", authWithScope("ingest"), rateLimitEndpoint(60, "ingest"), up
 
   res.json({ ok: true, documentId: doc.id, spacesKey: key, billing: buildUploadBillingPayload(docLimitCheck) });
 });
+
+const handleBulkIngestUpload: express.RequestHandler = (req, res) => {
+  upload.array("files", 20)(req, res, async (uploadError: unknown) => {
+    if (uploadError instanceof multer.MulterError) {
+      if (uploadError.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({
+          ok: false,
+          code: "PAYLOAD_TOO_LARGE",
+          error: "Each upload must be 25MB or smaller.",
+        });
+      }
+      return res.status(400).json({
+        ok: false,
+        code: uploadError.code,
+        error: uploadError.message,
+      });
+    }
+    if (uploadError) {
+      return res.status(500).json({
+        ok: false,
+        error: String((uploadError as Error)?.message ?? uploadError),
+      });
+    }
+
+    try {
+      const firmId = (req as any).firmId as string;
+      const files = ((req.files as Express.Multer.File[] | undefined) ?? []).filter((file) =>
+        Buffer.isBuffer(file.buffer)
+      );
+      if (files.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          error: "Upload at least one file in the files field.",
+        });
+      }
+
+      const docLimitCheck = await canIngestDocument(firmId);
+      if (!docLimitCheck.allowed) {
+        return res.status(402).json({
+          ok: false,
+          error: docLimitCheck.error,
+          billingStatus: docLimitCheck.billingStatus,
+          billing: buildUploadBillingPayload(docLimitCheck),
+        });
+      }
+
+      const source =
+        typeof req.body?.source === "string" && req.body.source.trim().length > 0
+          ? req.body.source.trim()
+          : "web";
+
+      const documentIds: string[] = [];
+      const duplicateIndices: number[] = [];
+      const errors: Array<{ file: string; error: string; code?: string }> = [];
+
+      for (const [index, file] of files.entries()) {
+        try {
+          const result = await ingestUploadedFile({
+            firmId,
+            file,
+            source,
+          });
+          documentIds.push(result.documentId);
+          if (result.duplicate) {
+            duplicateIndices.push(index);
+          }
+        } catch (error) {
+          errors.push({
+            file: file.originalname,
+            error: String((error as Error)?.message ?? error),
+          });
+        }
+      }
+
+      return res.json({
+        ok: true,
+        documentIds,
+        duplicatesDetected: duplicateIndices.length,
+        duplicateIndices,
+        errors,
+        billing: buildUploadBillingPayload(docLimitCheck),
+      });
+    } catch (error) {
+      return res.status(500).json({
+        ok: false,
+        error: String((error as Error)?.message ?? error),
+      });
+    }
+  });
+};
+
+const handleBulkIngestMethodNotAllowed: express.RequestHandler = (_req, res) => {
+  res.status(405).json({
+    ok: false,
+    code: "METHOD_NOT_ALLOWED",
+    error: "Use POST multipart/form-data with one or more files in the files field.",
+  });
+};
+
+app.post("/me/ingest/bulk", auth, requireRole(Role.STAFF), handleBulkIngestUpload);
+app.post("/api/me/ingest/bulk", auth, requireRole(Role.STAFF), handleBulkIngestUpload);
+app.all("/me/ingest/bulk", auth, requireRole(Role.STAFF), handleBulkIngestMethodNotAllowed);
+app.all("/api/me/ingest/bulk", auth, requireRole(Role.STAFF), handleBulkIngestMethodNotAllowed);
 
 const port = process.env.PORT ? Number(process.env.PORT) : 4000;
 // === Firm-scoped endpoints ===
