@@ -44,6 +44,7 @@ import {
 import { hasFeature } from "../services/featureFlags";
 import { canUseClioAutoUpdate } from "../services/planPolicy";
 import { rebuildCaseTimeline } from "../services/caseTimeline";
+import { extractAndPersistBillingIfBill } from "../services/billingExtraction";
 import { pushCaseIntelligenceToCrm } from "../integrations/crm/pushService";
 import { createNotification } from "../services/notifications";
 import { emitWebhookEvent } from "../services/webhooks";
@@ -1071,6 +1072,22 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
       confidence: finalConfidence,
     },
   });
+
+  if (doc.routedCaseId) {
+    await extractAndPersistBillingIfBill(
+      documentId,
+      doc.routedCaseId,
+      firmId,
+      finalDocType
+    ).catch((error) => {
+      console.warn("[worker] billing extraction failed", {
+        documentId,
+        firmId,
+        caseId: doc.routedCaseId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
 
   if (suggestedMatterType === "TRAFFIC") {
     const matterDetection = detectTrafficMatterType(text, finalDocType, doc.originalName ?? "");

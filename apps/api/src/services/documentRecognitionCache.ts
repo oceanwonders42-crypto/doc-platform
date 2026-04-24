@@ -17,7 +17,7 @@ export const DOCUMENT_RECOGNITION_TASKS = {
 } as const;
 
 export const DOCUMENT_RECOGNITION_PROMPTS = {
-  recognition: { promptVersion: "recognition-rules-v1", model: "local-rules-v1" },
+  recognition: { promptVersion: "recognition-rules-v2", model: "local-rules-v1" },
   summary: { promptVersion: "document-summary-v1", model: "gpt-4o-mini" },
   insurance: { promptVersion: "insurance-offer-extractor-v1", model: "gpt-4o-mini" },
   court: { promptVersion: "court-extractor-v1", model: "gpt-4o-mini" },

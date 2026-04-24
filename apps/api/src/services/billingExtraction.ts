@@ -5,6 +5,7 @@
 import { prisma } from "../db/prisma";
 import { pgPool } from "../db/pg";
 import { Prisma } from "@prisma/client";
+import { extractBillingStatement } from "../ai/extractors/billing";
 
 const BILL_DOC_TYPES = ["medical_bill", "ledger_statement", "billing_statement", "medical_record"];
 
@@ -50,6 +51,20 @@ export function extractBillFromText(
   text: string,
   providerName: string | null
 ): ExtractedBillLine[] {
+  const extracted = extractBillingStatement(text);
+  if (extracted.lineItems.length > 0) {
+    return extracted.lineItems.map((line) => ({
+      providerName: line.providerName ?? providerName,
+      serviceDate: parseDate(line.serviceDate),
+      cptCode: null,
+      procedureDescription: line.procedureDescription ?? null,
+      amountCharged: parseMoney(line.amountCharged),
+      amountPaid: null,
+      balance: null,
+      lineTotal: parseMoney(line.lineTotal) ?? parseMoney(line.amountCharged),
+    }));
+  }
+
   const lines: ExtractedBillLine[] = [];
   const t = text.slice(0, 30000);
 

@@ -102,7 +102,8 @@ type BillLine = {
 type MissingRecordsFlag = {
   title: string;
   summary: string;
-  confidence: "high" | "medium" | "low";
+  confidence?: "high" | "medium" | "low";
+  severity?: "high" | "medium" | "low";
   recommendedAction?: string | null;
   providerName?: string | null;
   recordsRequestId?: string | null;
@@ -114,17 +115,21 @@ type MissingRecordsAnalysisResult = {
   flags: MissingRecordsFlag[];
   recommendedRequests: Array<{
     providerName: string | null;
-    rationale: string;
+    rationale?: string;
+    reason?: string;
   }>;
 };
 
 type BillsVsTreatmentFlag = {
   title: string;
   summary: string;
-  confidence: "high" | "medium" | "low";
+  confidence?: "high" | "medium" | "low";
+  severity?: "high" | "medium" | "low";
   providerName?: string | null;
   documentId?: string | null;
   dateContext?: string | null;
+  serviceDate?: string | null;
+  treatmentDate?: string | null;
 };
 
 type BillsVsTreatmentAnalysisResult = {
@@ -303,9 +308,17 @@ function buildClientSideDemandReadiness(input: {
   };
 }
 
-function renderAnalysisTone(confidence: "high" | "medium" | "low") {
-  if (confidence === "high") return "onyx-badge onyx-badge-warning";
-  if (confidence === "medium") return "onyx-badge onyx-badge-neutral";
+function getAnalysisLevel(
+  value: "high" | "medium" | "low" | undefined
+): "high" | "medium" | "low" {
+  if (value === "high" || value === "medium") return value;
+  return "low";
+}
+
+function renderAnalysisTone(confidence: "high" | "medium" | "low" | undefined) {
+  const normalized = getAnalysisLevel(confidence);
+  if (normalized === "high") return "onyx-badge onyx-badge-warning";
+  if (normalized === "medium") return "onyx-badge onyx-badge-neutral";
   return "onyx-badge onyx-badge-info";
 }
 
@@ -1157,8 +1170,8 @@ export default function CaseDetailPage() {
                 <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.875rem" }}>
                   {missingResult.flags.slice(0, 4).map((flag) => (
                     <li key={`${flag.title}-${flag.summary}`} style={{ marginBottom: "0.5rem" }}>
-                      <span className={renderAnalysisTone(flag.confidence)} style={{ marginRight: "0.35rem" }}>
-                        {flag.confidence}
+                      <span className={renderAnalysisTone(flag.severity ?? flag.confidence)} style={{ marginRight: "0.35rem" }}>
+                        {getAnalysisLevel(flag.severity ?? flag.confidence)}
                       </span>
                       <strong>{flag.title}:</strong> {flag.summary}
                     </li>
@@ -1402,17 +1415,22 @@ export default function CaseDetailPage() {
                   {compareResult.flags.map((flag) => (
                     <div key={`${flag.title}-${flag.summary}`} style={{ borderTop: "1px solid var(--onyx-border-subtle)", paddingTop: "0.65rem" }}>
                       <p style={{ margin: 0, fontWeight: 600 }}>
-                        <span className={renderAnalysisTone(flag.confidence)} style={{ marginRight: "0.35rem" }}>
-                          {flag.confidence}
+                        <span className={renderAnalysisTone(flag.severity ?? flag.confidence)} style={{ marginRight: "0.35rem" }}>
+                          {getAnalysisLevel(flag.severity ?? flag.confidence)}
                         </span>
                         {flag.title}
                       </p>
                       <p style={{ margin: "0.3rem 0 0", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
                         {flag.summary}
                       </p>
-                      {flag.providerName || flag.dateContext ? (
+                      {flag.providerName || flag.dateContext || flag.serviceDate || flag.treatmentDate ? (
                         <p style={{ margin: "0.3rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-                          {[flag.providerName, flag.dateContext].filter(Boolean).join(" | ")}
+                          {[
+                            flag.providerName,
+                            flag.dateContext,
+                            flag.serviceDate ? `Service ${formatDate(flag.serviceDate)}` : null,
+                            flag.treatmentDate ? `Treatment ${formatDate(flag.treatmentDate)}` : null,
+                          ].filter(Boolean).join(" | ")}
                         </p>
                       ) : null}
                       {flag.documentId ? (
@@ -1462,8 +1480,8 @@ export default function CaseDetailPage() {
                   {missingResult.flags.map((flag) => (
                     <div key={`${flag.title}-${flag.summary}`} style={{ borderTop: "1px solid var(--onyx-border-subtle)", paddingTop: "0.65rem" }}>
                       <p style={{ margin: 0, fontWeight: 600 }}>
-                        <span className={renderAnalysisTone(flag.confidence)} style={{ marginRight: "0.35rem" }}>
-                          {flag.confidence}
+                        <span className={renderAnalysisTone(flag.severity ?? flag.confidence)} style={{ marginRight: "0.35rem" }}>
+                          {getAnalysisLevel(flag.severity ?? flag.confidence)}
                         </span>
                         {flag.title}
                       </p>
@@ -1487,8 +1505,8 @@ export default function CaseDetailPage() {
                   </p>
                   <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.875rem" }}>
                     {missingResult.recommendedRequests.map((request) => (
-                      <li key={`${request.providerName}-${request.rationale}`}>
-                        {(request.providerName || "Provider to confirm")}: {request.rationale}
+                      <li key={`${request.providerName}-${request.reason ?? request.rationale}`}>
+                        {(request.providerName || "Provider to confirm")}: {request.reason ?? request.rationale}
                       </li>
                     ))}
                   </ul>

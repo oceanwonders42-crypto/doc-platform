@@ -294,6 +294,31 @@ export async function analyzeMissingRecords(
   const context = await loadCaseAiContext(caseId, firmId);
   const providerEvidence = new Set<string>();
   const flags: MissingRecordsFlag[] = [];
+  const flaggedProviderNames = new Set<string>();
+
+  const pushProviderMissingFlag = (input: {
+    id: string;
+    title: string;
+    summary: string;
+    providerName?: string | null;
+    recommendedAction?: string | null;
+    relatedDocumentIds?: string[];
+  }) => {
+    const normalized = normalizeProviderName(input.providerName);
+    const dedupeKey = normalized ?? input.id;
+    if (flaggedProviderNames.has(dedupeKey)) return;
+    flaggedProviderNames.add(dedupeKey);
+    flags.push({
+      id: input.id,
+      type: "provider_without_records",
+      severity: "medium",
+      title: input.title,
+      summary: input.summary,
+      providerName: input.providerName ?? null,
+      recommendedAction: input.recommendedAction ?? null,
+      relatedDocumentIds: input.relatedDocumentIds ?? [],
+    });
+  };
 
   for (const event of context.timelineEvents) {
     const normalized = normalizeProviderName(event.provider);
@@ -309,10 +334,8 @@ export async function analyzeMissingRecords(
   for (const provider of context.caseProviders) {
     const normalized = normalizeProviderName(provider.providerName);
     if (!normalized || providerEvidence.has(normalized)) continue;
-    flags.push({
+    pushProviderMissingFlag({
       id: `provider-${provider.providerId}`,
-      type: "provider_without_records",
-      severity: "medium",
       title: "Provider linked to case but no records found",
       summary: `${provider.providerName ?? "A linked provider"} is attached to the case, but no routed documents or timeline events reference that provider yet.`,
       providerName: provider.providerName,
@@ -320,6 +343,21 @@ export async function analyzeMissingRecords(
         ? `Create or follow up on a records request for ${provider.providerName}.`
         : "Create or follow up on a records request for this provider.",
       relatedDocumentIds: [],
+    });
+  }
+
+  for (const billLine of context.billLines) {
+    const normalized = normalizeProviderName(billLine.providerName);
+    if (!normalized || providerEvidence.has(normalized)) continue;
+    pushProviderMissingFlag({
+      id: `bill-provider-${billLine.id}`,
+      title: "Billing exists without supporting treatment records",
+      summary: `${billLine.providerName ?? "A provider"} has billing recorded for ${formatShortDate(billLine.serviceDate)} but no matching treatment records or timeline evidence are stored yet.`,
+      providerName: billLine.providerName,
+      recommendedAction: billLine.providerName
+        ? `Request the missing treatment records from ${billLine.providerName}.`
+        : "Request the missing treatment records for this billed provider.",
+      relatedDocumentIds: billLine.documentId ? [billLine.documentId] : [],
     });
   }
 
@@ -375,7 +413,8 @@ export async function analyzeMissingRecords(
     context.caseProviders.length > 0 ||
     context.timelineEvents.length > 0 ||
     context.documents.length > 0 ||
-    context.recordsRequests.length > 0;
+    context.recordsRequests.length > 0 ||
+    context.billLines.length > 0;
 
   return {
     generatedAt: new Date().toISOString(),
@@ -568,9 +607,12 @@ export async function answerCaseQuestion(
     case "providers": {
       const providerNames = Array.from(
         new Set(
-          context.caseProviders
-            .map((provider) => provider.providerName)
-            .filter((value): value is string => Boolean(value))
+          [
+            ...context.caseProviders.map((provider) => provider.providerName),
+            ...context.timelineEvents.map((event) => event.provider),
+            ...context.documents.flatMap((document) => extractProviderHints(document.extractedFields)),
+            ...context.billLines.map((line) => line.providerName),
+          ].filter((value): value is string => Boolean(value))
         )
       );
       if (providerNames.length === 0) {

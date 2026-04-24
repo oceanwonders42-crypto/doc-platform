@@ -23,10 +23,22 @@ const MEDICAL_RECORD_KEYWORDS = [
   "medical record",
   "patient",
   "diagnosis",
+  "emergency department",
+  "emergency physician",
+  "er report",
+  "mri report",
+  "radiologist impression",
+  "chiropractic",
+  "range of motion",
+  "cervical strain",
+  "lumbar strain",
+  "progress notes",
+  "rehab",
+  "orthopedics",
+  "imaging",
   "discharge summary",
   "admission",
   "progress note",
-  "progress notes",
   "history and physical",
   "h&p",
   "treatment plan",
@@ -60,20 +72,29 @@ const INSURANCE_LETTER_KEYWORDS = [
   "claim reference",
 ];
 
+const INSURANCE_LETTER_STRONG_KEYWORDS = [
+  "insurance letter",
+  "adjuster",
+  "reservation of rights",
+  "coverage",
+  "denial",
+  "denied",
+  "settlement offer",
+  "offer to settle",
+  "claim adjuster",
+  "we are writing regarding",
+  "claim reference",
+] as const;
+
 const COURT_FILING_KEYWORDS = [
-  "in the",
   "plaintiff",
   "defendant",
-  "complaint",
   "cause of action",
   "wherefore",
-  "motion",
   "notice of hearing",
   "summons",
   "you are hereby summoned",
-  "ordered",
   "it is hereby ordered",
-  "court",
   "case no",
   "case number",
   "judge",
@@ -82,9 +103,26 @@ const COURT_FILING_KEYWORDS = [
   "county of",
 ];
 
+const COURT_FILING_STRONG_KEYWORDS = [
+  "plaintiff",
+  "defendant",
+  "cause of action",
+  "wherefore",
+  "notice of hearing",
+  "summons",
+  "you are hereby summoned",
+  "it is hereby ordered",
+  "judge",
+  "superior court",
+  "district court",
+  "county of",
+] as const;
+
 const BILLING_STATEMENT_KEYWORDS = [
   "invoice",
   "statement",
+  "billing ledger",
+  "ledger",
   "amount due",
   "balance due",
   "total due",
@@ -100,6 +138,16 @@ const BILLING_STATEMENT_KEYWORDS = [
   "remit to",
   "statement date",
 ];
+
+const BILLING_STRONG_KEYWORDS = [
+  "billing ledger",
+  "amount due",
+  "balance due",
+  "total due",
+  "charges",
+  "payment",
+  "account balance",
+] as const;
 
 const POLICE_REPORT_KEYWORDS = [
   "police report",
@@ -136,6 +184,11 @@ function scoreSegment(text: string, keywords: string[], minHits: number): { scor
   return { score, hits };
 }
 
+function hasAnyKeyword(text: string, keywords: readonly string[]): boolean {
+  const lower = text.toLowerCase();
+  return keywords.some((keyword) => lower.includes(keyword.toLowerCase()));
+}
+
 /**
  * Classify document from extracted text and optional filename.
  * Returns one of: medical_record, insurance_letter, court_filing, billing_statement, police_report, unknown.
@@ -146,10 +199,37 @@ export function classify(extractedText: string, filename: string = ""): Classifi
   const text = `${(filename || "").toLowerCase()} ${raw}`;
   const combined = text.toLowerCase();
 
+  const medicalSignal =
+    hasAnyKeyword(combined, [
+      "emergency department",
+      "er report",
+      "mri report",
+      "radiologist impression",
+      "chiropractic",
+      "progress notes",
+      "progress note",
+      "range of motion",
+      "cervical strain",
+      "lumbar strain",
+      "orthopedics",
+      "imaging",
+      "rehab",
+    ])
+    || /(emergency|mri|radiology|chiropractic|rehab|orthopedic)/i.test(filename);
+  const insuranceLetterSignal =
+    hasAnyKeyword(combined, INSURANCE_LETTER_STRONG_KEYWORDS)
+    || /(insurance|adjuster|claim|coverage)/i.test(filename);
+  const billingSignal =
+    hasAnyKeyword(combined, BILLING_STRONG_KEYWORDS)
+    || /(billing|ledger|invoice|statement)/i.test(filename);
+  const courtSignal =
+    hasAnyKeyword(combined, COURT_FILING_STRONG_KEYWORDS)
+    || /(court|summons|complaint|motion|hearing)/i.test(filename);
+
   const candidates: { docType: DocType; score: number }[] = [];
 
   // Court: high specificity (legal language)
-  const court = scoreSegment(combined, COURT_FILING_KEYWORDS, 2);
+  const court = scoreSegment(combined, COURT_FILING_KEYWORDS, courtSignal ? 2 : 3);
   if (court.score > 0) candidates.push({ docType: "court_filing", score: court.score });
 
   // Police report: distinct phrases
@@ -157,23 +237,56 @@ export function classify(extractedText: string, filename: string = ""): Classifi
   if (police.score > 0) candidates.push({ docType: "police_report", score: police.score });
 
   // Insurance: claim/policy language
-  const insurance = scoreSegment(combined, INSURANCE_LETTER_KEYWORDS, 1);
+  const insurance = scoreSegment(combined, INSURANCE_LETTER_KEYWORDS, insuranceLetterSignal ? 1 : 2);
   if (insurance.score > 0) candidates.push({ docType: "insurance_letter", score: insurance.score });
 
   // Billing: invoice/statement language
-  const billing = scoreSegment(combined, BILLING_STATEMENT_KEYWORDS, 2);
+  const billing = scoreSegment(combined, BILLING_STATEMENT_KEYWORDS, billingSignal ? 1 : 2);
   if (billing.score > 0) candidates.push({ docType: "billing_statement", score: billing.score });
 
   // Medical record: clinical language
   const medical = scoreSegment(combined, MEDICAL_RECORD_KEYWORDS, 1);
   if (medical.score > 0) candidates.push({ docType: "medical_record", score: medical.score });
 
-  if (candidates.length === 0) {
+  for (const candidate of candidates) {
+    if (candidate.docType === "medical_record" && medicalSignal) {
+      candidate.score = Math.min(0.95, candidate.score + 0.16);
+    }
+    if (candidate.docType === "billing_statement" && billingSignal) {
+      candidate.score = Math.min(0.95, candidate.score + 0.16);
+    }
+    if (candidate.docType === "insurance_letter" && insuranceLetterSignal) {
+      candidate.score = Math.min(0.95, candidate.score + 0.12);
+    }
+    if (candidate.docType === "court_filing" && courtSignal) {
+      candidate.score = Math.min(0.95, candidate.score + 0.1);
+    }
+  }
+
+  // Medical records often carry claim/policy references without being insurance correspondence.
+  if (medicalSignal && !insuranceLetterSignal) {
+    const insuranceCandidate = candidates.find((candidate) => candidate.docType === "insurance_letter");
+    if (insuranceCandidate) {
+      insuranceCandidate.score = Math.max(0, insuranceCandidate.score - 0.2);
+    }
+  }
+
+  // Range-of-motion / presenting-complaint text should not be mistaken for court pleadings.
+  if (medicalSignal && !courtSignal) {
+    const courtCandidate = candidates.find((candidate) => candidate.docType === "court_filing");
+    if (courtCandidate) {
+      courtCandidate.score = 0;
+    }
+  }
+
+  const viableCandidates = candidates.filter((candidate) => candidate.score > 0);
+
+  if (viableCandidates.length === 0) {
     return { docType: "unknown", confidence: 0.25 };
   }
 
-  candidates.sort((a, b) => b.score - a.score);
-  const best = candidates[0];
+  viableCandidates.sort((a, b) => b.score - a.score);
+  const best = viableCandidates[0];
   if (best.score < 0.5) {
     return { docType: "unknown", confidence: Math.max(0.25, best.score) };
   }
