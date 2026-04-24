@@ -562,7 +562,7 @@ async function handleOcrJob(documentId: string, firmId: string): Promise<void> {
   const pages = await countPagesFromBuffer(buf, doc.mimeType, doc.originalName);
 
   await prisma.$transaction(async (tx) => {
-    await tx.document.update({
+    await tx.document.updateMany({
       where: { id: documentId, firmId },
       data: { pageCount: pages },
     });
@@ -581,14 +581,14 @@ async function handleOcrJob(documentId: string, firmId: string): Promise<void> {
       },
       update: { pagesProcessed: { increment: pages }, docsProcessed: { increment: 1 } },
     });
-    await tx.document.update({
+    await tx.document.updateMany({
       where: { id: documentId, firmId },
       data: { status: "UPLOADED", processedAt: new Date() },
     });
   });
 
   if (!isWorkerOcrEligibleDocument({ mimeType: doc.mimeType, originalName: doc.originalName })) {
-    await prisma.document.update({
+    await prisma.document.updateMany({
       where: { id: documentId, firmId },
       data: { processingStage: "complete" },
     });
@@ -602,7 +602,7 @@ async function handleOcrJob(documentId: string, firmId: string): Promise<void> {
     return;
   }
 
-  await prisma.document.update({
+  await prisma.document.updateMany({
     where: { id: documentId, firmId },
     data: { processingStage: "ocr" },
   });
@@ -626,7 +626,7 @@ async function handleOcrJob(documentId: string, firmId: string): Promise<void> {
       ["unknown", 0, documentId]
     );
     const ocrReviewState = getOcrNoTextReviewState();
-    await prisma.document.update({
+    await prisma.document.updateMany({
       where: { id: documentId, firmId },
       data: ocrReviewState,
     });
@@ -691,7 +691,7 @@ async function handleClassificationJob(documentId: string, firmId: string): Prom
     existingRecognition.suggested_matter_type != null &&
     recognitionCacheState.cacheUsed;
 
-  await prisma.document.update({
+  await prisma.document.updateMany({
     where: { id: documentId, firmId },
     data: { processingStage: "classification" },
   });
@@ -799,7 +799,7 @@ async function handleClassificationJob(documentId: string, firmId: string): Prom
   }
 
   if (shouldWorkerDeferCaseMatchUntilAfterExtraction(doc, suggestedMatterType)) {
-    await prisma.document.update({
+    await prisma.document.updateMany({
       where: { id: documentId, firmId },
       data: { processingStage: "extraction" },
     });
@@ -810,7 +810,7 @@ async function handleClassificationJob(documentId: string, firmId: string): Prom
     return;
   }
 
-  await prisma.document.update({
+  await prisma.document.updateMany({
     where: { id: documentId, firmId },
     data: { processingStage: "case_match" },
   });
@@ -861,7 +861,7 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
   const suggestedMatterType = rec.suggested_matter_type ?? "PI";
   const textHash = rec.normalized_text_hash ?? getStoredTextHash(text);
 
-  await prisma.document.update({
+  await prisma.document.updateMany({
     where: { id: documentId, firmId },
     data: { processingStage: "extraction" },
   });
@@ -1059,7 +1059,7 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
       : typeof rec.confidence === "number"
         ? rec.confidence
         : Number(rec.confidence) || 0;
-  await prisma.document.update({
+  await prisma.document.updateMany({
     where: { id: documentId, firmId },
     data: {
       extractedFields: extractedFields as Prisma.InputJsonValue,
@@ -1088,7 +1088,7 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
       reviewRequired,
     });
 
-    await prisma.document.update({
+    await prisma.document.updateMany({
       where: { id: documentId, firmId },
       data: {
         status: "NEEDS_REVIEW",
@@ -1146,7 +1146,7 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
   }
 
   if (shouldWorkerQueueCaseMatchAfterExtraction(doc, suggestedMatterType)) {
-    await prisma.document.update({
+    await prisma.document.updateMany({
       where: { id: documentId, firmId },
       data: { processingStage: "case_match" },
     });
@@ -1165,7 +1165,7 @@ async function handleExtractionJob(documentId: string, firmId: string): Promise<
     return;
   }
 
-  await prisma.document.update({
+  await prisma.document.updateMany({
     where: { id: documentId, firmId },
     data: { processingStage: "complete" },
   });
@@ -1236,7 +1236,7 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
     [documentId]
   );
   if (matterRows[0]?.suggested_matter_type === "TRAFFIC") {
-    await prisma.document.update({
+    await prisma.document.updateMany({
       where: { id: documentId, firmId },
       data: { processingStage: "complete" },
     });
@@ -1348,7 +1348,7 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
           `A new case "${name}" was created from an unmatched document and the document was routed to it.`,
           { caseId: newCase.id, documentId, clientName: name }
         ).catch((e) => console.warn("[notifications] case_created_from_doc failed", e));
-        await prisma.document.update({
+        await prisma.document.updateMany({
           where: { id: documentId, firmId },
           data: { processingStage: "complete" },
         });
@@ -1397,7 +1397,7 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
     });
     if (routed.ok) {
       console.log(`Auto-routed document ${documentId} to case ${matchedCaseId}`);
-      await prisma.document.update({
+      await prisma.document.updateMany({
         where: { id: documentId, firmId },
         data: { processingStage: "complete" },
       });
@@ -1685,7 +1685,7 @@ async function runDocumentWorkerLoop(loopLabel: string): Promise<void> {
       console.error(`[${loopLabel}] error`, { documentId, firmId, error: errMsg, stack: errStack });
       if (documentId && firmId) {
         try {
-          await prisma.document.update({
+          await prisma.document.updateMany({
             where: { id: documentId, firmId },
             data: { status: "FAILED" },
           });

@@ -2055,7 +2055,7 @@ app.post("/ingest", authWithScope("ingest"), rateLimitEndpoint(60, "ingest"), up
         },
         update: { duplicateDetected: { increment: 1 } },
       });
-      await prisma.document.update({
+      await prisma.document.updateMany({
         where: { id: existing.id, firmId },
         data: { duplicateMatchCount: { increment: 1 } },
       });
@@ -4510,7 +4510,7 @@ app.patch("/documents/bulk", auth, requireRole(Role.STAFF), async (req, res) => 
           updated++;
         } else if (action === "mark_unmatched") {
           await prisma.document.updateMany({
-            where: { id: doc.id },
+            where: { id: doc.id, firmId },
             data: {
               status: "UNMATCHED",
               reviewState: "REJECTED",
@@ -4531,7 +4531,7 @@ app.patch("/documents/bulk", auth, requireRole(Role.STAFF), async (req, res) => 
           updated++;
         } else if (action === "mark_needs_review") {
           await prisma.document.updateMany({
-            where: { id: doc.id },
+            where: { id: doc.id, firmId },
             data: {
               status: "NEEDS_REVIEW",
               reviewState: "IN_REVIEW",
@@ -4890,7 +4890,7 @@ app.post("/documents/:id/recognize", auth, requireRole(Role.STAFF), async (req, 
       select: { id: true },
     });
     if (doc) {
-      await prisma.document.update({
+      await prisma.document.updateMany({
         where: { id: documentId, firmId },
         data: { extractedFields: extractedFields as Prisma.InputJsonValue, confidence: finalConfidence },
       });
@@ -5048,7 +5048,7 @@ app.post("/documents/:id/reprocess", auth, requireRole(Role.STAFF), async (req, 
     }
 
     if (mode === "full" || mode === "ocr") {
-      await prisma.document.update({
+      await prisma.document.updateMany({
         where: { id: documentId, firmId },
         data: { status: "PROCESSING", processingStage: "uploaded" },
       });
@@ -5065,7 +5065,7 @@ app.post("/documents/:id/reprocess", auth, requireRole(Role.STAFF), async (req, 
           error: "Run recognition or OCR first; document has no text_excerpt or doc_type",
         });
       }
-      await prisma.document.update({
+      await prisma.document.updateMany({
         where: { id: documentId, firmId },
         data: { status: "PROCESSING", processingStage: "extraction" },
       });
