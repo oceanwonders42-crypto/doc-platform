@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
+import { getApiBase, getAuthHeader, getFetchOptions, getStoredToken, parseJsonResponse } from "@/lib/api";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DataTable, Column } from "@/components/dashboard/DataTable";
 
@@ -18,6 +18,11 @@ type CasesListResponse = { ok?: boolean; items?: CaseItem[] };
 
 function isCasesListResponse(res: unknown): res is CasesListResponse {
   return typeof res === "object" && res !== null;
+}
+
+function getSessionAuthHeader(): Record<string, string> {
+  const token = getStoredToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export default function DemandsPage() {
@@ -46,7 +51,11 @@ export default function DemandsPage() {
   }, [load]);
 
   useEffect(() => {
-    fetch("/api/me/features", { cache: "no-store" })
+    fetch("/api/me/features", {
+      headers: getSessionAuthHeader(),
+      ...getFetchOptions(),
+      cache: "no-store",
+    })
       .then(parseJsonResponse)
       .then((data: unknown) => {
         const payload = data as { demand_narratives?: unknown };
@@ -139,16 +148,7 @@ export default function DemandsPage() {
             gap: "0.45rem",
           }}
         >
-          <p
-            style={{
-              margin: 0,
-              fontSize: "0.75rem",
-              fontWeight: 700,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              color: "var(--onyx-accent)",
-            }}
-          >
+          <p style={{ margin: 0, fontSize: "0.75rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-accent)" }}>
             Demand Bank Foundation
           </p>
           <p style={{ margin: 0, fontSize: "0.9375rem", color: "var(--onyx-text-secondary)" }}>

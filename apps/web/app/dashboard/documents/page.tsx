@@ -1,10 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { formatApiClientError, getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
-import { PageHeader } from "@/components/dashboard/PageHeader";
+import {
+  formatApiClientError,
+  getApiBase,
+  getAuthHeader,
+  getFetchOptions,
+  parseJsonResponse,
+} from "@/lib/api";
 import { DataTable, Column } from "@/components/dashboard/DataTable";
+import { ErrorNotice } from "@/components/dashboard/ErrorNotice";
+import { PageHeader } from "@/components/dashboard/PageHeader";
 
 type Doc = {
   id: string;
@@ -27,6 +34,7 @@ type DocumentsListResponse = {
   error?: string;
   code?: string;
 };
+
 type UploadResponse = {
   ok?: boolean;
   error?: string;
@@ -37,13 +45,15 @@ type UploadResponse = {
   errors?: { file: string; error: string; code?: string }[];
 };
 
-function isDocumentsListResponse(res: unknown): res is DocumentsListResponse {
-  return typeof res === "object" && res !== null;
-}
+type UploadResultItem = {
+  fileName: string;
+  status: "queued" | "duplicate" | "failed";
+  detail: string;
+};
 
 function extractDocumentItems(res: DocumentsListResponse): Doc[] | null {
-  if (Array.isArray((res as { items?: Doc[] }).items)) return (res as { items: Doc[] }).items;
-  if (Array.isArray((res as { documents?: Doc[] }).documents)) return (res as { documents: Doc[] }).documents;
+  if (Array.isArray(res.items)) return res.items;
+  if (Array.isArray(res.documents)) return res.documents;
   return null;
 }
 
@@ -52,44 +62,42 @@ function formatUploadError(params: {
   responseCode?: string;
   responseError?: string;
   thrownError?: unknown;
-  endpoint: string;
 }): string {
-  const { responseStatus, responseCode, responseError, thrownError, endpoint } = params;
+  const { responseStatus, responseCode, responseError, thrownError } = params;
 
   if (responseCode === "PAYLOAD_TOO_LARGE" || responseStatus === 413) {
-    return "This file is larger than the 100MB upload limit. Split it, compress it, or upload fewer files at once.";
+    return "One or more files were larger than the 100MB upload limit. Split them or upload fewer files at once.";
   }
 
   if (
-    responseCode === "UNAUTHORIZED"
-    || responseStatus === 401
-    || responseStatus === 403
-    || /invalid api key|unauthorized|forbidden/i.test(responseError ?? "")
+    responseCode === "UNAUTHORIZED" ||
+    responseStatus === 401 ||
+    responseStatus === 403 ||
+    /invalid api key|unauthorized|forbidden/i.test(responseError ?? "")
   ) {
     return "Your session is not authorized to upload documents right now. Sign in again and retry.";
   }
 
   if (thrownError != null) {
-    const message = formatApiClientError(thrownError, "Upload failed", {
+    return formatApiClientError(thrownError, "Upload failed.", {
       deploymentMessage:
-        "The upload endpoint returned HTML instead of JSON. Check the active API host, routing, and whether the latest web/API build is deployed.",
+        "The document ingest endpoint returned HTML instead of JSON. Check the active API host and whether web or API is serving an older build.",
     });
-    if (message.includes("Server returned HTML instead of JSON")) {
-      return "The upload endpoint returned HTML instead of JSON. Check the active API host and deploy version, then retry.";
-    }
-    if (message.includes("We couldn't reach the API")) {
-      return "We couldn't reach the upload service. Check the active API host and your network connection, then retry.";
-    }
-    console.error("[documents-upload] request failed", {
-      endpoint,
-      message,
-      error: thrownError,
-      locationOrigin: typeof window !== "undefined" ? window.location.origin : null,
-    });
-    return message;
   }
 
-  return responseError ?? "Upload failed";
+  return responseError ?? "Upload failed.";
+}
+
+function formatUploadSummary(results: UploadResultItem[]): string {
+  const queued = results.filter((item) => item.status === "queued").length;
+  const duplicates = results.filter((item) => item.status === "duplicate").length;
+  const failed = results.filter((item) => item.status === "failed").length;
+
+  const parts = [];
+  if (queued > 0) parts.push(`${queued} queued for processing`);
+  if (duplicates > 0) parts.push(`${duplicates} duplicate${duplicates === 1 ? "" : "s"} linked to existing documents`);
+  if (failed > 0) parts.push(`${failed} failed`);
+  return parts.join(" • ");
 }
 
 export default function DocumentsPage() {
@@ -99,8 +107,8 @@ export default function DocumentsPage() {
   const [filterCaseId, setFilterCaseId] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+  const [uploadNotice, setUploadNotice] = useState<{ tone: "success" | "warning" | "error"; message: string } | null>(null);
+  const [uploadResults, setUploadResults] = useState<UploadResultItem[]>([]);
   const [dragOver, setDragOver] = useState(false);
 
   const refresh = useCallback(() => {
@@ -111,55 +119,51 @@ export default function DocumentsPage() {
     if (filterStatus) params.set("status", filterStatus);
     if (filterCaseId) params.set("caseId", filterCaseId);
     const query = params.toString();
-    const headers = getAuthHeader();
-    const requestInit = { headers, ...getFetchOptions() };
+    const requestInit = { headers: getAuthHeader(), ...getFetchOptions() };
     const directUrl = base ? `${base}/me/documents?${query}` : `/api/documents?${query}`;
 
     fetch(directUrl, requestInit)
       .then(async (response) => {
         try {
           return await parseJsonResponse(response);
-        } catch (error) {
+        } catch (requestError) {
           const shouldTryProxy =
             directUrl !== `/api/documents?${query}` &&
-            error instanceof Error &&
-            error.message.includes("Server returned HTML instead of JSON");
+            requestError instanceof Error &&
+            requestError.message.includes("Server returned HTML instead of JSON");
 
-          if (!shouldTryProxy) {
-            throw error;
-          }
+          if (!shouldTryProxy) throw requestError;
 
           const proxyResponse = await fetch(`/api/documents?${query}`, requestInit);
           return parseJsonResponse(proxyResponse);
         }
       })
-      .then((res: unknown) => {
-        if (isDocumentsListResponse(res)) {
-          const docs = extractDocumentItems(res);
-          if (docs) {
-            setItems(docs);
-            setError(null);
-            return;
-          }
-          if (typeof res.error === "string" && res.error.trim()) {
-            setItems([]);
-            setError(res.error);
-            return;
-          }
+      .then((response: unknown) => {
+        const data = response as DocumentsListResponse;
+        const docs = extractDocumentItems(data);
+        if (docs) {
+          setItems(docs);
+          setError(null);
+          return;
         }
+
         setItems([]);
-        setError("We couldn't load your documents. Please try again.");
+        setError(data.error ?? "We couldn't load your documents.");
       })
-      .catch((error) => {
+      .catch((requestError) => {
         setError(
-          formatApiClientError(error, "We couldn't load your documents. Please check your connection and try again.", {
-            deploymentMessage:
-              "The documents API target returned HTML instead of JSON. Check NEXT_PUBLIC_API_URL, API routing, and whether the latest web build or cached asset is still serving an older configuration.",
-          })
+          formatApiClientError(
+            requestError,
+            "We couldn't load your documents. Please try again.",
+            {
+              deploymentMessage:
+                "The documents API returned HTML instead of JSON. Check the API host, routing, and whether web is still serving a stale build.",
+            }
+          )
         );
       })
       .finally(() => setLoading(false));
-  }, [filterStatus, filterCaseId]);
+  }, [filterCaseId, filterStatus]);
 
   useEffect(() => {
     refresh();
@@ -168,59 +172,78 @@ export default function DocumentsPage() {
   const handleFiles = useCallback(
     async (fileList: FileList | null) => {
       if (!fileList || fileList.length === 0) return;
+
+      const files = Array.from(fileList);
       const base = getApiBase();
-      const uploadEndpoint = base ? `${base}/me/ingest/bulk` : "/api/ingest/bulk";
+      const uploadEndpoint = base ? `${base}/me/ingest/bulk` : "/me/ingest/bulk";
       const form = new FormData();
-      for (let i = 0; i < fileList.length; i++) {
-        form.append("files", fileList[i]);
-      }
+      files.forEach((file) => form.append("files", file));
+
       setUploading(true);
-      setUploadError(null);
-      setUploadMessage(null);
+      setUploadNotice(null);
+      setUploadResults([]);
+
       try {
-        const res = await fetch(uploadEndpoint, {
+        const response = await fetch(uploadEndpoint, {
           method: "POST",
           headers: getAuthHeader(),
           ...getFetchOptions(),
           body: form,
         });
-        const data = await parseJsonResponse(res);
-        const json = data as UploadResponse;
-        if (!res.ok) {
-          console.error("[documents-upload] upload rejected", {
-            endpoint: uploadEndpoint,
-            status: res.status,
-            code: json.code,
-            error: json.error,
-            errors: json.errors,
+        const json = (await parseJsonResponse(response)) as UploadResponse;
+
+        const duplicateIndexSet = new Set(json.duplicateIndices ?? []);
+        const failedByFile = new Map(
+          (json.errors ?? []).map((entry) => [entry.file, entry.error])
+        );
+
+        const results: UploadResultItem[] = files.map((file, index) => {
+          const failedMessage = failedByFile.get(file.name);
+          if (failedMessage) {
+            return { fileName: file.name, status: "failed", detail: failedMessage };
+          }
+          if (duplicateIndexSet.has(index)) {
+            return {
+              fileName: file.name,
+              status: "duplicate",
+              detail: "Matched to an existing document instead of creating a new one.",
+            };
+          }
+          return {
+            fileName: file.name,
+            status: "queued",
+            detail: "Queued for OCR and case routing.",
+          };
+        });
+
+        setUploadResults(results);
+
+        if (!response.ok) {
+          const message = formatUploadError({
+            responseStatus: response.status,
+            responseCode: json.code,
+            responseError: json.error,
           });
-          setUploadError(
-            formatUploadError({
-              responseStatus: res.status,
-              responseCode: json.code,
-              responseError: json.error,
-              endpoint: uploadEndpoint,
-            })
-          );
+          setUploadNotice({ tone: "error", message });
           return;
         }
-        if (json.ok && (json.documentIds?.length ?? 0) > 0) {
-          refresh();
-          const dupCount = json.duplicatesDetected ?? 0;
-          if (dupCount > 0) {
-            setUploadError(null);
-            setUploadMessage(`${dupCount} file(s) were duplicates and linked to existing documents.`);
-          }
-        }
-        if (json.errors && json.errors.length > 0) {
-          setUploadError(json.errors.map((e) => `${e.file}: ${e.error}`).join("; "));
-        }
-      } catch (e) {
-        setUploadError(
-          formatUploadError({
-            thrownError: e,
-            endpoint: uploadEndpoint,
-          })
+
+        const summaryMessage = formatUploadSummary(results);
+        const hasFailures = results.some((item) => item.status === "failed");
+        setUploadNotice({
+          tone: hasFailures ? "warning" : "success",
+          message: summaryMessage || "Files were submitted successfully.",
+        });
+        refresh();
+      } catch (requestError) {
+        const message = formatUploadError({ thrownError: requestError });
+        setUploadNotice({ tone: "error", message });
+        setUploadResults(
+          files.map((file) => ({
+            fileName: file.name,
+            status: "failed",
+            detail: message,
+          }))
         );
       } finally {
         setUploading(false);
@@ -230,68 +253,75 @@ export default function DocumentsPage() {
   );
 
   const onDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
+    (event: React.DragEvent) => {
+      event.preventDefault();
       setDragOver(false);
-      handleFiles(e.dataTransfer.files);
+      handleFiles(event.dataTransfer.files);
     },
     [handleFiles]
   );
 
-  const onDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(true);
-  }, []);
-
-  const onDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-  }, []);
-
-  const columns: Column<Doc>[] = [
-    {
-      key: "name",
-      header: "Document",
-      render: (row) => (
-        <Link href={`/dashboard/documents/${row.id}`} className="onyx-link" style={{ fontWeight: 500 }}>
-          {row.originalName}
-        </Link>
-      ),
-    },
-    { key: "status", header: "Status", render: (row) => (
-        <span style={{ display: "flex", alignItems: "center", gap: "0.35rem", flexWrap: "wrap" }}>
-          <span className="onyx-badge onyx-badge-neutral">{row.status}</span>
-          {row.duplicateOfId && <span className="onyx-badge onyx-badge-warning" style={{ fontSize: "0.7rem" }} title="Duplicate of another document">Dup</span>}
-          {(row.duplicateMatchCount ?? 0) > 0 && <span className="onyx-badge onyx-badge-neutral" style={{ fontSize: "0.7rem" }} title={`${row.duplicateMatchCount} duplicate(s)`}>+{row.duplicateMatchCount}</span>}
-        </span>
-      ) },
-    { key: "pages", header: "Pages", render: (row) => row.pageCount ?? "—" },
-    { key: "case", header: "Case", render: (row) => row.routedCaseId ? <Link href={`/dashboard/cases/${row.routedCaseId}`} className="onyx-link">View</Link> : "—" },
-    { key: "created", header: "Created", render: (row) => new Date(row.createdAt).toLocaleDateString() },
-    {
-      key: "action",
-      header: "",
-      render: (row) => (
-        <span style={{ display: "flex", gap: "0.5rem" }}>
-          <Link href={`/dashboard/documents/${row.id}`} className="onyx-link" style={{ fontSize: "0.875rem" }}>View</Link>
-        </span>
-      ),
-    },
-  ];
+  const columns: Column<Doc>[] = useMemo(
+    () => [
+      {
+        key: "name",
+        header: "Document",
+        render: (row) => (
+          <Link href={`/dashboard/documents/${row.id}`} className="onyx-link" style={{ fontWeight: 500 }}>
+            {row.originalName}
+          </Link>
+        ),
+      },
+      {
+        key: "status",
+        header: "Status",
+        render: (row) => (
+          <span style={{ display: "flex", alignItems: "center", gap: "0.35rem", flexWrap: "wrap" }}>
+            <span className="onyx-badge onyx-badge-neutral">{row.status}</span>
+            {row.duplicateOfId ? (
+              <span className="onyx-badge onyx-badge-warning" style={{ fontSize: "0.7rem" }}>
+                Duplicate
+              </span>
+            ) : null}
+            {(row.duplicateMatchCount ?? 0) > 0 ? (
+              <span className="onyx-badge onyx-badge-neutral" style={{ fontSize: "0.7rem" }}>
+                +{row.duplicateMatchCount}
+              </span>
+            ) : null}
+          </span>
+        ),
+      },
+      { key: "pages", header: "Pages", render: (row) => row.pageCount ?? "—" },
+      {
+        key: "case",
+        header: "Case",
+        render: (row) =>
+          row.routedCaseId ? (
+            <Link href={`/dashboard/cases/${row.routedCaseId}`} className="onyx-link">
+              Open case
+            </Link>
+          ) : (
+            "Needs routing"
+          ),
+      },
+      { key: "created", header: "Created", render: (row) => new Date(row.createdAt).toLocaleDateString() },
+    ],
+    []
+  );
 
   return (
-    <div style={{ padding: "0 1.5rem 1.5rem" }}>
+    <div style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
       <PageHeader
         breadcrumbs={[{ label: "Documents" }]}
         title="Documents"
-        description="Browse and manage case documents"
+        description="Upload, monitor, and route incoming records without losing file-level visibility."
         action={
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
             <select
               value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
+              onChange={(event) => setFilterStatus(event.target.value)}
               className="onyx-input"
-              style={{ minWidth: 140 }}
+              style={{ minWidth: 150 }}
             >
               <option value="">All statuses</option>
               <option value="RECEIVED">Received</option>
@@ -303,7 +333,7 @@ export default function DocumentsPage() {
               type="text"
               placeholder="Search by case or client"
               value={filterCaseId}
-              onChange={(e) => setFilterCaseId(e.target.value)}
+              onChange={(event) => setFilterCaseId(event.target.value)}
               className="onyx-input"
               style={{ minWidth: 180 }}
             />
@@ -315,12 +345,23 @@ export default function DocumentsPage() {
         role="button"
         tabIndex={0}
         onDrop={onDrop}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={(event) => {
+          event.preventDefault();
+          setDragOver(false);
+        }}
         onClick={() => document.getElementById("doc-upload-input")?.click()}
-        onKeyDown={(e) => e.key === "Enter" && document.getElementById("doc-upload-input")?.click()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            document.getElementById("doc-upload-input")?.click();
+          }
+        }}
         style={{
-          marginBottom: "1.5rem",
+          marginBottom: "1rem",
           padding: "2rem 1.5rem",
           border: `2px dashed ${dragOver ? "var(--onyx-accent)" : "var(--onyx-border)"}`,
           borderRadius: "var(--onyx-radius-md)",
@@ -337,53 +378,88 @@ export default function DocumentsPage() {
           multiple
           accept=".pdf,.tif,.tiff,.jpg,.jpeg,image/*,application/pdf"
           style={{ display: "none" }}
-          onChange={(e) => {
-            handleFiles(e.target.files);
-            e.target.value = "";
+          onChange={(event) => {
+            handleFiles(event.target.files);
+            event.target.value = "";
           }}
         />
-        {uploading ? (
-          <p style={{ margin: 0, color: "var(--onyx-text-muted)", fontSize: "0.9375rem" }}>Uploading…</p>
-        ) : (
-          <p style={{ margin: 0, fontSize: "0.9375rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
-            Drag and drop PDFs or images here, or click to select files. New documents will appear in the list below.
-          </p>
-        )}
+        <p style={{ margin: "0 0 0.35rem", fontSize: "1rem", fontWeight: 600 }}>
+          {uploading ? "Uploading documents…" : "Drop files here or click to upload"}
+        </p>
+        <p style={{ margin: 0, fontSize: "0.9rem", color: "var(--onyx-text-muted)", lineHeight: 1.55 }}>
+          Bulk upload posts directly to <code>/me/ingest/bulk</code> and each file result is shown below.
+        </p>
       </div>
 
-      {uploadError && (
-        <div className="onyx-card" style={{ padding: "1rem", marginBottom: "1rem", borderColor: "var(--onyx-error)" }}>
-          <p style={{ margin: 0, color: "var(--onyx-error)", fontSize: "0.875rem" }}>{uploadError}</p>
-        </div>
-      )}
+      {uploadNotice ? (
+        <ErrorNotice
+          tone={uploadNotice.tone}
+          title={uploadNotice.tone === "error" ? "Upload failed" : uploadNotice.tone === "warning" ? "Upload completed with issues" : "Upload submitted"}
+          message={uploadNotice.message}
+          style={{ marginBottom: "1rem" }}
+        />
+      ) : null}
 
-      {uploadMessage && (
-        <div className="onyx-card" style={{ padding: "1rem", marginBottom: "1rem", borderColor: "var(--onyx-success)" }}>
-          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-success)" }}>{uploadMessage}</p>
+      {uploadResults.length > 0 ? (
+        <div className="onyx-card" style={{ padding: "1rem 1.1rem", marginBottom: "1rem" }}>
+          <p style={{ margin: "0 0 0.75rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
+            Latest upload results
+          </p>
+          <div style={{ display: "grid", gap: "0.6rem" }}>
+            {uploadResults.map((item) => (
+              <div
+                key={`${item.fileName}-${item.status}`}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: "1rem",
+                  alignItems: "flex-start",
+                  borderBottom: "1px solid var(--onyx-border-subtle)",
+                  paddingBottom: "0.6rem",
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600, wordBreak: "break-word" }}>{item.fileName}</p>
+                  <p style={{ margin: "0.2rem 0 0", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+                    {item.detail}
+                  </p>
+                </div>
+                <span
+                  className={`onyx-badge ${
+                    item.status === "failed"
+                      ? "onyx-badge-warning"
+                      : item.status === "duplicate"
+                        ? "onyx-badge-neutral"
+                        : "onyx-badge-success"
+                  }`}
+                >
+                  {item.status === "queued" ? "Queued" : item.status === "duplicate" ? "Duplicate" : "Failed"}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
-      )}
+      ) : null}
 
-      {error && (
-        <div className="onyx-card" style={{ padding: "1rem 1.25rem", marginBottom: "1.5rem", borderColor: "var(--onyx-error)" }}>
-          <p style={{ margin: 0, color: "var(--onyx-error)", fontSize: "0.875rem" }}>{error}</p>
-          <button
-            type="button"
-            onClick={() => refresh()}
-            className="onyx-link"
-            style={{ marginTop: "0.5rem", fontSize: "0.875rem", background: "none", border: "none", cursor: "pointer", padding: 0 }}
-          >
-            Try again
-          </button>
-        </div>
-      )}
+      {error ? (
+        <ErrorNotice
+          message={error}
+          action={
+            <button type="button" onClick={refresh} className="onyx-btn-secondary">
+              Try again
+            </button>
+          }
+          style={{ marginBottom: "1rem" }}
+        />
+      ) : null}
 
       {loading ? (
-        <p style={{ color: "var(--onyx-text-muted)", fontSize: "0.875rem" }}>Loading…</p>
+        <p style={{ color: "var(--onyx-text-muted)", fontSize: "0.875rem" }}>Loading documents…</p>
       ) : error ? null : items.length === 0 ? (
         <div className="onyx-card" style={{ padding: "2rem", textAlign: "center" }}>
-          <p style={{ margin: 0, fontSize: "1rem", color: "var(--onyx-text-muted)", marginBottom: "0.5rem" }}>No documents yet</p>
-          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-            Upload PDFs or images above to get started. They will be processed and listed here.
+          <p style={{ margin: "0 0 0.4rem", fontSize: "1rem", fontWeight: 600 }}>No documents yet</p>
+          <p style={{ margin: 0, fontSize: "0.88rem", color: "var(--onyx-text-muted)" }}>
+            Upload PDFs or images above to start the intake pipeline.
           </p>
         </div>
       ) : (

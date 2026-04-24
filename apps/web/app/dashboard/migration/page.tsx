@@ -28,8 +28,11 @@ type CreatedBatchNotice = {
 
 type MigrationQuickFilter =
   | "all"
+  | "processing"
+  | "needs_review"
   | "needs_attention"
   | "ready_for_export"
+  | "exported"
   | "recently_reviewed"
   | "stale_processing";
 type MigrationSortOption =
@@ -148,7 +151,30 @@ function isStaleProcessingBatch(item: MigrationBatchListItem): boolean {
   return item.status === "PROCESSING" && getProcessingAgeMs(item) >= STALE_PROCESSING_THRESHOLD_MS;
 }
 
+function isProcessingBatch(item: MigrationBatchListItem): boolean {
+  return item.status === "PROCESSING";
+}
+
+function isNeedsReviewBatch(item: MigrationBatchListItem): boolean {
+  return item.status === "NEEDS_REVIEW";
+}
+
+function isReadyForExportBatch(item: MigrationBatchListItem): boolean {
+  return item.status === "READY_FOR_EXPORT";
+}
+
+function isExportedBatch(item: MigrationBatchListItem): boolean {
+  return item.status === "EXPORTED";
+}
+
 function getPrimaryBatchAction(item: MigrationBatchListItem): { href: string; label: string } {
+  if (isNeedsReviewBatch(item)) {
+    return {
+      href: getBatchReviewHref(item),
+      label: "Open batch review",
+    };
+  }
+
   if (isStaleProcessingBatch(item)) {
     if (batchNeedsAttention(item)) {
       return {
@@ -162,6 +188,13 @@ function getPrimaryBatchAction(item: MigrationBatchListItem): { href: string; la
     };
   }
 
+  if (isProcessingBatch(item)) {
+    return {
+      href: getBatchDetailHref(item.id),
+      label: "Track processing",
+    };
+  }
+
   if (batchNeedsAttention(item)) {
     return {
       href: getBatchReviewHref(item),
@@ -169,10 +202,17 @@ function getPrimaryBatchAction(item: MigrationBatchListItem): { href: string; la
     };
   }
 
-  if (item.status === "READY_FOR_EXPORT") {
+  if (isReadyForExportBatch(item)) {
     return {
       href: getBatchDetailHref(item.id),
-      label: "Open export-ready batch",
+      label: "Open Clio handoff",
+    };
+  }
+
+  if (isExportedBatch(item)) {
+    return {
+      href: `${getBatchDetailHref(item.id)}#export-history`,
+      label: "View export history",
     };
   }
 
@@ -269,12 +309,12 @@ export default function MigrationBatchesPage() {
       (acc, item) => {
         acc.total += 1;
         acc.documents += item.totalDocuments;
-        if (item.status === "PROCESSING") acc.processing += 1;
-        if (item.status === "NEEDS_REVIEW") acc.needsReviewBatches += 1;
+        if (isProcessingBatch(item)) acc.processing += 1;
+        if (isNeedsReviewBatch(item)) acc.needsReviewBatches += 1;
         if (batchNeedsAttention(item)) acc.needsAttentionBatches += 1;
         acc.unresolvedReviews += getUnresolvedReviewCount(item);
-        if (isMigrationBatchExportReady(item.status)) acc.ready += 1;
-        if (item.status === "EXPORTED") acc.exported += 1;
+        if (isReadyForExportBatch(item)) acc.ready += 1;
+        if (isExportedBatch(item)) acc.exported += 1;
         return acc;
       },
       {
@@ -293,8 +333,11 @@ export default function MigrationBatchesPage() {
   const quickFilterCounts = useMemo(
     () => ({
       all: items.length,
+      processing: items.filter(isProcessingBatch).length,
+      needs_review: items.filter(isNeedsReviewBatch).length,
       needs_attention: items.filter(batchNeedsAttention).length,
-      ready_for_export: items.filter((item) => isMigrationBatchExportReady(item.status)).length,
+      ready_for_export: items.filter(isReadyForExportBatch).length,
+      exported: items.filter(isExportedBatch).length,
       recently_reviewed: items.filter(isRecentlyReviewed).length,
       stale_processing: items.filter(isStaleProcessingBatch).length,
     }),
@@ -303,8 +346,11 @@ export default function MigrationBatchesPage() {
 
   const filteredItems = useMemo(() => {
     const visibleItems = items.filter((item) => {
+      if (quickFilter === "processing") return isProcessingBatch(item);
+      if (quickFilter === "needs_review") return isNeedsReviewBatch(item);
       if (quickFilter === "needs_attention") return batchNeedsAttention(item);
-      if (quickFilter === "ready_for_export") return isMigrationBatchExportReady(item.status);
+      if (quickFilter === "ready_for_export") return isReadyForExportBatch(item);
+      if (quickFilter === "exported") return isExportedBatch(item);
       if (quickFilter === "recently_reviewed") return isRecentlyReviewed(item);
       if (quickFilter === "stale_processing") return isStaleProcessingBatch(item);
       return true;
@@ -543,6 +589,18 @@ export default function MigrationBatchesPage() {
           <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Processing</p>
           <p style={{ margin: 0, fontSize: "1.35rem", fontWeight: 600 }}>{summary.processing}</p>
         </DashboardCard>
+        <DashboardCard>
+          <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Needs review</p>
+          <p style={{ margin: 0, fontSize: "1.35rem", fontWeight: 600 }}>{summary.needsReviewBatches}</p>
+        </DashboardCard>
+        <DashboardCard>
+          <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Ready for export</p>
+          <p style={{ margin: 0, fontSize: "1.35rem", fontWeight: 600, color: "var(--onyx-success)" }}>{summary.ready}</p>
+        </DashboardCard>
+        <DashboardCard>
+          <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Exported</p>
+          <p style={{ margin: 0, fontSize: "1.35rem", fontWeight: 600 }}>{summary.exported}</p>
+        </DashboardCard>
         <DashboardCard
           style={
             quickFilterCounts.stale_processing > 0
@@ -588,16 +646,6 @@ export default function MigrationBatchesPage() {
           <p style={{ margin: 0, fontSize: "1.35rem", fontWeight: 600 }}>{summary.needsAttentionBatches}</p>
           <p style={{ margin: "0.35rem 0 0", fontSize: "0.8rem", color: "var(--onyx-text-muted)" }}>
             {summary.unresolvedReviews} unresolved review doc{summary.unresolvedReviews === 1 ? "" : "s"}
-          </p>
-        </DashboardCard>
-        <DashboardCard>
-          <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Review batches</p>
-          <p style={{ margin: 0, fontSize: "1.35rem", fontWeight: 600 }}>{summary.needsReviewBatches}</p>
-        </DashboardCard>
-        <DashboardCard>
-          <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Ready / exported</p>
-          <p style={{ margin: 0, fontSize: "1.35rem", fontWeight: 600 }}>
-            {summary.ready + summary.exported}
           </p>
         </DashboardCard>
       </div>
@@ -807,6 +855,20 @@ export default function MigrationBatchesPage() {
                     </button>
                     <button
                       type="button"
+                      className={quickFilter === "processing" ? "onyx-btn-primary" : "onyx-btn-secondary"}
+                      onClick={() => setQuickFilter("processing")}
+                    >
+                      Processing ({quickFilterCounts.processing})
+                    </button>
+                    <button
+                      type="button"
+                      className={quickFilter === "needs_review" ? "onyx-btn-primary" : "onyx-btn-secondary"}
+                      onClick={() => setQuickFilter("needs_review")}
+                    >
+                      Needs review ({quickFilterCounts.needs_review})
+                    </button>
+                    <button
+                      type="button"
                       className={quickFilter === "needs_attention" ? "onyx-btn-primary" : "onyx-btn-secondary"}
                       onClick={() => setQuickFilter("needs_attention")}
                     >
@@ -818,6 +880,13 @@ export default function MigrationBatchesPage() {
                       onClick={() => setQuickFilter("ready_for_export")}
                     >
                       Ready for export ({quickFilterCounts.ready_for_export})
+                    </button>
+                    <button
+                      type="button"
+                      className={quickFilter === "exported" ? "onyx-btn-primary" : "onyx-btn-secondary"}
+                      onClick={() => setQuickFilter("exported")}
+                    >
+                      Exported ({quickFilterCounts.exported})
                     </button>
                     <button
                       type="button"

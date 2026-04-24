@@ -1,547 +1,315 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
-import { PageHeader } from "@/components/dashboard/PageHeader";
-import { StatsWidget } from "@/components/dashboard/StatsWidget";
+import {
+  formatApiClientError,
+  getApiBase,
+  getAuthHeader,
+  getFetchOptions,
+  parseJsonResponse,
+} from "@/lib/api";
 import { DashboardCard } from "@/components/dashboard/DashboardCard";
-import { useI18n } from "@/contexts/I18nContext";
+import { ErrorNotice } from "@/components/dashboard/ErrorNotice";
+import { PageHeader } from "@/components/dashboard/PageHeader";
 
 type Summary = {
   docsProcessedThisMonth: number;
   docsProcessedToday?: number;
-  pagesProcessedThisMonth: number;
   unmatchedDocs: number;
   needsReviewDocs: number;
-  recordsRequestsCreatedThisMonth: number;
-  notificationsUnread: number;
 };
 
-type TrendPoint = { day: string; docsProcessed: number; recordsRequests: number };
-
-type CaseItem = { id: string; title: string; caseNumber: string | null; clientName: string | null; createdAt: string };
+type CaseItem = {
+  id: string;
+  title: string | null;
+  caseNumber: string | null;
+  clientName: string | null;
+};
 
 type ActivityItem = {
   id: string;
-  caseId: string | null;
-  documentId: string | null;
-  type: string;
   title: string;
+  type: string;
+  caseId: string | null;
   createdAt: string;
 };
 
-type QueueStatus = {
-  ok: boolean;
-  db?: { queued: number; running: number; failed: number };
-  documentPipelinePending?: number;
+type ExportHistoryItem = {
+  exportId: string;
+  includedCases?: Array<{ caseId: string }>;
 };
 
-type MetricsSummaryResponse = { ok?: boolean; summary?: Summary; trend?: TrendPoint[]; error?: string };
+function formatRelativeTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
 
-function isMetricsSummaryResponse(res: unknown): res is MetricsSummaryResponse {
-  return typeof res === "object" && res !== null;
-}
+  const diffMs = Date.now() - date.getTime();
+  const diffMinutes = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
 
-type CasesListResponse = { ok?: boolean; items?: CaseItem[] };
-
-function isCasesListResponse(res: unknown): res is CasesListResponse {
-  return typeof res === "object" && res !== null;
-}
-
-type ActivityFeedResponse = { ok?: boolean; items?: ActivityItem[] };
-
-function isActivityFeedResponse(res: unknown): res is ActivityFeedResponse {
-  return typeof res === "object" && res !== null;
-}
-
-function isQueueStatusResponse(res: unknown): res is QueueStatus {
-  return typeof res === "object" && res !== null;
-}
-
-function formatRelativeTime(iso: string, t: (k: string) => string): string {
-  try {
-    const d = new Date(iso);
-    const now = new Date();
-    const diffMs = now.getTime() - d.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-    if (diffMins < 1) return t("common.justNow");
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined });
-  } catch {
-    return iso.slice(0, 10);
-  }
+  if (diffMinutes < 1) return "just now";
+  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
 }
 
 export default function DashboardHomePage() {
-  const { t } = useI18n();
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [trend, setTrend] = useState<TrendPoint[]>([]);
   const [cases, setCases] = useState<CaseItem[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
-  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
-  const [needsAttention, setNeedsAttention] = useState<{
-    overdueCaseTasks: { count: number; items: { id: string; title: string; dueDate: string | null; caseId: string | null }[] };
-    recordsRequestsNeedingFollowUp: { count: number; items: { id: string; providerName: string | null; caseId: string | null; status: string; createdAt: string }[] };
-  } | null>(null);
-  const [loadingSummary, setLoadingSummary] = useState(true);
-  const [loadingCases, setLoadingCases] = useState(true);
-  const [loadingActivity, setLoadingActivity] = useState(true);
-  const [loadingQueue, setLoadingQueue] = useState(true);
-  const [loadingNeedsAttention, setLoadingNeedsAttention] = useState(true);
+  const [exportHistory, setExportHistory] = useState<ExportHistoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const base = getApiBase();
     const headers = getAuthHeader();
-    const opts = getFetchOptions();
+    const requestInit = { headers, ...getFetchOptions() };
 
-    fetch(`${base}/me/metrics-summary`, { headers, ...opts })
-      .then(parseJsonResponse)
-      .then((metricsRes: unknown) => {
-        if (isMetricsSummaryResponse(metricsRes)) {
-          if (metricsRes.ok && metricsRes.summary) setSummary(metricsRes.summary);
-          if (metricsRes.ok && Array.isArray(metricsRes.trend)) setTrend(metricsRes.trend);
-          if (!metricsRes.ok && !metricsRes.summary) setError(metricsRes.error ?? "Failed to load metrics");
+    Promise.all([
+      fetch(`${base}/me/metrics-summary`, requestInit).then(parseJsonResponse),
+      fetch(`${base}/cases`, requestInit).then(parseJsonResponse),
+      fetch(`${base}/activity-feed?limit=6`, requestInit).then(parseJsonResponse),
+      fetch(`${base}/cases/exports/clio/history?limit=20`, requestInit).then(parseJsonResponse),
+    ])
+      .then(([summaryRes, casesRes, activityRes, exportRes]) => {
+        const summaryData = summaryRes as { ok?: boolean; summary?: Summary; error?: string };
+        const casesData = casesRes as { ok?: boolean; items?: CaseItem[] };
+        const activityData = activityRes as { ok?: boolean; items?: ActivityItem[] };
+        const exportData = exportRes as { ok?: boolean; items?: ExportHistoryItem[] };
+
+        if (!summaryData.ok || !summaryData.summary) {
+          throw new Error(summaryData.error ?? "We couldn't load the dashboard pipeline.");
         }
-      })
-      .catch(() => setError("Failed to load metrics"))
-      .finally(() => setLoadingSummary(false));
 
-    fetch(`${base}/cases`, { headers, ...opts })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
-        if (isCasesListResponse(res) && res.ok && Array.isArray(res.items)) setCases(res.items);
+        setSummary(summaryData.summary);
+        setCases(Array.isArray(casesData.items) ? casesData.items : []);
+        setActivity(Array.isArray(activityData.items) ? activityData.items : []);
+        setExportHistory(Array.isArray(exportData.items) ? exportData.items : []);
+        setError(null);
       })
-      .catch(() => {})
-      .finally(() => setLoadingCases(false));
-
-    fetch(`${base}/activity-feed?limit=10`, { headers, ...opts })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
-        if (isActivityFeedResponse(res) && res.ok && Array.isArray(res.items)) setActivity(res.items);
+      .catch((requestError) => {
+        setError(
+          formatApiClientError(
+            requestError,
+            "We couldn't load the dashboard pipeline. Please try again.",
+            {
+              deploymentMessage:
+                "The dashboard API returned HTML instead of JSON. Check the active API host, the current deploy version, and whether web is still serving an older build.",
+            }
+          )
+        );
       })
-      .catch(() => {})
-      .finally(() => setLoadingActivity(false));
-
-    fetch(`${base}/me/queue-status`, { headers, ...opts })
-      .then(parseJsonResponse)
-      .then((queueRes: unknown) => {
-        if (isQueueStatusResponse(queueRes) && queueRes.ok) setQueueStatus(queueRes);
-      })
-      .catch(() => {})
-      .finally(() => setLoadingQueue(false));
-
-    fetch(`${base}/me/needs-attention`, { headers, ...opts })
-      .then(parseJsonResponse)
-      .then((res: unknown) => {
-        const r = res as {
-          ok?: boolean;
-          overdueCaseTasks?: { count: number; items: { id: string; title: string; dueDate: string | null; caseId: string | null }[] };
-          recordsRequestsNeedingFollowUp?: { count: number; items: { id: string; providerName: string | null; caseId: string | null; status: string; createdAt: string }[] };
-        };
-        if (r.ok && r.overdueCaseTasks && r.recordsRequestsNeedingFollowUp)
-          setNeedsAttention({ overdueCaseTasks: r.overdueCaseTasks, recordsRequestsNeedingFollowUp: r.recordsRequestsNeedingFollowUp });
-      })
-      .catch(() => {})
-      .finally(() => setLoadingNeedsAttention(false));
+      .finally(() => setLoading(false));
   }, []);
 
-  if (error && !summary) {
-    return (
-      <div className="dashboard-page" style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
-        <PageHeader breadcrumbs={[]} title={t("dashboard.title")} />
-        <div className="onyx-card" style={{ padding: "1rem", borderColor: "var(--onyx-error)" }}>
-          <p style={{ margin: 0, color: "var(--onyx-error)" }}>{error}</p>
-        </div>
-      </div>
-    );
-  }
+  const exportedCaseCount = useMemo(
+    () =>
+      exportHistory.reduce((total, item) => {
+        const includedCount = Array.isArray(item.includedCases) ? item.includedCases.length : 0;
+        return total + (includedCount > 0 ? includedCount : 1);
+      }, 0),
+    [exportHistory]
+  );
 
-  const caseCount = cases.length;
-  const pendingCount =
-    (queueStatus?.documentPipelinePending ?? 0) + (queueStatus?.db?.queued ?? 0) + (queueStatus?.db?.running ?? 0);
-  const hasData = caseCount > 0 || (summary && (summary.docsProcessedThisMonth > 0 || summary.recordsRequestsCreatedThisMonth > 0));
-  const anyLoading = loadingSummary || loadingCases || loadingActivity || loadingQueue || loadingNeedsAttention;
-  const docsToday = summary?.docsProcessedToday ?? summary?.docsProcessedThisMonth ?? 0;
-  const overdueTotal = (needsAttention?.overdueCaseTasks?.count ?? 0) + (needsAttention?.recordsRequestsNeedingFollowUp?.count ?? 0);
+  const pipeline = [
+    {
+      label: "Documents",
+      href: "/dashboard/documents",
+      value: summary?.docsProcessedThisMonth ?? 0,
+      detail: `${summary?.docsProcessedToday ?? 0} processed today`,
+      footnote: `${summary?.unmatchedDocs ?? 0} unmatched still need routing review`,
+    },
+    {
+      label: "Review",
+      href: "/dashboard/review",
+      value: summary?.needsReviewDocs ?? 0,
+      detail: "documents waiting for operator review",
+      footnote: (summary?.needsReviewDocs ?? 0) > 0 ? "Open the review queue next." : "Review queue is currently clear.",
+    },
+    {
+      label: "Cases",
+      href: "/dashboard/cases",
+      value: cases.length,
+      detail: "active visible cases",
+      footnote: cases.length > 0 ? "Case workspace is ready for chronology and exports." : "No active cases are visible yet.",
+    },
+    {
+      label: "Exports",
+      href: "/dashboard/exports",
+      value: exportedCaseCount,
+      detail: "recorded handoff cases in recent history",
+      footnote: `${exportHistory.length} recent export operation${exportHistory.length === 1 ? "" : "s"} tracked`,
+    },
+  ];
 
   return (
-    <div className="dashboard-page" style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
+    <div style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
       <PageHeader
         breadcrumbs={[]}
-        title={t("dashboard.title")}
-        description={t("dashboard.description")}
+        title="Operations pipeline"
+        description="Track intake, review, case work, and export progress from one honest operator view."
       />
 
-      <DashboardCard style={{ marginBottom: "1.25rem", padding: "1.1rem 1.25rem" }}>
+      {error ? (
+        <ErrorNotice
+          message={error}
+          action={
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="onyx-btn-secondary"
+            >
+              Reload dashboard
+            </button>
+          }
+          style={{ marginBottom: "1rem" }}
+        />
+      ) : null}
+
+      <DashboardCard title="Documents → Review → Cases → Exports" style={{ marginBottom: "1.25rem" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "1rem" }}>
-          <div>
-            <p style={{ margin: "0 0 0.35rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
-              Operational snapshot
-            </p>
-            <p style={{ margin: 0, fontSize: "1.05rem", fontWeight: 600 }}>
-              {caseCount} active case{caseCount === 1 ? "" : "s"} with {summary?.needsReviewDocs ?? 0} document{(summary?.needsReviewDocs ?? 0) === 1 ? "" : "s"} waiting for review.
-            </p>
-          </div>
-          <div>
-            <p style={{ margin: "0 0 0.35rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
-              Intake and routing
-            </p>
-            <p style={{ margin: 0, fontSize: "0.92rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
-              {docsToday} document{docsToday === 1 ? "" : "s"} processed in the active period, with {summary?.unmatchedDocs ?? 0} unmatched item{(summary?.unmatchedDocs ?? 0) === 1 ? "" : "s"} still needing staff attention.
-            </p>
-          </div>
-          <div>
-            <p style={{ margin: "0 0 0.35rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
-              Follow-up work
-            </p>
-            <p style={{ margin: 0, fontSize: "0.92rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
-              {overdueTotal === 0
-                ? "No overdue records requests or follow-up tasks are blocking the staff queue right now."
-                : `${overdueTotal} follow-up item${overdueTotal === 1 ? "" : "s"} need attention across records requests and case tasks.`}
-            </p>
-          </div>
+          {pipeline.map((step, index) => (
+            <Link
+              key={step.label}
+              href={step.href}
+              className="onyx-link"
+              style={{
+                textDecoration: "none",
+                border: "1px solid var(--onyx-border-subtle)",
+                borderRadius: "var(--onyx-radius-md)",
+                padding: "1rem",
+                background: "var(--onyx-background-surface)",
+                display: "grid",
+                gap: "0.45rem",
+              }}
+            >
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: "0.72rem",
+                  fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--onyx-text-muted)",
+                }}
+              >
+                Step {index + 1}
+              </p>
+              <div style={{ display: "flex", alignItems: "baseline", gap: "0.55rem" }}>
+                <span style={{ fontSize: "1.6rem", fontWeight: 700, color: "var(--onyx-text)" }}>
+                  {loading ? "…" : step.value}
+                </span>
+                <span style={{ fontSize: "1rem", fontWeight: 600, color: "var(--onyx-text)" }}>{step.label}</span>
+              </div>
+              <p style={{ margin: 0, fontSize: "0.88rem", color: "var(--onyx-text-secondary)", lineHeight: 1.5 }}>
+                {step.detail}
+              </p>
+              <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--onyx-text-muted)", lineHeight: 1.45 }}>
+                {step.footnote}
+              </p>
+            </Link>
+          ))}
         </div>
       </DashboardCard>
 
-      <p style={{ margin: "0 0 0.75rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
-        Operational overview
-      </p>
-
-      {/* Top summary cards — case-centric */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
-          gap: "1rem",
-          marginBottom: "1.5rem",
-        }}
-      >
-        <Link href="/dashboard/cases" className="onyx-link" style={{ textDecoration: "none" }}>
-          <StatsWidget
-            label={t("nav.cases")}
-            value={loadingCases ? "" : caseCount}
-            subtext={loadingCases ? undefined : t("dashboard.activeCases")}
-            skeleton={loadingCases}
-          />
-        </Link>
-        <Link href="/dashboard/documents" className="onyx-link" style={{ textDecoration: "none" }}>
-          <StatsWidget
-            label={t("dashboard.documentsToday")}
-            value={loadingSummary ? "" : (typeof summary?.docsProcessedToday === "number" ? summary.docsProcessedToday : summary?.docsProcessedThisMonth ?? 0)}
-            subtext={loadingSummary ? undefined : (typeof summary?.docsProcessedToday === "number" ? t("dashboard.today") : t("dashboard.thisMonth"))}
-            skeleton={loadingSummary}
-          />
-        </Link>
-        <Link href="/dashboard/review" className="onyx-link" style={{ textDecoration: "none" }}>
-          <StatsWidget
-            label={t("dashboard.needsReview")}
-            value={loadingSummary ? "" : (summary?.needsReviewDocs ?? 0)}
-            subtext={loadingSummary ? undefined : t("dashboard.documents")}
-            skeleton={loadingSummary}
-          />
-        </Link>
-        <Link href="/dashboard/cases" className="onyx-link" style={{ textDecoration: "none" }}>
-          <StatsWidget
-            label={t("dashboard.missingRecords")}
-            value={loadingSummary ? "" : (summary?.unmatchedDocs ?? 0)}
-            subtext={t("dashboard.unmatchedDocs")}
-            skeleton={loadingSummary}
-          />
-        </Link>
-        <Link href="/dashboard/chronologies" className="onyx-link" style={{ textDecoration: "none" }}>
-          <StatsWidget
-            label={t("dashboard.chronologiesInProgress")}
-            value={loadingCases ? "" : caseCount}
-            subtext={loadingCases ? undefined : t("dashboard.activeCases")}
-            skeleton={loadingCases}
-          />
-        </Link>
-        <Link href="/dashboard/demands" className="onyx-link" style={{ textDecoration: "none" }}>
-          <StatsWidget
-            label={t("dashboard.demandsInProgress")}
-            value={loadingCases ? "" : caseCount}
-            subtext={loadingCases ? undefined : t("dashboard.activeCases")}
-            skeleton={loadingCases}
-          />
-        </Link>
-      </div>
-
-      <p style={{ margin: "0 0 0.75rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
-        Quick actions
-      </p>
-
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", marginBottom: "1.5rem" }}>
-        <Link href="/dashboard/documents" style={{ textDecoration: "none" }}>
-          <button type="button" className="onyx-btn-primary" style={{ padding: "0.5rem 1rem" }}>
-            {t("dashboard.uploadDocuments")}
-          </button>
-        </Link>
-        <Link href="/dashboard/review" style={{ textDecoration: "none" }}>
-          <button type="button" className="onyx-btn-secondary">
-            {t("dashboard.reviewQueue")}
-          </button>
-        </Link>
-        <Link href="/dashboard/records-requests/new" style={{ textDecoration: "none" }}>
-          <button type="button" className="onyx-btn-secondary">
-            {t("dashboard.newRecordsRequest")}
-          </button>
-        </Link>
-        <Link href="/dashboard/cases" style={{ textDecoration: "none" }}>
-          <button type="button" className="onyx-btn-secondary">
-            {t("dashboard.viewAllCases")}
-          </button>
-        </Link>
-      </div>
-
-      <p style={{ margin: "0 0 0.75rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
-        Queues and follow-up
-      </p>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
-          gap: "1.25rem",
-        }}
-      >
-        <DashboardCard title={t("dashboard.reviewQueue")}>
-          {loadingSummary ? (
-            <div className="onyx-skeleton" style={{ width: "100%", height: 40 }} />
-          ) : (
-            <>
-              <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600, color: "var(--onyx-text)" }}>
-                {summary?.needsReviewDocs ?? 0}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
+        <DashboardCard title="What needs attention next">
+          <div style={{ display: "grid", gap: "0.75rem" }}>
+            <div>
+              <p style={{ margin: "0 0 0.2rem", fontSize: "0.8rem", fontWeight: 700, color: "var(--onyx-text)" }}>
+                Intake routing
               </p>
-              <p style={{ margin: "0.25rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-                documents need review
+              <p style={{ margin: 0, fontSize: "0.88rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
+                {(summary?.unmatchedDocs ?? 0) === 0
+                  ? "No unmatched documents are waiting right now."
+                  : `${summary?.unmatchedDocs ?? 0} document${summary?.unmatchedDocs === 1 ? "" : "s"} still need safe case routing.`}
               </p>
-              <Link href="/dashboard/review" className="onyx-link" style={{ display: "inline-block", marginTop: "0.75rem", fontSize: "0.875rem" }}>
-                Open review queue →
+            </div>
+            <div>
+              <p style={{ margin: "0 0 0.2rem", fontSize: "0.8rem", fontWeight: 700, color: "var(--onyx-text)" }}>
+                Review queue
+              </p>
+              <p style={{ margin: 0, fontSize: "0.88rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
+                {(summary?.needsReviewDocs ?? 0) === 0
+                  ? "No documents are blocked in review."
+                  : `${summary?.needsReviewDocs ?? 0} document${summary?.needsReviewDocs === 1 ? "" : "s"} are waiting on operator review before case work can continue.`}
+              </p>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+              <Link href="/dashboard/documents" style={{ textDecoration: "none" }}>
+                <button type="button" className="onyx-btn-primary">Open documents</button>
               </Link>
-            </>
-          )}
-        </DashboardCard>
-
-        <DashboardCard title={t("dashboard.recentlyUpdatedCases")}>
-          {loadingCases ? (
-            <div className="onyx-skeleton" style={{ width: "100%", height: 60 }} />
-          ) : cases.length === 0 ? (
-            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>{t("dashboard.noRecentActivity")}</p>
-          ) : (
-            <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: "0.875rem" }}>
-              {cases.slice(0, 4).map((c) => (
-                <li key={c.id} style={{ padding: "0.35rem 0", borderBottom: "1px solid var(--onyx-border-subtle)" }}>
-                  <Link href={`/dashboard/cases/${c.id}`} className="onyx-link">
-                    {c.clientName || c.title || c.caseNumber || "Case"}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-          <Link href="/dashboard/cases" className="onyx-link" style={{ display: "inline-block", marginTop: "0.5rem", fontSize: "0.8125rem" }}>
-            View all cases →
-          </Link>
-        </DashboardCard>
-
-        <DashboardCard title={t("dashboard.missingDocAlerts")}>
-          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-            {t("dashboard.noMissingAlerts")}
-          </p>
-        </DashboardCard>
-
-        <DashboardCard title={t("dashboard.aiExceptions")}>
-          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-            {t("dashboard.noAIExceptions")}
-          </p>
-        </DashboardCard>
-
-        <DashboardCard title={t("dashboard.overdueRecordsRequests")}>
-          {loadingNeedsAttention ? (
-            <div className="onyx-skeleton" style={{ width: "100%", height: 40 }} />
-          ) : overdueTotal === 0 ? (
-            <>
-              <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-                {t("dashboard.noOverdue")}
-              </p>
-              <Link href="/dashboard/records-requests" className="onyx-link" style={{ display: "inline-block", marginTop: "0.5rem", fontSize: "0.8125rem" }}>
-                Records requests →
+              <Link href="/dashboard/review" style={{ textDecoration: "none" }}>
+                <button type="button" className="onyx-btn-secondary">Open review</button>
               </Link>
-            </>
-          ) : (
-            <>
-              <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600, color: "var(--onyx-text)" }}>
-                {overdueTotal} need attention
-              </p>
-              <p style={{ margin: "0.25rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-                {needsAttention?.overdueCaseTasks?.count ?? 0} overdue task(s), {needsAttention?.recordsRequestsNeedingFollowUp?.count ?? 0} records request(s) needing follow-up
-              </p>
-              <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1.25rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-                {needsAttention?.overdueCaseTasks?.items?.slice(0, 2).map((t) => (
-                  <li key={t.id}>
-                    {t.caseId ? <Link href={`/dashboard/cases/${t.caseId}`} className="onyx-link">{t.title || "Task"}</Link> : t.title || "Task"}
-                  </li>
-                ))}
-                {needsAttention?.recordsRequestsNeedingFollowUp?.items?.slice(0, 2).map((r) => (
-                  <li key={r.id}>
-                    <Link href={`/dashboard/records-requests/${r.id}`} className="onyx-link">{r.providerName || "Records request"}</Link>
-                  </li>
-                ))}
-              </ul>
-              <Link href="/dashboard/records-requests" className="onyx-link" style={{ display: "inline-block", marginTop: "0.5rem", fontSize: "0.8125rem" }}>
-                Records requests →
-              </Link>
-            </>
-          )}
+            </div>
+          </div>
         </DashboardCard>
 
-        <DashboardCard title={t("dashboard.teamWorkload")}>
-          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-            {t("dashboard.teamWorkloadDescription")}
-          </p>
-          <Link href="/dashboard/team" className="onyx-link" style={{ display: "inline-block", marginTop: "0.5rem", fontSize: "0.8125rem" }}>
-            View team →
-          </Link>
-        </DashboardCard>
-      </div>
-
-      <p style={{ margin: "1.5rem 0 0.75rem", fontSize: "0.78rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--onyx-text-muted)" }}>
-        Recent work
-      </p>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
-          gap: "1.25rem",
-          maxWidth: 960,
-          marginTop: "1.5rem",
-        }}
-      >
-        <DashboardCard title={t("dashboard.recentActivity")}>
-          {loadingActivity ? (
-            <>
-              <div className="onyx-skeleton" style={{ width: "100%", height: 12, marginBottom: 10 }} />
-              <div className="onyx-skeleton" style={{ width: "90%", height: 12, marginBottom: 10 }} />
-              <div className="onyx-skeleton" style={{ width: "70%", height: 12 }} />
-            </>
+        <DashboardCard title="Recent operator activity">
+          {loading ? (
+            <p style={{ margin: 0, color: "var(--onyx-text-muted)" }}>Loading activity…</p>
           ) : activity.length === 0 ? (
-            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
-              {t("dashboard.noRecentActivity")}
+            <p style={{ margin: 0, color: "var(--onyx-text-muted)" }}>
+              No recent operator activity has been recorded yet.
             </p>
           ) : (
-            <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: "0.875rem" }}>
-              {activity.map((a, index) => (
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.8rem" }}>
+              {activity.map((item) => (
                 <li
-                  key={a.id}
+                  key={item.id}
                   style={{
-                    padding: "0.5rem 0",
-                    borderBottom: index < activity.length - 1 ? "1px solid var(--onyx-border-subtle)" : "none",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "0.2rem",
+                    paddingBottom: "0.8rem",
+                    borderBottom: "1px solid var(--onyx-border-subtle)",
                   }}
                 >
-                  <span style={{ color: "var(--onyx-text-muted)", fontSize: "0.75rem" }}>
-                    {formatRelativeTime(a.createdAt, t)} · {a.type}
-                  </span>
-                  {a.caseId ? (
-                    <Link href={`/dashboard/cases/${a.caseId}`} className="onyx-link">
-                      {a.title || t("nav.cases")}
-                    </Link>
-                  ) : a.documentId ? (
-                    <Link href={`/dashboard/documents/${a.documentId}`} className="onyx-link">
-                      {a.title || t("nav.documents")}
-                    </Link>
-                  ) : (
-                    <span style={{ color: "var(--onyx-text)" }}>{a.title}</span>
-                  )}
+                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{item.title || item.type}</p>
+                  <p style={{ margin: "0.2rem 0 0", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+                    {formatRelativeTime(item.createdAt)}
+                    {item.caseId ? (
+                      <>
+                        {" • "}
+                        <Link href={`/dashboard/cases/${item.caseId}`} className="onyx-link">
+                          Open case
+                        </Link>
+                      </>
+                    ) : null}
+                  </p>
                 </li>
               ))}
             </ul>
           )}
         </DashboardCard>
 
-        <DashboardCard title={t("dashboard.trendsAndInsights")}>
-          {loadingSummary ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-              <div className="onyx-skeleton" style={{ width: 120, height: 12, marginBottom: 8 }} />
-              <div style={{ display: "flex", alignItems: "flex-end", gap: "2px", height: 80 }}>
-                {Array.from({ length: 14 }).map((_, i) => (
-                  <div key={i} className="onyx-skeleton" style={{ flex: 1, minWidth: 4, height: `${20 + (i % 5) * 15}%` }} />
-                ))}
-              </div>
-            </div>
-          ) : trend.length === 0 ? (
-            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
-              {t("dashboard.trendEmpty")}
+        <DashboardCard title="Export status">
+          <div style={{ display: "grid", gap: "0.75rem" }}>
+            <p style={{ margin: 0, fontSize: "0.88rem", color: "var(--onyx-text-muted)", lineHeight: 1.55 }}>
+              Exports are tracked from recent Clio handoff history so the pipeline reflects real recorded work instead of placeholder counters.
             </p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-              <p style={{ margin: "0 0 0.5rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>
-                {t("dashboard.last30Days")} · {t("dashboard.docsProcessed")}
-              </p>
-              <div style={{ display: "flex", alignItems: "flex-end", gap: "2px", height: 80 }}>
-                {(() => {
-                  const slice = trend.slice(-14);
-                  const max = Math.max(1, ...slice.map((x) => x.docsProcessed));
-                  return slice.map((tp) => {
-                    const h = (tp.docsProcessed / max) * 100;
-                    return (
-                      <div
-                        key={tp.day}
-                        title={`${tp.day}: ${tp.docsProcessed}`}
-                        style={{
-                          flex: 1,
-                          minWidth: 4,
-                          height: `${Math.max(4, h)}%`,
-                          backgroundColor: "var(--onyx-accent)",
-                          borderRadius: "var(--onyx-radius-sm)",
-                          opacity: 0.9,
-                        }}
-                      />
-                    );
-                  });
-                })()}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.75rem" }}>
+              <div className="onyx-card" style={{ padding: "0.9rem 1rem" }}>
+                <p style={{ margin: "0 0 0.2rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>
+                  Recent handoffs
+                </p>
+                <p style={{ margin: 0, fontSize: "1.3rem", fontWeight: 700 }}>{loading ? "…" : exportHistory.length}</p>
               </div>
-              <p style={{ margin: "0.5rem 0 0", fontSize: "0.75rem", color: "var(--onyx-text-muted-soft)" }}>
-                {t("dashboard.docsProcessed")}
-              </p>
+              <div className="onyx-card" style={{ padding: "0.9rem 1rem" }}>
+                <p style={{ margin: "0 0 0.2rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>
+                  Cases included
+                </p>
+                <p style={{ margin: 0, fontSize: "1.3rem", fontWeight: 700 }}>{loading ? "…" : exportedCaseCount}</p>
+              </div>
             </div>
-          )}
-        </DashboardCard>
-      </div>
-
-      {/* Empty state when no data at all */}
-      {!hasData && !anyLoading && (
-        <DashboardCard
-          style={{
-            marginTop: "1.5rem",
-            maxWidth: 480,
-            textAlign: "center",
-            padding: "2rem 1.5rem",
-          }}
-        >
-          <h3 style={{ margin: "0 0 0.5rem", fontSize: "1.125rem", fontWeight: 600, color: "var(--onyx-text)" }}>
-            {t("dashboard.emptyStateTitle")}
-          </h3>
-          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
-            {t("dashboard.emptyStateDescription")}
-          </p>
-          <div style={{ marginTop: "1.25rem" }}>
-            <Link href="/dashboard/documents" style={{ textDecoration: "none" }}>
-              <button type="button" className="onyx-btn-primary">
-                {t("dashboard.uploadDocuments")}
-              </button>
+            <Link href="/dashboard/exports" className="onyx-link">
+              Open exports lane →
             </Link>
           </div>
         </DashboardCard>
-      )}
+      </div>
     </div>
   );
 }

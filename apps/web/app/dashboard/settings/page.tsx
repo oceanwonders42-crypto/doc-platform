@@ -3,48 +3,61 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DashboardCard } from "@/components/dashboard/DashboardCard";
+import { settingsNavSections } from "./settingsNav";
 
 export default function SettingsPage() {
   return (
-    <div style={{ padding: "0 1.5rem 1.5rem" }}>
+    <div style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
       <PageHeader
         breadcrumbs={[{ label: "Settings" }]}
         title="Settings"
-        description="Account controls, Clio connection, and firm preferences."
+        description="Keep firm profile, team controls, billing, Clio, and API access organized in one scannable workspace."
       />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "1rem" }}>
-        <DashboardCard title="Account">
-          <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-            You are signed in. Your firm administrator manages account access and API credentials.
-          </p>
-          <Link href="/dashboard/support/report" className="onyx-link">
-            Contact support
-          </Link>
-        </DashboardCard>
 
-        <DashboardCard title="Connect to Clio">
-          <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-            Manage the firm’s Clio connection, intake sources, and sync health from one place.
-          </p>
-          <Link href="/dashboard/integrations" className="onyx-link">
-            Open Clio connection
-          </Link>
-        </DashboardCard>
-
-        <DashboardCard title="Billing">
-          <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-            Review your firm plan, subscription status, and billing contact inside Settings.
-          </p>
-          <Link href="/dashboard/settings/billing" className="onyx-link">
-            Open billing
-          </Link>
-        </DashboardCard>
-
-        <DashboardCard title="Appearance">
-          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-            Theme and language can be changed from the controls in the top bar. Your firm administrator manages other display and account settings.
-          </p>
-        </DashboardCard>
+      <div style={{ display: "grid", gap: "1rem" }}>
+        {settingsNavSections.map((section) => (
+          <section key={section.title}>
+            <div style={{ marginBottom: "0.75rem" }}>
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: "0.75rem",
+                  fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--onyx-text-muted)",
+                }}
+              >
+                {section.title}
+              </p>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+                gap: "1rem",
+              }}
+            >
+              {section.items.map((item) => (
+                <DashboardCard key={item.href} title={item.label}>
+                  <p
+                    style={{
+                      margin: "0 0 0.9rem",
+                      fontSize: "0.875rem",
+                      color: "var(--onyx-text-muted)",
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {item.description}
+                  </p>
+                  <Link href={item.href} className="onyx-link">
+                    Open {item.label}
+                  </Link>
+                </DashboardCard>
+              ))}
+            </div>
+          </section>
+        ))}
       </div>
     </div>
   );

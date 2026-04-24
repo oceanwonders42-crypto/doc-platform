@@ -682,6 +682,8 @@ export default function MigrationBatchDetailPage() {
   const canDownloadPackage = detail.handoffReadiness.canDownloadPackage;
   const exportReadyCaseCount = detail.exportSummary.exportReadyCaseIds.length;
   const activeActionLocked = downloading !== null || finalizing || historyDownloadId !== null;
+  const showFreshHandoffExports = detail.batch.status === "READY_FOR_EXPORT";
+  const availableArchiveCount = detail.handoffHistory.filter((item) => item.archiveAvailable).length;
 
   return (
     <div style={{ padding: "0 var(--onyx-content-padding) var(--onyx-content-padding)" }}>
@@ -864,8 +866,20 @@ export default function MigrationBatchDetailPage() {
             }}
           >
             <span className={handoffReadinessMeta.className}>{handoffReadinessMeta.label}</span>
-            <span className={canDownloadPackage ? "onyx-badge onyx-badge-success" : "onyx-badge onyx-badge-warning"}>
-              {canDownloadPackage ? "Package download available" : "Package download blocked"}
+            <span
+              className={
+                showFreshHandoffExports && canDownloadPackage
+                  ? "onyx-badge onyx-badge-success"
+                  : detail.handoffHistory.length > 0
+                    ? "onyx-badge onyx-badge-neutral"
+                    : "onyx-badge onyx-badge-warning"
+              }
+            >
+              {showFreshHandoffExports && canDownloadPackage
+                ? "Fresh handoff package available"
+                : detail.handoffHistory.length > 0
+                  ? "Use export history downloads"
+                  : "Fresh handoff package blocked"}
             </span>
             <span style={{ color: "var(--onyx-text-muted)", fontSize: "0.875rem" }}>
               Routed cases: {detail.exportSummary.routedCaseIds.length}
@@ -992,80 +1006,98 @@ export default function MigrationBatchDetailPage() {
             </div>
           )}
 
-          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-            <button
-              type="button"
-              className="onyx-btn-primary"
-              disabled={!canDownloadPackage || activeActionLocked}
-              onClick={handleRecordHandoff}
-            >
-              {downloading === "handoff"
-                ? "Preparing package..."
-                : detail.handoffHistory.length > 0
-                  ? "Download latest Clio handoff package"
-                  : "Download final Clio handoff package"}
-            </button>
-            <button
-              type="button"
-              className="onyx-btn-secondary"
-              disabled={!readyForExport || activeActionLocked}
-              onClick={() => handleCsvDownload("contacts")}
-            >
-              {downloading === "contacts" ? "Preparing..." : "Download Clio contacts CSV"}
-            </button>
-            <button
-              type="button"
-              className="onyx-btn-secondary"
-              disabled={!readyForExport || activeActionLocked}
-              onClick={() => handleCsvDownload("matters")}
-            >
-              {downloading === "matters" ? "Preparing..." : "Download Clio matters CSV"}
-            </button>
-          </div>
+          {showFreshHandoffExports ? (
+            <>
+              <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="onyx-btn-primary"
+                  disabled={!canDownloadPackage || activeActionLocked}
+                  onClick={handleRecordHandoff}
+                >
+                  {downloading === "handoff" ? "Preparing package..." : "Download final Clio handoff package"}
+                </button>
+                <button
+                  type="button"
+                  className="onyx-btn-secondary"
+                  disabled={!readyForExport || activeActionLocked}
+                  onClick={() => handleCsvDownload("contacts")}
+                >
+                  {downloading === "contacts" ? "Preparing..." : "Download Clio contacts CSV"}
+                </button>
+                <button
+                  type="button"
+                  className="onyx-btn-secondary"
+                  disabled={!readyForExport || activeActionLocked}
+                  onClick={() => handleCsvDownload("matters")}
+                >
+                  {downloading === "matters" ? "Preparing..." : "Download Clio matters CSV"}
+                </button>
+              </div>
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-              gap: "0.75rem",
-              alignItems: "end",
-            }}
-          >
-            <label
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                  gap: "0.75rem",
+                  alignItems: "end",
+                }}
+              >
+                <label
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "0.5rem",
+                    fontSize: "0.875rem",
+                    color: "var(--onyx-text-muted)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={allowReexport}
+                    onChange={(event) => setAllowReexport(event.target.checked)}
+                    style={{ accentColor: "var(--onyx-accent)" }}
+                  />
+                  Allow re-export override
+                </label>
+                <div>
+                  <label
+                    htmlFor="migration-reexport-reason"
+                    style={{ display: "block", marginBottom: "0.35rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}
+                  >
+                    Re-export reason
+                  </label>
+                  <input
+                    id="migration-reexport-reason"
+                    type="text"
+                    className="onyx-input"
+                    value={reexportReason}
+                    disabled={!allowReexport}
+                    onChange={(event) => setReexportReason(event.target.value)}
+                    style={{ width: "100%" }}
+                  />
+                </div>
+              </div>
+            </>
+          ) : (
+            <div
               style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "0.5rem",
-                fontSize: "0.875rem",
-                color: "var(--onyx-text-muted)",
+                display: "grid",
+                gap: "0.35rem",
+                padding: "0.85rem 1rem",
+                borderRadius: "var(--onyx-radius-md)",
+                border: "1px solid var(--onyx-border-subtle)",
+                background: "var(--onyx-surface-subtle)",
               }}
             >
-              <input
-                type="checkbox"
-                checked={allowReexport}
-                onChange={(event) => setAllowReexport(event.target.checked)}
-                style={{ accentColor: "var(--onyx-accent)" }}
-              />
-              Allow re-export override
-            </label>
-            <div>
-              <label
-                htmlFor="migration-reexport-reason"
-                style={{ display: "block", marginBottom: "0.35rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}
-              >
-                Re-export reason
-              </label>
-              <input
-                id="migration-reexport-reason"
-                type="text"
-                className="onyx-input"
-                value={reexportReason}
-                disabled={!allowReexport}
-                onChange={(event) => setReexportReason(event.target.value)}
-                style={{ width: "100%" }}
-              />
+              <strong style={{ fontSize: "0.9rem" }}>Fresh Clio handoff closed</strong>
+              <p style={{ margin: 0, color: "var(--onyx-text-muted)", fontSize: "0.875rem" }}>
+                {detail.batch.status === "EXPORTED"
+                  ? "This batch already has recorded Clio handoffs. Use Export History below to download the exact archive from each prior handoff."
+                  : "A fresh Clio handoff package only appears once this batch reaches READY_FOR_EXPORT."}
+              </p>
             </div>
-          </div>
+          )}
         </div>
       </DashboardCard>
 
@@ -1213,7 +1245,31 @@ export default function MigrationBatchDetailPage() {
         </DashboardCard>
       )}
 
-      <DashboardCard title="Handoff history">
+      <DashboardCard title="Export history" style={{ marginBottom: "1rem" }}>
+        <div id="export-history" style={{ display: "grid", gap: "1rem" }}>
+          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+            Every recorded Clio handoff stays listed here with its timestamp, archive availability, and included versus skipped case counts.
+          </p>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              gap: "0.75rem",
+            }}
+          >
+            <div className="onyx-card" style={{ padding: "0.85rem 1rem" }}>
+              <p style={{ margin: "0 0 0.3rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Recorded handoffs</p>
+              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{detail.handoffHistory.length}</p>
+            </div>
+            <div className="onyx-card" style={{ padding: "0.85rem 1rem" }}>
+              <p style={{ margin: "0 0 0.3rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Last export</p>
+              <p style={{ margin: 0, fontSize: "0.95rem", fontWeight: 600 }}>{formatDateTime(detail.batch.lastExportedAt)}</p>
+            </div>
+            <div className="onyx-card" style={{ padding: "0.85rem 1rem" }}>
+              <p style={{ margin: "0 0 0.3rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Downloadable archives</p>
+              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{availableArchiveCount}</p>
+            </div>
+          </div>
         {detail.handoffHistory.length === 0 ? (
           <p style={{ margin: 0, color: "var(--onyx-text-muted)" }}>
             No Clio handoff has been recorded for this migration batch yet.
@@ -1222,21 +1278,24 @@ export default function MigrationBatchDetailPage() {
           <div style={{ display: "grid", gap: "0.85rem" }}>
             {detail.handoffHistory.map((item) => (
               <div
-                key={item.exportId}
-                style={{
-                  border: "1px solid var(--onyx-border-subtle)",
-                  borderRadius: "var(--onyx-radius-md)",
-                  padding: "1rem",
+                    key={item.exportId}
+                    style={{
+                      border: "1px solid var(--onyx-border-subtle)",
+                      borderRadius: "var(--onyx-radius-md)",
+                      padding: "1rem",
                 }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
-                  <div style={{ display: "grid", gap: "0.25rem" }}>
-                    <strong>{item.archiveFileName ?? "Clio handoff ZIP"}</strong>
-                    <span style={{ fontSize: "0.85rem", color: "var(--onyx-text-muted)" }}>
-                      {formatDateTime(item.exportedAt)}
-                      {item.actorLabel ? ` by ${item.actorLabel}` : ""}
-                    </span>
-                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
+                    <div style={{ display: "grid", gap: "0.25rem" }}>
+                      <strong>{item.archiveFileName ?? "Clio handoff ZIP"}</strong>
+                      <span className={item.archiveAvailable ? "onyx-badge onyx-badge-success" : "onyx-badge onyx-badge-neutral"} style={{ width: "fit-content" }}>
+                        {item.archiveAvailable ? "Archive available" : "Archive unavailable"}
+                      </span>
+                      <span style={{ fontSize: "0.85rem", color: "var(--onyx-text-muted)" }}>
+                        Exported {formatDateTime(item.exportedAt)}
+                        {item.actorLabel ? ` by ${item.actorLabel}` : ""}
+                      </span>
+                    </div>
                   <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
                     <span className="onyx-badge onyx-badge-success">
                       Included {item.includedCaseCount}
@@ -1267,6 +1326,7 @@ export default function MigrationBatchDetailPage() {
             ))}
           </div>
         )}
+        </div>
       </DashboardCard>
     </div>
   );

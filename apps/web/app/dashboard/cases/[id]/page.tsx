@@ -6,6 +6,7 @@ import Link from "next/link";
 import { getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DashboardCard } from "@/components/dashboard/DashboardCard";
+import { ErrorNotice } from "@/components/dashboard/ErrorNotice";
 import { Timeline, TimelineItem } from "@/components/dashboard/Timeline";
 import { DocumentPreview } from "@/components/dashboard/DocumentPreview";
 
@@ -27,8 +28,6 @@ type CaseItem = {
   caseNumber: string | null;
   clientName: string | null;
   createdAt: string;
-  assignedUserId?: string | null;
-  assignedUser?: { id: string; email: string } | null;
   clioHandoff?: {
     alreadyExported: boolean;
     exportCount: number;
@@ -65,36 +64,6 @@ type Doc = {
 type Financial = { medicalBillsTotal: number; liensTotal: number; settlementOffer: number | null };
 type Insight = { type: string; severity: string; title: string; detail: string | null };
 type BillLine = { id: string; documentId: string; providerName: string | null; serviceDate: string | null; amountCharged: number | null; balance: number | null; lineTotal: number | null };
-type DemandPackageItem = {
-  id: string;
-  title: string;
-  status: string;
-  generatedDocId: string | null;
-  generatedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-type DemandPackageLimitations = {
-  suggestedTitle: string;
-  warnings: string[];
-  stats: {
-    documentCount: number;
-    timelineEventCount: number;
-    providerCount: number;
-    recordsRequestCount: number;
-    hasCaseSummary: boolean;
-    hasMedicalBills: boolean;
-    hasSettlementOffer: boolean;
-  };
-};
-type CaseTaskItem = {
-  id: string;
-  title: string;
-  dueDate: string | null;
-  completedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
 
 function parseFileName(contentDisposition: string | null, fallback: string): string {
   if (!contentDisposition) return fallback;
@@ -151,7 +120,7 @@ export default function CaseDetailPage() {
   } | null>(null);
   const [summarizeError, setSummarizeError] = useState<string | null>(null);
   const [extractLoading, setExtractLoading] = useState(false);
-  const [extractResult, setExtractResult] = useState<{
+  const [extractResultState, setExtractResult] = useState<{
     providers: { name: string; source: string }[];
     dates: { date: string; label: string; source?: string }[];
     costs: { amount: number; label: string; source?: string }[];
@@ -159,14 +128,14 @@ export default function CaseDetailPage() {
   } | null>(null);
   const [extractError, setExtractError] = useState<string | null>(null);
   const [missingLoading, setMissingLoading] = useState(false);
-  const [missingResult, setMissingResult] = useState<{
+  const [missingResultState, setMissingResult] = useState<{
     flags: { category: string; reason: string; confidence?: string; providerName?: string | null; recordsRequestId?: string | null }[];
     hasEvidence: boolean;
     message?: string;
   } | null>(null);
   const [missingError, setMissingError] = useState<string | null>(null);
   const [compareLoading, setCompareLoading] = useState(false);
-  const [compareResult, setCompareResult] = useState<{
+  const [compareResultState, setCompareResult] = useState<{
     flags: { category: string; reason: string; confidence?: string; providerName?: string | null; documentId?: string | null; dateContext?: string | null }[];
     hasEvidence: boolean;
     message?: string;
@@ -174,21 +143,16 @@ export default function CaseDetailPage() {
   const [compareError, setCompareError] = useState<string | null>(null);
   const [draftSectionKey, setDraftSectionKey] = useState<string>("treatment_summary");
   const [draftLoading, setDraftLoading] = useState(false);
-  const [draftResult, setDraftResult] = useState<{
+  const [draftResultState, setDraftResult] = useState<{
     sectionKey: string;
     title: string;
     draftText: string;
     warnings?: string[];
   } | null>(null);
   const [draftError, setDraftError] = useState<string | null>(null);
-  const [demandPackages, setDemandPackages] = useState<DemandPackageItem[]>([]);
-  const [createDemandLoading, setCreateDemandLoading] = useState(false);
-  const [createDemandMessage, setCreateDemandMessage] = useState<string | null>(null);
-  const [latestDemandLimitations, setLatestDemandLimitations] = useState<DemandPackageLimitations | null>(null);
-  const [tasks, setTasks] = useState<CaseTaskItem[]>([]);
   const [questionInput, setQuestionInput] = useState("");
   const [answerLoading, setAnswerLoading] = useState(false);
-  const [answerResult, setAnswerResult] = useState<{ answer: string; sourcesUsed: string[]; warnings?: string[] } | null>(null);
+  const [answerResultState, setAnswerResult] = useState<{ answer: string; sourcesUsed: string[]; warnings?: string[] } | null>(null);
   const [answerError, setAnswerError] = useState<string | null>(null);
   const [packetType, setPacketType] = useState<"records" | "bills" | "combined">("combined");
   const [trackFilter, setTrackFilter] = useState<string>("all");
@@ -217,13 +181,13 @@ export default function CaseDetailPage() {
   }, [searchParams]);
 
   const AI_ACTIONS = [
-    { id: "summarize", label: "Summarize this packet", comingSoon: false },
-    { id: "chronology", label: "Build chronology", comingSoon: false },
-    { id: "extract", label: "Extract providers/dates/costs", comingSoon: false },
-    { id: "missing", label: "Identify missing records", comingSoon: false },
-    { id: "compare", label: "Compare bills to treatment", comingSoon: false },
-    { id: "draft", label: "Draft demand section", comingSoon: false },
-    { id: "qa", label: "Answer questions about the case", comingSoon: false },
+    { id: "summarize", label: "Packet summary", comingSoon: true },
+    { id: "chronology", label: "Rebuild chronology", comingSoon: false },
+    { id: "extract", label: "Entity extraction", comingSoon: true },
+    { id: "missing", label: "Missing-records analysis", comingSoon: true },
+    { id: "compare", label: "Bills vs treatment review", comingSoon: true },
+    { id: "draft", label: "Demand draft", comingSoon: true },
+    { id: "qa", label: "Case Q&A", comingSoon: true },
   ];
 
   useEffect(() => {
@@ -238,10 +202,8 @@ export default function CaseDetailPage() {
       fetch(`${caseApiBase}/financial`, { headers }).then(parseJsonResponse),
       fetch(`${caseApiBase}/bill-line-items`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
       fetch(`${caseApiBase}/insights`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
-      fetch(`${caseApiBase}/demand-packages`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
-      fetch(`${caseApiBase}/tasks`, { headers }).then(parseJsonResponse).catch(() => ({ ok: false })),
     ])
-      .then(([caseRes, timelineRes, providersRes, docsRes, finRes, billRes, insightsRes, demandPackagesRes, tasksRes]) => {
+      .then(([caseRes, timelineRes, providersRes, docsRes, finRes, billRes, insightsRes]) => {
         const c = caseRes as { ok?: boolean; item?: CaseItem };
         const t = timelineRes as { ok?: boolean; items?: TimelineEvent[] };
         const p = providersRes as { ok?: boolean; items?: Provider[] };
@@ -249,8 +211,6 @@ export default function CaseDetailPage() {
         const f = finRes as { ok?: boolean; item?: Financial };
         const b = billRes as { ok?: boolean; items?: BillLine[] };
         const i = insightsRes as { ok?: boolean; insights?: Insight[] };
-        const demandPackagePayload = demandPackagesRes as { ok?: boolean; items?: DemandPackageItem[] };
-        const taskPayload = tasksRes as { ok?: boolean; items?: CaseTaskItem[] };
         if (c.ok && c.item) setCaseData(c.item);
         if (t.ok && t.items) setTimeline(t.items);
         if (p.ok && p.items) setProviders(p.items);
@@ -258,8 +218,6 @@ export default function CaseDetailPage() {
         if (f.ok && f.item) setFinancial(f.item);
         if (b.ok && b.items) setBillLines(b.items);
         if (i.ok && i.insights) setInsights(i.insights);
-        if (demandPackagePayload.ok && demandPackagePayload.items) setDemandPackages(demandPackagePayload.items);
-        if (taskPayload.ok && taskPayload.items) setTasks(taskPayload.items);
         if (!c.ok) setError((c as { error?: string }).error ?? "Case not found");
       })
       .catch((e) => setError(e?.message ?? "Request failed"))
@@ -279,38 +237,6 @@ export default function CaseDetailPage() {
       })
       .catch(() => undefined);
   }, [id]);
-
-  const refreshDemandPackages = useCallback(() => {
-    if (!id) return Promise.resolve();
-    return fetch(`${caseApiBase}/demand-packages`, {
-      headers: getAuthHeader(),
-      ...getFetchOptions(),
-    })
-      .then(parseJsonResponse)
-      .then((response: unknown) => {
-        const data = response as { ok?: boolean; items?: DemandPackageItem[] };
-        if (data.ok && Array.isArray(data.items)) {
-          setDemandPackages(data.items);
-        }
-      })
-      .catch(() => undefined);
-  }, [caseApiBase, id]);
-
-  const refreshTasks = useCallback(() => {
-    if (!id) return Promise.resolve();
-    return fetch(`${caseApiBase}/tasks`, {
-      headers: getAuthHeader(),
-      ...getFetchOptions(),
-    })
-      .then(parseJsonResponse)
-      .then((response: unknown) => {
-        const data = response as { ok?: boolean; items?: CaseTaskItem[] };
-        if (data.ok && Array.isArray(data.items)) {
-          setTasks(data.items);
-        }
-      })
-      .catch(() => undefined);
-  }, [caseApiBase, id]);
 
   const rebuildChronology = useCallback(() => {
     if (!id) return;
@@ -518,39 +444,6 @@ export default function CaseDetailPage() {
     [caseApiBase, id, draftSectionKey]
   );
 
-  const createDemandPackage = useCallback(() => {
-    if (!id) return;
-    setCreateDemandLoading(true);
-    setCreateDemandMessage(null);
-    fetch(`${caseApiBase}/demand-packages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...getAuthHeader() },
-      ...getFetchOptions(),
-      body: JSON.stringify({}),
-    })
-      .then(parseJsonResponse)
-      .then((response: unknown) => {
-        const payload = response as {
-          ok?: boolean;
-          error?: string;
-          message?: string;
-          limitations?: DemandPackageLimitations;
-          item?: DemandPackageItem;
-        };
-        if (!payload.ok) {
-          setCreateDemandMessage(payload.error ?? "Failed to queue demand package.");
-          return;
-        }
-        setLatestDemandLimitations(payload.limitations ?? null);
-        setCreateDemandMessage(payload.message ?? "Demand package queued.");
-        void refreshDemandPackages();
-      })
-      .catch((error) => {
-        setCreateDemandMessage(error?.message ?? "Request failed");
-      })
-      .finally(() => setCreateDemandLoading(false));
-  }, [caseApiBase, id, refreshDemandPackages]);
-
   const runAnswerQuestion = useCallback(() => {
     if (!id) return;
     const q = questionInput.trim();
@@ -753,19 +646,6 @@ export default function CaseDetailPage() {
   const totalDocumentCount = documents.length;
   const reviewedDocumentCount = documents.filter((doc) => doc.reviewState != null).length;
   const exportReadyCount = documents.filter((doc) => doc.reviewState === "EXPORT_READY").length;
-  const openTasks = tasks.filter((task) => !task.completedAt);
-  const overdueTasks = openTasks.filter((task) => {
-    if (!task.dueDate) return false;
-    return new Date(task.dueDate).getTime() < Date.now();
-  });
-  const docsNeedingReview = documents.filter((doc) => {
-    if (doc.status === "NEEDS_REVIEW" || doc.status === "UNMATCHED") return true;
-    return doc.reviewState === "IN_REVIEW";
-  });
-  const pendingDemandPackages = demandPackages.filter((pkg) => {
-    const normalized = pkg.status.trim().toLowerCase();
-    return normalized !== "released" && normalized !== "released_to_requester";
-  });
   const packetReadinessMessage =
     totalDocumentCount === 0
       ? "Add routed documents to this case to enable packet export."
@@ -779,9 +659,163 @@ export default function CaseDetailPage() {
   const isError = error || !caseData;
   const title = caseData ? (caseData.clientName || caseData.title || caseData.caseNumber || "Case") : "";
   const clioExportLocked = caseData?.clioHandoff?.alreadyExported && !allowClioReexport;
+  const hasExtractResult = extractResultState != null;
+  const extractResult = extractResultState ?? { providers: [], dates: [], costs: [], hasContent: false };
+  const hasMissingResult = missingResultState != null;
+  const missingResult = missingResultState ?? { flags: [], hasEvidence: false, message: undefined };
+  const hasCompareResult = compareResultState != null;
+  const compareResult = compareResultState ?? { flags: [], hasEvidence: false, message: undefined };
+  const hasDraftResult = draftResultState != null;
+  const draftResult = draftResultState ?? { sectionKey: draftSectionKey, title: "", draftText: "", warnings: [] };
+  const hasAnswerResult = answerResultState != null;
+  const answerResult = answerResultState ?? { answer: "", sourcesUsed: [], warnings: [] };
   const errorMsgStyle = { margin: 0, color: "var(--onyx-error)", fontSize: "0.875rem" } as const;
   const insufficientStyle = { margin: "0 0 0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" } as const;
   const sourcesLabelStyle = { margin: 0, fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" } as const;
+
+  const renderExtractPanel = (result: NonNullable<typeof extractResult>) => (
+    <>
+      {!result.hasContent && <p style={insufficientStyle}>Not enough data yet. Build chronology and add documents, then run Extract.</p>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "1rem" }}>
+        <div>
+          <p style={{ margin: "0 0 0.35rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>Providers</p>
+          <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.8125rem" }}>{result.providers.length === 0 ? <li style={{ color: "var(--onyx-text-muted)" }}>None</li> : result.providers.map((p, i) => <li key={i}>{p.name}</li>)}</ul>
+        </div>
+        <div>
+          <p style={{ margin: "0 0 0.35rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>Dates</p>
+          <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.8125rem" }}>{result.dates.length === 0 ? <li style={{ color: "var(--onyx-text-muted)" }}>None</li> : result.dates.slice(0, 15).map((d, i) => <li key={i}>{d.date} â€” {d.label}</li>)}</ul>
+          {result.dates.length > 15 && <p style={{ margin: "0.25rem 0 0", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>+{result.dates.length - 15} more</p>}
+        </div>
+        <div>
+          <p style={{ margin: "0 0 0.35rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>Costs</p>
+          <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.8125rem" }}>{result.costs.length === 0 ? <li style={{ color: "var(--onyx-text-muted)" }}>None</li> : result.costs.slice(0, 15).map((c, i) => <li key={i}>${Number(c.amount).toLocaleString()} â€” {c.label}</li>)}</ul>
+          {result.costs.length > 15 && <p style={{ margin: "0.25rem 0 0", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>+{result.costs.length - 15} more</p>}
+        </div>
+      </div>
+    </>
+  );
+
+  const renderMissingFlags = (result: NonNullable<typeof missingResult>) => (
+    <>
+      {!result.hasEvidence && (
+        <p style={insufficientStyle}>
+          {result.message ?? "Not enough data yet. Add documents and build chronology, then run Identify missing records."}
+        </p>
+      )}
+      {result.hasEvidence && result.flags.length === 0 && (
+        <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+          No gaps flagged for this case. Re-run after adding documents if needed.
+        </p>
+      )}
+      {result.hasEvidence && result.flags.length > 0 && (
+        <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.875rem" }}>
+          {result.flags.map((f, i) => (
+            <li key={i} style={{ marginBottom: "0.5rem" }}>
+              <span
+                className={
+                  f.confidence === "high"
+                    ? "onyx-badge-error"
+                    : f.confidence === "medium"
+                      ? "onyx-badge-warning"
+                      : "onyx-badge-info"
+                }
+                style={{ marginRight: "0.35rem" }}
+              >
+                {f.confidence ?? "low"}
+              </span>
+              {f.reason}
+              {f.recordsRequestId && (
+                <span style={{ color: "var(--onyx-text-muted)", marginLeft: "0.35rem" }}>
+                  <Link href={`/dashboard/records-requests/${f.recordsRequestId}`} className="onyx-link" style={{ fontSize: "0.8125rem" }}>
+                    View request â†’
+                  </Link>
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+
+  const renderCompareFlags = (result: NonNullable<typeof compareResult>) => (
+    <>
+      {!result.hasEvidence && (
+        <p style={insufficientStyle}>
+          {result.message ?? "Not enough data yet. Build chronology and add documents, then run Compare bills to treatment."}
+        </p>
+      )}
+      {result.hasEvidence && result.flags.length === 0 && (
+        <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+          No mismatches flagged. Re-run after adding documents if needed.
+        </p>
+      )}
+      {result.hasEvidence && result.flags.length > 0 && (
+        <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.875rem" }}>
+          {result.flags.map((f, i) => (
+            <li key={i} style={{ marginBottom: "0.5rem" }}>
+              <span
+                className={
+                  f.confidence === "high"
+                    ? "onyx-badge-error"
+                    : f.confidence === "medium"
+                      ? "onyx-badge-warning"
+                      : "onyx-badge-info"
+                }
+                style={{ marginRight: "0.35rem" }}
+              >
+                {f.confidence ?? "low"}
+              </span>
+              {f.reason}
+              {f.dateContext && <span style={{ color: "var(--onyx-text-muted)", marginLeft: "0.25rem" }}>({f.dateContext})</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+
+  const renderDraftPanel = (result: NonNullable<typeof draftResult>) => (
+    <>
+      {result.warnings && result.warnings.length > 0 && (
+        <p style={insufficientStyle}>
+          {result.warnings.join(" ")}
+        </p>
+      )}
+      <p style={{ margin: "0 0 0.35rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>{result.title}</p>
+      <textarea
+        readOnly
+        value={result.draftText}
+        style={{
+          width: "100%",
+          minHeight: 180,
+          fontSize: "0.875rem",
+          fontFamily: "inherit",
+          padding: "0.5rem 0.75rem",
+          border: "1px solid var(--onyx-border)",
+          borderRadius: "var(--onyx-radius-sm)",
+          resize: "vertical",
+          background: "var(--onyx-background-surface)",
+        }}
+      />
+    </>
+  );
+
+  const renderAnswerPanel = (result: NonNullable<typeof answerResult>) => (
+    <>
+      {result.warnings && result.warnings.length > 0 && (
+        <p style={insufficientStyle}>
+          {result.warnings.join(" ")}
+        </p>
+      )}
+      <div style={{ whiteSpace: "pre-wrap", fontSize: "0.875rem", marginBottom: "0.5rem" }}>{result.answer}</div>
+      {result.sourcesUsed.length > 0 && (
+        <p style={sourcesLabelStyle}>
+          Grounded from: {result.sourcesUsed.join(", ")}
+        </p>
+      )}
+    </>
+  );
 
   return (
     <>
@@ -793,10 +827,14 @@ export default function CaseDetailPage() {
       {!isLoading && isError && (
         <div style={{ padding: "1.5rem" }}>
           <PageHeader breadcrumbs={[{ label: "Cases", href: "/dashboard/cases" }]} title="Case" />
-          <div className="onyx-card" style={{ padding: "1rem", borderColor: "var(--onyx-error)" }}>
-            <p style={{ margin: 0, color: "var(--onyx-error)" }}>{error ?? "Case not found."}</p>
-            <Link href="/dashboard/cases" className="onyx-link" style={{ display: "inline-block", marginTop: "0.5rem" }}>Back to cases</Link>
-          </div>
+          <ErrorNotice
+            message={error ?? "Case not found."}
+            action={
+              <Link href="/dashboard/cases" style={{ textDecoration: "none" }}>
+                <button type="button" className="onyx-btn-secondary">Back to cases</button>
+              </Link>
+            }
+          />
         </div>
       )}
       {!isLoading && !isError && caseData && (
@@ -807,6 +845,58 @@ export default function CaseDetailPage() {
         description={caseData.caseNumber ? `Case #${caseData.caseNumber}` : undefined}
       />
 
+      <DashboardCard title="Case workspace tools" style={{ marginBottom: "1rem" }}>
+        <p style={{ margin: "0 0 0.85rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.55 }}>
+          Available now: chronology rebuild, chronology export, case-level Clio exports, and packet export. Drafting, Q&A, and other analysis tools stay hidden in this dashboard until their backend seams are confirmed for operator use.
+        </p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "0.85rem" }}>
+          {AI_ACTIONS.map((action) => {
+            const isChronology = action.id === "chronology";
+            const isDisabled = action.comingSoon || (isChronology && chronologyRebuilding);
+            const label = isChronology && chronologyRebuilding ? "Rebuilding…" : action.comingSoon ? `${action.label} (coming soon)` : action.label;
+            return (
+              <button
+                key={action.id}
+                type="button"
+                className={isChronology ? "onyx-btn-primary" : "onyx-btn-secondary"}
+                disabled={isDisabled}
+                onClick={isChronology ? () => rebuildChronology() : undefined}
+                style={{
+                  padding: "0.4rem 0.8rem",
+                  fontSize: "0.8125rem",
+                  cursor: isDisabled ? "not-allowed" : "pointer",
+                  opacity: isDisabled ? 0.72 : 1,
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+          <button type="button" className="onyx-btn-secondary" onClick={() => setActiveTab("chronology")}>
+            Open chronology
+          </button>
+          <button type="button" className="onyx-btn-secondary" onClick={() => setActiveTab("demands")}>
+            Open demand prep
+          </button>
+          <button type="button" className="onyx-btn-secondary" onClick={() => setActiveTab("documents")}>
+            Open exports & documents
+          </button>
+        </div>
+      </DashboardCard>
+
+      {exportMessage ? (
+        <ErrorNotice
+          tone={exportMessage.includes("started") || exportMessage.includes("ready") ? "success" : "info"}
+          title="Workspace update"
+          message={exportMessage}
+          style={{ marginBottom: "1rem" }}
+        />
+      ) : null}
+
+      {false && (
+      <>
       {/* AI actions */}
       <div
         className="onyx-card"
@@ -892,13 +982,13 @@ export default function CaseDetailPage() {
           {summarizeError && <p style={errorMsgStyle}>{summarizeError}</p>}
           {summarizeResult && !summarizeError && (
             <>
-              {!summarizeResult.hasContent && <p style={insufficientStyle}>Not enough data yet. Build chronology and add documents, then run Summarize.</p>}
-              <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: "0.8125rem", margin: 0, padding: 0 }}>{summarizeResult.body}</pre>
-              {summarizeResult.documentSummaries.length > 0 && (
+              {!summarizeResult!.hasContent && <p style={insufficientStyle}>Not enough data yet. Build chronology and add documents, then run Summarize.</p>}
+              <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: "0.8125rem", margin: 0, padding: 0 }}>{summarizeResult!.body}</pre>
+              {summarizeResult!.documentSummaries.length > 0 && (
                 <div style={{ marginTop: "1rem" }}>
                   <p style={{ margin: "0 0 0.5rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>Document summaries</p>
                   <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.8125rem" }}>
-                    {summarizeResult.documentSummaries.map((doc) => (
+                    {summarizeResult!.documentSummaries.map((doc) => (
                       <li key={doc.documentId} style={{ marginBottom: "0.35rem" }}>
                         <strong>{doc.originalName ?? doc.documentId}</strong>: {doc.summary}
                       </li>
@@ -910,26 +1000,26 @@ export default function CaseDetailPage() {
           )}
         </DashboardCard>
       )}
-      {(extractResult || extractError) && (
+      {(hasExtractResult || extractError) && (
         <DashboardCard title="Providers, dates & costs" style={{ marginBottom: "1rem" }}>
           {extractError && <p style={errorMsgStyle}>{extractError}</p>}
-          {extractResult && !extractError && (
+          {hasExtractResult && !extractError && (
             <>
-              {!extractResult.hasContent && <p style={insufficientStyle}>Not enough data yet. Build chronology and add documents, then run Extract.</p>}
+              {!(extractResult?.hasContent ?? false) && <p style={insufficientStyle}>Not enough data yet. Build chronology and add documents, then run Extract.</p>}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "1rem" }}>
                 <div>
                   <p style={{ margin: "0 0 0.35rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>Providers</p>
-                  <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.8125rem" }}>{extractResult.providers.length === 0 ? <li style={{ color: "var(--onyx-text-muted)" }}>None</li> : extractResult.providers.map((p, i) => <li key={i}>{p.name}</li>)}</ul>
+                  <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.8125rem" }}>{(extractResult?.providers.length ?? 0) === 0 ? <li style={{ color: "var(--onyx-text-muted)" }}>None</li> : extractResult?.providers.map((p, i) => <li key={i}>{p.name}</li>)}</ul>
                 </div>
                 <div>
                   <p style={{ margin: "0 0 0.35rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>Dates</p>
-                  <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.8125rem" }}>{extractResult.dates.length === 0 ? <li style={{ color: "var(--onyx-text-muted)" }}>None</li> : extractResult.dates.slice(0, 15).map((d, i) => <li key={i}>{d.date} — {d.label}</li>)}</ul>
-                  {extractResult.dates.length > 15 && <p style={{ margin: "0.25rem 0 0", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>+{extractResult.dates.length - 15} more</p>}
+                  <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.8125rem" }}>{extractResult!.dates.length === 0 ? <li style={{ color: "var(--onyx-text-muted)" }}>None</li> : extractResult!.dates.slice(0, 15).map((d, i) => <li key={i}>{d.date} — {d.label}</li>)}</ul>
+                  {extractResult!.dates.length > 15 && <p style={{ margin: "0.25rem 0 0", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>+{extractResult!.dates.length - 15} more</p>}
                 </div>
                 <div>
                   <p style={{ margin: "0 0 0.35rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>Costs</p>
-                  <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.8125rem" }}>{extractResult.costs.length === 0 ? <li style={{ color: "var(--onyx-text-muted)" }}>None</li> : extractResult.costs.slice(0, 15).map((c, i) => <li key={i}>${Number(c.amount).toLocaleString()} — {c.label}</li>)}</ul>
-                  {extractResult.costs.length > 15 && <p style={{ margin: "0.25rem 0 0", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>+{extractResult.costs.length - 15} more</p>}
+                  <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.8125rem" }}>{extractResult!.costs.length === 0 ? <li style={{ color: "var(--onyx-text-muted)" }}>None</li> : extractResult!.costs.slice(0, 15).map((c, i) => <li key={i}>${Number(c.amount).toLocaleString()} — {c.label}</li>)}</ul>
+                  {extractResult!.costs.length > 15 && <p style={{ margin: "0.25rem 0 0", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>+{extractResult!.costs.length - 15} more</p>}
                 </div>
               </div>
             </>
@@ -937,24 +1027,24 @@ export default function CaseDetailPage() {
         </DashboardCard>
       )}
 
-      {(missingResult || missingError) && (
+      {(hasMissingResult || missingError) && (
         <DashboardCard title="Missing records" style={{ marginBottom: "1rem" }}>
           {missingError && <p style={errorMsgStyle}>{missingError}</p>}
-          {missingResult && !missingError && (
+          {hasMissingResult && !missingError && (
             <>
-              {!missingResult.hasEvidence && (
+              {!missingResult!.hasEvidence && (
                 <p style={insufficientStyle}>
-                  {missingResult.message ?? "Not enough data yet. Add documents and build chronology, then run Identify missing records."}
+                  {missingResult!.message ?? "Not enough data yet. Add documents and build chronology, then run Identify missing records."}
                 </p>
               )}
-              {missingResult.hasEvidence && missingResult.flags.length === 0 && (
+              {missingResult!.hasEvidence && missingResult!.flags.length === 0 && (
                 <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
                   No gaps flagged for this case. Re-run after adding documents if needed.
                 </p>
               )}
-              {missingResult.hasEvidence && missingResult.flags.length > 0 && (
+              {missingResult!.hasEvidence && missingResult!.flags.length > 0 && (
                 <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.875rem" }}>
-                  {missingResult.flags.map((f, i) => (
+                  {missingResult!.flags.map((f, i) => (
                     <li key={i} style={{ marginBottom: "0.5rem" }}>
                       <span
                         className={
@@ -985,24 +1075,24 @@ export default function CaseDetailPage() {
         </DashboardCard>
       )}
 
-      {(compareResult || compareError) && (
+      {(hasCompareResult || compareError) && (
         <DashboardCard title="Bills vs treatment" style={{ marginBottom: "1rem" }}>
           {compareError && <p style={errorMsgStyle}>{compareError}</p>}
-          {compareResult && !compareError && (
+          {hasCompareResult && !compareError && (
             <>
-              {!compareResult.hasEvidence && (
+              {!compareResult!.hasEvidence && (
                 <p style={insufficientStyle}>
-                  {compareResult.message ?? "Not enough data yet. Build chronology and add documents, then run Compare bills to treatment."}
+                  {compareResult!.message ?? "Not enough data yet. Build chronology and add documents, then run Compare bills to treatment."}
                 </p>
               )}
-              {compareResult.hasEvidence && compareResult.flags.length === 0 && (
+              {compareResult!.hasEvidence && compareResult!.flags.length === 0 && (
                 <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
                   No mismatches flagged. Re-run after adding documents if needed.
                 </p>
               )}
-              {compareResult.hasEvidence && compareResult.flags.length > 0 && (
+              {compareResult!.hasEvidence && compareResult!.flags.length > 0 && (
                 <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.875rem" }}>
-                  {compareResult.flags.map((f, i) => (
+                  {compareResult!.flags.map((f, i) => (
                     <li key={i} style={{ marginBottom: "0.5rem" }}>
                       <span
                         className={
@@ -1027,7 +1117,7 @@ export default function CaseDetailPage() {
         </DashboardCard>
       )}
 
-      {(draftResult || draftError || draftLoading) && (
+      {(hasDraftResult || draftError || draftLoading) && (
         <DashboardCard title="Draft demand section" style={{ marginBottom: "1rem" }}>
           <p style={{ margin: "0 0 0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>Draft for review only. Edit before use in any demand.</p>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", marginBottom: "0.75rem" }}>
@@ -1055,17 +1145,17 @@ export default function CaseDetailPage() {
             </button>
           </div>
           {draftError && <p style={errorMsgStyle}>{draftError}</p>}
-          {draftResult && !draftError && (
+          {hasDraftResult && !draftError && (
             <>
-              {draftResult.warnings && draftResult.warnings.length > 0 && (
+              {draftResult!.warnings?.length ? (
                 <p style={insufficientStyle}>
-                  {draftResult.warnings.join(" ")}
+                  {draftResult!.warnings?.join(" ") ?? ""}
                 </p>
-              )}
-              <p style={{ margin: "0 0 0.35rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>{draftResult.title}</p>
+              ) : null}
+              <p style={{ margin: "0 0 0.35rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>{draftResult!.title}</p>
               <textarea
                 readOnly
-                value={draftResult.draftText}
+                value={draftResult!.draftText}
                 style={{
                   width: "100%",
                   minHeight: 180,
@@ -1110,23 +1200,26 @@ export default function CaseDetailPage() {
           </button>
         </div>
         {answerError && <p style={errorMsgStyle}>{answerError}</p>}
-        {answerResult && !answerError && (
+        {hasAnswerResult && !answerError && (
           <>
-            {answerResult.warnings && answerResult.warnings.length > 0 && (
+            {answerResult!.warnings?.length ? (
               <p style={insufficientStyle}>
-                {answerResult.warnings.join(" ")}
+                {answerResult!.warnings?.join(" ") ?? ""}
               </p>
-            )}
-            <div style={{ whiteSpace: "pre-wrap", fontSize: "0.875rem", marginBottom: "0.5rem" }}>{answerResult.answer}</div>
-            {answerResult.sourcesUsed.length > 0 && (
+            ) : null}
+            <div style={{ whiteSpace: "pre-wrap", fontSize: "0.875rem", marginBottom: "0.5rem" }}>{answerResult!.answer}</div>
+            {answerResult!.sourcesUsed.length > 0 && (
               <p style={sourcesLabelStyle}>
-                Grounded from: {answerResult.sourcesUsed.join(", ")}
+                Grounded from: {answerResult!.sourcesUsed.join(", ")}
               </p>
             )}
           </>
         )}
       </DashboardCard>
       </div>
+
+      </>
+      )}
 
       {/* Tabs */}
       <div style={{ display: "flex", gap: "2px", marginBottom: "1.25rem", flexWrap: "wrap", borderBottom: "1px solid var(--onyx-border-subtle)" }}>
@@ -1161,18 +1254,6 @@ export default function CaseDetailPage() {
           <p style={{ margin: 0, fontSize: "0.875rem" }}><strong>Client:</strong> {caseData.clientName ?? "—"}</p>
           <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Case #:</strong> {caseData.caseNumber ?? "—"}</p>
           <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Created:</strong> {new Date(caseData.createdAt).toLocaleDateString()}</p>
-          <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}>
-            <strong>Owner:</strong> {caseData.assignedUser?.email ?? "Unassigned"}
-          </p>
-        </DashboardCard>
-        <DashboardCard title="Execution coverage">
-          <p style={{ margin: 0, fontSize: "0.875rem" }}><strong>Open tasks:</strong> {openTasks.length}</p>
-          <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Overdue tasks:</strong> {overdueTasks.length}</p>
-          <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Docs in review:</strong> {docsNeedingReview.length}</p>
-          <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Demand work in flight:</strong> {pendingDemandPackages.length}</p>
-          <p style={{ margin: "0.5rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-            Uses the current owner, case-task backlog, review-state documents, and pending demand items already tracked in the platform.
-          </p>
         </DashboardCard>
         {financial && (
           <DashboardCard title="Billing summary">
@@ -1231,7 +1312,7 @@ export default function CaseDetailPage() {
       </div>
 
       {insights.length > 0 && (
-        <DashboardCard title="AI insights" style={{ marginTop: "1rem" }}>
+        <DashboardCard title="Case insights" style={{ marginTop: "1rem" }}>
           <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.875rem" }}>
             {insights.map((ins, i) => (
               <li key={i} style={{ marginBottom: "0.5rem" }}>
@@ -1275,7 +1356,7 @@ export default function CaseDetailPage() {
 
       {activeTab === "medical-bills" && (
         <>
-          {compareResult != null && (
+          {hasCompareResult && (
             <DashboardCard title="Bills vs treatment" style={{ marginBottom: "1rem" }}>
               {!compareResult.hasEvidence && (
                 <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
@@ -1284,7 +1365,7 @@ export default function CaseDetailPage() {
               )}
               {compareResult.hasEvidence && compareResult.flags.length === 0 && (
                 <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-                  No bill vs treatment mismatches flagged. Run &quot;Compare bills to treatment&quot; in the AI actions bar to refresh.
+                  No bill vs treatment mismatches are stored for this case right now.
                 </p>
               )}
               {compareResult.hasEvidence && compareResult.flags.length > 0 && (
@@ -1347,9 +1428,9 @@ export default function CaseDetailPage() {
           ) : (
             <DashboardCard title="Bill line items"><p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>No bill line items yet.</p></DashboardCard>
           )}
-          {compareResult == null && (
+          {!hasCompareResult && (
             <p style={{ margin: "1rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-              Run &quot;Compare bills to treatment&quot; in the AI actions bar to check for bill vs treatment mismatches.
+              Bill-vs-treatment review is not exposed in this workspace yet. Use chronology, bill lines, and routed documents for operator review.
             </p>
           )}
         </>
@@ -1357,7 +1438,7 @@ export default function CaseDetailPage() {
 
       {activeTab === "missing-records" && (
         <DashboardCard title="Missing records">
-          {missingResult != null ? (
+          {hasMissingResult ? (
             <>
               {!missingResult.hasEvidence && (
                 <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
@@ -1366,7 +1447,7 @@ export default function CaseDetailPage() {
               )}
               {missingResult.hasEvidence && missingResult.flags.length === 0 && (
                 <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-                  No likely missing records flagged. Run &quot;Identify missing records&quot; in the AI actions bar to refresh.
+                  No likely missing records are stored for this case right now.
                 </p>
               )}
               {missingResult.hasEvidence && missingResult.flags.length > 0 && (
@@ -1405,7 +1486,7 @@ export default function CaseDetailPage() {
             </>
           ) : (
             <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-              Run &quot;Identify missing records&quot; in the AI actions bar above to surface gaps in treatment or billing for this case.
+              Missing-records analysis is not exposed in this workspace yet. Use chronology, documents, and records requests to review coverage gaps.
             </p>
           )}
         </DashboardCard>
@@ -1483,223 +1564,41 @@ export default function CaseDetailPage() {
           )}
         </DashboardCard>
 
-        <DashboardCard title="Create Demand" style={{ marginBottom: "1rem" }}>
+        <DashboardCard title="Demands">
           <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-            Build a real demand packet from the current case record. The generator uses the stored case summary, chronology, providers, specials, and documents already in the platform. Missing-data limitations are surfaced before review.
+            The authoritative Create Demand flow is still being finalized. This tab keeps chronology and export prep visible, but it does not expose an operator-ready draft generator yet.
           </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", marginBottom: "0.9rem" }}>
-            <div className="onyx-card" style={{ padding: "0.8rem 0.9rem", minWidth: 150 }}>
-              <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Packages</p>
-              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{demandPackages.length}</p>
-            </div>
-            <div className="onyx-card" style={{ padding: "0.8rem 0.9rem", minWidth: 150 }}>
-              <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Case documents</p>
-              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{documents.length}</p>
-            </div>
-            <div className="onyx-card" style={{ padding: "0.8rem 0.9rem", minWidth: 150 }}>
-              <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)" }}>Timeline events</p>
-              <p style={{ margin: 0, fontSize: "1.15rem", fontWeight: 600 }}>{timelineItems.length}</p>
-            </div>
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", marginBottom: "0.75rem" }}>
-            <button
-              type="button"
-              className="onyx-btn-primary"
-              onClick={() => createDemandPackage()}
-              disabled={createDemandLoading}
-            >
-              {createDemandLoading ? "Queuing demand..." : "Create Demand"}
-            </button>
-            <button
-              type="button"
-              className="onyx-btn-secondary"
-              onClick={() => refreshDemandPackages()}
-              disabled={createDemandLoading}
-            >
-              Refresh packages
-            </button>
-          </div>
-          {createDemandMessage && (
-            <p style={{ margin: "0 0 0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-              {createDemandMessage}
-            </p>
-          )}
-          {latestDemandLimitations && (
-            <div
-              style={{
-                marginBottom: "1rem",
-                padding: "0.85rem 1rem",
-                border: "1px solid var(--onyx-border)",
-                borderRadius: "var(--onyx-radius-sm)",
-                background: "var(--onyx-background-surface)",
-              }}
-            >
-              <p style={{ margin: "0 0 0.4rem", fontSize: "0.82rem", fontWeight: 600 }}>
-                Latest demand run limitations
-              </p>
-              {latestDemandLimitations.warnings.length > 0 ? (
-                <ul style={{ margin: 0, paddingLeft: "1.2rem", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
-                  {latestDemandLimitations.warnings.map((warning, index) => (
-                    <li key={index} style={{ marginBottom: "0.2rem" }}>{warning}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p style={{ margin: 0, fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
-                  No missing-data limitations were detected in the latest readiness snapshot.
-                </p>
-              )}
-            </div>
-          )}
-          {demandPackages.length === 0 ? (
-            <p style={{ margin: 0, fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-              No demand packages have been generated for this case yet.
-            </p>
-          ) : (
-            <div style={{ display: "grid", gap: "0.75rem" }}>
-              {demandPackages.map((pkg) => (
-                <div
-                  key={pkg.id}
-                  className="onyx-card"
-                  style={{
-                    padding: "0.85rem 1rem",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    gap: "1rem",
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <div>
-                    <p style={{ margin: "0 0 0.25rem", fontWeight: 600 }}>{pkg.title}</p>
-                    <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--onyx-text-muted)" }}>
-                      Status: {pkg.status.replace(/_/g, " ")}
-                      {pkg.generatedAt ? ` | Generated ${new Date(pkg.generatedAt).toLocaleString()}` : ` | Updated ${new Date(pkg.updatedAt).toLocaleString()}`}
-                    </p>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.65rem" }}>
-                    {pkg.generatedDocId ? (
-                      <Link href={`/documents/${pkg.generatedDocId}`} className="onyx-link">
-                        Open packet
-                      </Link>
-                    ) : (
-                      <span style={{ fontSize: "0.8rem", color: "var(--onyx-text-muted)" }}>
-                        Waiting for generation/review
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </DashboardCard>
-
-        <DashboardCard title="Demand drafting tools">
-          <p style={{ margin: "0 0 0.75rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-            Generate a draft section from case data. Run Summarize, Extract, and Build chronology first for better drafts. Outputs are for review only.
-          </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", marginBottom: "0.75rem" }}>
-            <label style={{ fontSize: "0.8125rem", fontWeight: 500 }}>Section:</label>
-            <select
-              value={draftSectionKey}
-              onChange={(e) => setDraftSectionKey(e.target.value)}
-              className="onyx-input"
-              style={{ minWidth: 200, fontSize: "0.8125rem" }}
-              disabled={draftLoading}
-            >
-              <option value="treatment_summary">Treatment Summary</option>
-              <option value="medical_specials">Medical Specials Summary</option>
-              <option value="records_overview">Records / Bills Overview</option>
-              <option value="pending_records">Gaps / Pending Records Note</option>
-            </select>
-            <button
-              type="button"
-              className="onyx-btn-primary"
-              disabled={draftLoading}
-              onClick={() => runDraft()}
-              style={{ padding: "0.35rem 0.75rem", fontSize: "0.8125rem" }}
-            >
-              {draftLoading ? "Generating…" : "Generate draft"}
-            </button>
-          </div>
-          {draftResult && (
-            <>
-              {draftResult.warnings && draftResult.warnings.length > 0 && (
-                <p style={{ margin: "0 0 0.5rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>{draftResult.warnings.join(" ")}</p>
-              )}
-              <p style={{ margin: "0 0 0.35rem", fontSize: "0.75rem", fontWeight: 600, color: "var(--onyx-text-muted)" }}>{draftResult.title}</p>
-              <div
-                style={{
-                  whiteSpace: "pre-wrap",
-                  fontSize: "0.875rem",
-                  padding: "0.75rem",
-                  border: "1px solid var(--onyx-border)",
-                  borderRadius: "var(--onyx-radius-sm)",
-                  background: "var(--onyx-background-surface)",
-                  maxHeight: 400,
-                  overflowY: "auto",
-                }}
+          <div style={{ display: "grid", gap: "0.75rem" }}>
+            <ErrorNotice
+              tone="info"
+              title="Create Demand coming soon"
+              message="Use chronology rebuild/export, packet export, and case-level documents while the single authoritative demand-drafting route is being wired into this workspace."
+            />
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+              <button
+                type="button"
+                className="onyx-btn-secondary"
+                onClick={() => startChronologyExport("pdf")}
+                disabled={chronologyExporting !== null || timelineItems.length === 0}
               >
-                {draftResult.draftText}
-              </div>
-            </>
-          )}
-          {!draftResult && !draftLoading && (
-            <p style={{ margin: 0, fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>Choose a section and click Generate draft to create an editable first draft from case data.</p>
-          )}
+                {chronologyExporting === "pdf" ? "Preparing PDF…" : "Export chronology PDF"}
+              </button>
+              <button
+                type="button"
+                className="onyx-btn-secondary"
+                onClick={() => setActiveTab("documents")}
+              >
+                Open case exports
+              </button>
+            </div>
+          </div>
         </DashboardCard>
         </>
       )}
 
       {activeTab === "tasks" && (
         <DashboardCard title="Tasks">
-          <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
-            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-              Existing case tasks make execution ownership visible without inventing a new manager-assignment system.
-            </p>
-            <button
-              type="button"
-              className="onyx-btn-secondary"
-              onClick={() => void refreshTasks()}
-              style={{ padding: "0.35rem 0.75rem", fontSize: "0.8125rem" }}
-            >
-              Refresh tasks
-            </button>
-          </div>
-          {tasks.length === 0 ? (
-            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-              No case tasks yet. Add tasks through the existing case-task flow to make execution handoffs visible here.
-            </p>
-          ) : (
-            <div style={{ display: "grid", gap: "0.75rem" }}>
-              {tasks.map((task) => {
-                const isComplete = Boolean(task.completedAt);
-                const isOverdue =
-                  !isComplete &&
-                  Boolean(task.dueDate) &&
-                  new Date(task.dueDate as string).getTime() < Date.now();
-                return (
-                  <div
-                    key={task.id}
-                    className="onyx-card"
-                    style={{ padding: "0.9rem 1rem", borderColor: isOverdue ? "var(--onyx-warning)" : undefined }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
-                      <div>
-                        <p style={{ margin: 0, fontSize: "0.9375rem", fontWeight: 600 }}>{task.title}</p>
-                        <p style={{ margin: "0.35rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-                          Due: {task.dueDate ? new Date(task.dueDate).toLocaleDateString() : "No due date"}
-                          {" · "}
-                          Created: {new Date(task.createdAt).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <span className={isComplete ? "onyx-badge-info" : isOverdue ? "onyx-badge-warning" : "onyx-badge-success"}>
-                        {isComplete ? "Completed" : isOverdue ? "Overdue" : "Open"}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>Case tasks and to-dos. Chronology and export prep stay available in this workspace while draft-generation tools are held back until their routes are confirmed.</p>
         </DashboardCard>
       )}
 
@@ -1882,20 +1781,6 @@ export default function CaseDetailPage() {
             </button>
           </div>
         </div>
-        {exportMessage && (
-          <p
-            style={{
-              margin: 0,
-              fontSize: "0.8125rem",
-              color:
-                exportMessage.includes("started") || exportMessage.includes("ready")
-                  ? "var(--onyx-success)"
-                  : "var(--onyx-text-muted)",
-            }}
-          >
-            {exportMessage}
-          </p>
-        )}
       </DashboardCard>
 
       <DashboardCard title="Documents" style={{ marginTop: "1rem" }}>

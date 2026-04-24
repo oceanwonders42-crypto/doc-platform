@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
+import { getApiBase, getAuthHeader, getFetchOptions, getStoredToken, parseJsonResponse } from "@/lib/api";
 import {
   getClioAutoUpdateUiState,
   type ClioAutoUpdateGateSource,
@@ -99,6 +99,11 @@ type CasesListResponse = { ok?: boolean; items?: CaseItem[] };
 
 function isCasesListResponse(res: unknown): res is CasesListResponse {
   return typeof res === "object" && res !== null;
+}
+
+function getSessionAuthHeader(): Record<string, string> {
+  const token = getStoredToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 function readClioAutoUpdateGateSource(
@@ -210,7 +215,7 @@ export default function ReviewQueuePage() {
         ...getFetchOptions(),
       }).then(parseJsonResponse),
       fetch(`${base}/me/features`, {
-        headers: getAuthHeader(),
+        headers: getSessionAuthHeader(),
         ...getFetchOptions(),
       })
         .then(parseJsonResponse)

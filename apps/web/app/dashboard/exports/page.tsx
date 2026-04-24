@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { DashboardCard } from "@/components/dashboard/DashboardCard";
+import { ErrorNotice } from "@/components/dashboard/ErrorNotice";
 import type { MigrationBatchListItem, MigrationBatchesResponse } from "../migration/types";
 
 type ExportAction = {
@@ -341,6 +342,9 @@ export default function ExportsPage() {
   const potentiallySkippedSelectedCount = selectedCases.filter(
     (item) => item.clioBatchExport?.status === "potentially_skipped"
   ).length;
+  const exportableTotalCount = cases.filter((item) => item.clioBatchExport?.status === "eligible").length;
+  const alreadyExportedTotalCount = cases.filter((item) => item.clioBatchExport?.status === "already_exported").length;
+  const blockedTotalCount = cases.filter((item) => item.clioBatchExport?.status === "potentially_skipped").length;
   const eligibleCaseIds = useMemo(
     () =>
       cases
@@ -362,9 +366,16 @@ export default function ExportsPage() {
       if (leftReady !== rightReady) return rightReady - leftReady;
       return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
     });
-    return ranked.slice(0, 5);
+    return ranked.filter(
+      (item) =>
+        item.status === "NEEDS_REVIEW" ||
+        item.status === "READY_FOR_EXPORT" ||
+        item.status === "EXPORTED" ||
+        item.status === "PROCESSING"
+    );
   }, [migrationBatches]);
-  const readyBatchCount = migrationBatches.filter(isMigrationBatchReady).length;
+  const readyBatchCount = migrationBatches.filter((item) => item.status === "READY_FOR_EXPORT").length;
+  const exportedBatchCount = migrationBatches.filter((item) => item.status === "EXPORTED").length;
   const blockedBatchCount = migrationBatches.filter((item) => item.unresolvedReviewCount > 0).length;
   const reviewBlockedDocumentCount = migrationBatches.reduce(
     (total, item) => total + (item.unresolvedReviewCount ?? 0),
@@ -424,7 +435,11 @@ export default function ExportsPage() {
       );
       anchor.click();
       window.URL.revokeObjectURL(downloadUrl);
-      setSuccess(`Batch Clio handoff ZIP download started for ${selectedCaseIds.length} selected case${selectedCaseIds.length === 1 ? "" : "s"}.`);
+      setSuccess(
+        `Batch Clio handoff ZIP download started for ${selectedCaseIds.length} selected case${
+          selectedCaseIds.length === 1 ? "" : "s"
+        }: ${eligibleSelectedCount} exportable, ${reexportSelectedCount} already exported, ${potentiallySkippedSelectedCount} blocked or potentially skipped.`
+      );
       loadCases();
       loadHistory();
     } catch (err) {
@@ -439,35 +454,21 @@ export default function ExportsPage() {
       <PageHeader
         breadcrumbs={[{ label: "Exports" }]}
         title="Exports"
-        description="Download operator-ready CSV exports from the active dashboard."
+        description="Run case-level and migration-batch Clio exports from one operator workspace."
       />
 
-      {(error || success) && (
-        <div
-          className="onyx-card"
-          style={{
-            padding: "1rem 1.25rem",
-            marginBottom: "1rem",
-            borderColor: error ? "var(--onyx-error)" : "var(--onyx-success)",
-            background: error ? "rgba(239, 68, 68, 0.06)" : "rgba(34, 197, 94, 0.08)",
-          }}
-        >
-          <p
-            style={{
-              margin: 0,
-              color: error ? "var(--onyx-error)" : "var(--onyx-success)",
-              fontSize: "0.875rem",
-              fontWeight: 500,
-            }}
-          >
-            {error ?? success}
-          </p>
-        </div>
-      )}
+      {error || success ? (
+        <ErrorNotice
+          tone={error ? "error" : "success"}
+          title={error ? "Export issue" : "Export update"}
+          message={error ?? success ?? ""}
+          style={{ marginBottom: "1rem" }}
+        />
+      ) : null}
 
-      <DashboardCard title="Batch Clio handoff export" style={{ marginBottom: "1rem" }}>
+      <DashboardCard title="Case-level Clio handoff export" style={{ marginBottom: "1rem" }}>
         <p style={{ margin: "0 0 1rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
-          Select multiple cases to export one combined Clio contacts CSV, one combined matters CSV, and a manifest in a single ZIP. Final include or skip decisions are still confirmed server-side and written to the manifest.
+          Run case-level and migration-batch Clio handoffs from the same workspace. Final include or skip decisions are still confirmed server-side and written to each manifest.
         </p>
 
         <div
@@ -533,43 +534,45 @@ export default function ExportsPage() {
         >
           <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
             <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              Exportable
+            </p>
+            <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600, color: "var(--onyx-success)" }}>{exportableTotalCount}</p>
+          </div>
+          <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
+            <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              Already exported
+            </p>
+            <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600, color: "#9a3412" }}>{alreadyExportedTotalCount}</p>
+          </div>
+          <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
+            <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              Blocked / skipped
+            </p>
+            <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600, color: "#b45309" }}>{blockedTotalCount}</p>
+          </div>
+          <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
+            <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
               Selected
             </p>
             <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600 }}>{selectedCaseIds.length}</p>
           </div>
-          <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
-            <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-              Eligible
-            </p>
-            <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600, color: "var(--onyx-success)" }}>{eligibleSelectedCount}</p>
-          </div>
-          <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
-            <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-              Re-exports
-            </p>
-            <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600, color: "#9a3412" }}>{reexportSelectedCount}</p>
-          </div>
-          <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
-            <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-              Potentially skipped
-            </p>
-            <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600, color: "#b45309" }}>{potentiallySkippedSelectedCount}</p>
-          </div>
         </div>
 
-        {casesError && (
-          <div className="onyx-card" style={{ padding: "1rem", marginBottom: "1rem", borderColor: "var(--onyx-error)" }}>
-            <p style={{ margin: 0, color: "var(--onyx-error)", fontSize: "0.875rem" }}>{casesError}</p>
-            <button
-              type="button"
-              onClick={loadCases}
-              className="onyx-link"
-              style={{ marginTop: "0.5rem", background: "none", border: "none", padding: 0, cursor: "pointer" }}
-            >
-              Try again
-            </button>
-          </div>
-        )}
+        {casesError ? (
+          <ErrorNotice
+            message={casesError}
+            action={
+              <button
+                type="button"
+                onClick={loadCases}
+                className="onyx-btn-secondary"
+              >
+                Try again
+              </button>
+            }
+            style={{ marginBottom: "1rem" }}
+          />
+        ) : null}
 
         <div
           style={{
@@ -715,12 +718,15 @@ export default function ExportsPage() {
           <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
             {selectedCaseIds.length === 0
               ? "Select at least one case to prepare the combined export."
-              : `${selectedCaseIds.length} case${selectedCaseIds.length === 1 ? "" : "s"} selected: ${eligibleSelectedCount} first-time, ${reexportSelectedCount} re-export, ${potentiallySkippedSelectedCount} potentially skipped.`}
+              : `${selectedCaseIds.length} case${selectedCaseIds.length === 1 ? "" : "s"} selected: ${eligibleSelectedCount} exportable, ${reexportSelectedCount} already exported, ${potentiallySkippedSelectedCount} blocked or potentially skipped.`}
           </p>
         </div>
+        <p style={{ margin: "0.85rem 0 0", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
+          Migration batch handoffs stay immediately below in the same Clio export workspace so staff can move between case-level and batch-level release work without changing pages.
+        </p>
       </DashboardCard>
 
-      <DashboardCard title="Migration batch exports and review" style={{ marginBottom: "1rem" }}>
+      <DashboardCard title="Migration batch Clio handoff export" style={{ marginBottom: "1rem" }}>
         <p style={{ margin: "0 0 1rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
           Keep migration-driven export work in the same lane as Clio handoff. Export-ready batches stay visible here, and review-blocked batches link directly into the review queue for release.
         </p>
@@ -735,9 +741,15 @@ export default function ExportsPage() {
         >
           <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
             <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-              Ready batches
+              Ready for export
             </p>
             <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600, color: "var(--onyx-success)" }}>{readyBatchCount}</p>
+          </div>
+          <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
+            <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              Exported
+            </p>
+            <p style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600 }}>{exportedBatchCount}</p>
           </div>
           <div className="onyx-card" style={{ padding: "0.9rem 1rem", border: "1px solid var(--onyx-border-subtle)" }}>
             <p style={{ margin: "0 0 0.25rem", fontSize: "0.75rem", color: "var(--onyx-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
@@ -753,11 +765,12 @@ export default function ExportsPage() {
           </div>
         </div>
 
-        {migrationBatchesError && (
-          <div className="onyx-card" style={{ padding: "1rem", marginBottom: "1rem", borderColor: "var(--onyx-error)" }}>
-            <p style={{ margin: 0, color: "var(--onyx-error)", fontSize: "0.875rem" }}>{migrationBatchesError}</p>
-          </div>
-        )}
+        {migrationBatchesError ? (
+          <ErrorNotice
+            message={migrationBatchesError}
+            style={{ marginBottom: "1rem" }}
+          />
+        ) : null}
 
         {migrationBatchesLoading ? (
           <p style={{ margin: 0, color: "var(--onyx-text-muted)" }}>Loading migration export work…</p>
@@ -767,7 +780,20 @@ export default function ExportsPage() {
           <div style={{ display: "grid", gap: "0.75rem" }}>
             {exportOperationBatches.map((item) => {
               const needsReview = (item.unresolvedReviewCount ?? 0) > 0;
-              const ready = isMigrationBatchReady(item);
+              const ready = item.status === "READY_FOR_EXPORT";
+              const exported = item.status === "EXPORTED";
+              const actionHref = needsReview
+                ? getBatchReviewHref(item)
+                : exported
+                  ? `${getBatchDetailHref(item.id)}#export-history`
+                  : getBatchDetailHref(item.id);
+              const actionLabel = needsReview
+                ? "Open review queue"
+                : ready
+                  ? "Open Clio handoff"
+                  : exported
+                    ? "View export history"
+                    : "Open batch";
               return (
                 <div
                   key={item.id}
@@ -788,22 +814,29 @@ export default function ExportsPage() {
                         {needsReview
                           ? `${item.unresolvedReviewCount} document${item.unresolvedReviewCount === 1 ? "" : "s"} still need review before export.`
                           : ready
-                            ? "Batch is ready for export or already handed off."
-                            : "Open the batch to continue processing and handoff work."}
+                            ? "Batch is ready for a fresh Clio handoff."
+                            : exported
+                              ? `Last exported ${item.lastExportedAt ? new Date(item.lastExportedAt).toLocaleString() : "recently"} with ${item.handoffCount} recorded handoff${item.handoffCount === 1 ? "" : "s"}.`
+                              : "Batch is still processing before handoff."}
                       </p>
                     </div>
                     <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
-                      <span className={needsReview ? "onyx-badge onyx-badge-warning" : ready ? "onyx-badge onyx-badge-success" : "onyx-badge onyx-badge-neutral"}>
-                        {needsReview ? "Needs review" : ready ? "Ready for export" : "In progress"}
+                      <span
+                        className={
+                          needsReview
+                            ? "onyx-badge onyx-badge-warning"
+                            : ready
+                              ? "onyx-badge onyx-badge-success"
+                              : exported
+                                ? "onyx-badge onyx-badge-neutral"
+                                : "onyx-badge onyx-badge-info"
+                        }
+                      >
+                        {needsReview ? "Needs review" : ready ? "Ready for export" : exported ? "Exported" : "Processing"}
                       </span>
-                      <Link href={getBatchDetailHref(item.id)} className="onyx-link">
-                        Open batch
+                      <Link href={actionHref} className="onyx-link">
+                        {actionLabel}
                       </Link>
-                      {needsReview && (
-                        <Link href={getBatchReviewHref(item)} className="onyx-link">
-                          Open review queue
-                        </Link>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -818,11 +851,12 @@ export default function ExportsPage() {
           Review recent single-case and batch Clio handoff activity, including included and skipped cases.
         </p>
 
-        {historyError && (
-          <div className="onyx-card" style={{ padding: "1rem", marginBottom: "1rem", borderColor: "var(--onyx-error)" }}>
-            <p style={{ margin: 0, color: "var(--onyx-error)", fontSize: "0.875rem" }}>{historyError}</p>
-          </div>
-        )}
+        {historyError ? (
+          <ErrorNotice
+            message={historyError}
+            style={{ marginBottom: "1rem" }}
+          />
+        ) : null}
 
         {historyLoading ? (
           <p style={{ margin: 0, color: "var(--onyx-text-muted)" }}>Loading handoff history…</p>
