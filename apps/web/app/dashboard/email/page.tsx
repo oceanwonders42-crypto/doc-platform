@@ -3,6 +3,13 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 
+import {
+  formatApiClientError,
+  getApiBase,
+  getApiFetchInit,
+  parseJsonResponse,
+} from "@/lib/api";
+
 type Mailbox = {
   id: string;
   firm_id: string;
@@ -47,12 +54,25 @@ export default function EmailDashboardPage() {
   const load = useCallback(async () => {
     setError(null);
     try {
+      const apiBase = getApiBase();
       const [mbRes, ingRes] = await Promise.all([
-        fetch("/api/mailboxes", { cache: "no-store" }),
-        fetch("/api/mailboxes/recent-ingests?limit=50", { cache: "no-store" }),
+        fetch(
+          `${apiBase}/mailboxes`,
+          getApiFetchInit({ cache: "no-store" })
+        ),
+        fetch(
+          `${apiBase}/mailboxes/recent-ingests?limit=50`,
+          getApiFetchInit({ cache: "no-store" })
+        ),
       ]);
-      const mbData = await mbRes.json().catch(() => ({ ok: false, items: [] }));
-      const ingData = await ingRes.json().catch(() => ({ ok: false, items: [] }));
+      const mbData = (await parseJsonResponse(mbRes).catch(() => ({
+        ok: false,
+        items: [],
+      }))) as { ok?: boolean; items?: Mailbox[]; error?: string };
+      const ingData = (await parseJsonResponse(ingRes).catch(() => ({
+        ok: false,
+        items: [],
+      }))) as { ok?: boolean; items?: RecentIngest[]; error?: string };
 
       if (mbData.ok && Array.isArray(mbData.items)) setMailboxes(mbData.items);
       else setMailboxes([]);
@@ -62,7 +82,9 @@ export default function EmailDashboardPage() {
 
       if (!mbData.ok && mbData.error) setError(mbData.error);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load");
+      setError(
+        formatApiClientError(e, "Failed to load email intake status.")
+      );
     } finally {
       setLoading(false);
     }
@@ -75,15 +97,22 @@ export default function EmailDashboardPage() {
   async function handleTest(mailboxId: string) {
     setTestingId(mailboxId);
     try {
-      const res = await fetch(`/api/mailboxes/${mailboxId}/test`, { method: "POST" });
-      const data = await res.json().catch(() => ({}));
+      const apiBase = getApiBase();
+      const res = await fetch(
+        `${apiBase}/mailboxes/${mailboxId}/test`,
+        getApiFetchInit({ method: "POST" })
+      );
+      const data = (await parseJsonResponse(res).catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+      };
       if (data.ok) {
         await load();
       } else {
         alert(data.error || "Connection failed");
       }
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Request failed");
+      alert(formatApiClientError(e, "Connection test failed."));
     } finally {
       setTestingId(null);
     }
@@ -94,16 +123,23 @@ export default function EmailDashboardPage() {
     setToggleLoadingId(id);
     try {
       const isActive = mb.status === "active";
-      const res = await fetch(`/api/mailboxes/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: isActive ? "paused" : "active" }),
-      });
-      const data = await res.json().catch(() => ({}));
+      const apiBase = getApiBase();
+      const res = await fetch(
+        `${apiBase}/mailboxes/${id}`,
+        getApiFetchInit({
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: isActive ? "paused" : "active" }),
+        })
+      );
+      const data = (await parseJsonResponse(res).catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+      };
       if (data.ok) await load();
       else alert(data.error || "Update failed");
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Request failed");
+      alert(formatApiClientError(e, "Mailbox update failed."));
     } finally {
       setToggleLoadingId(null);
     }
@@ -260,7 +296,7 @@ export default function EmailDashboardPage() {
                     <td style={{ padding: "10px 12px" }}>
                       {ing.documentId ? (
                         <Link
-                          href={`/documents/${ing.documentId}`}
+                          href={`/dashboard/documents/${ing.documentId}`}
                           style={{ fontSize: 13, color: "#111", textDecoration: "underline" }}
                         >
                           Open
