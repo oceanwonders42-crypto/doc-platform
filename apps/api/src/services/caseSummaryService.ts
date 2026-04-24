@@ -53,15 +53,15 @@ export async function generateCaseSummary(caseId: string, firmId: string): Promi
     }),
     pgPool.query<{ amount: number; date: Date; original_name: string }>(
       `select (dr.insurance_fields->>'settlementOffer')::float as amount,
-              coalesce(d.processed_at, d.created_at) as date,
-              d.original_name
+              coalesce(d."processedAt", d."createdAt") as date,
+              d."originalName" as original_name
        from "Document" d
        join document_recognition dr on dr.document_id = d.id
-       where d.firm_id = $1 and d.routed_case_id = $2
+       where d."firmId" = $1 and d."routedCaseId" = $2
          and dr.insurance_fields is not null
          and (dr.insurance_fields->>'settlementOffer') is not null
          and (dr.insurance_fields->>'settlementOffer')::float > 0
-       order by coalesce(d.processed_at, d.created_at) desc
+       order by coalesce(d."processedAt", d."createdAt") desc
        limit 1`,
       [firmId, caseId]
     ),
