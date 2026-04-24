@@ -103,9 +103,32 @@ export function classifyAndExtract(textRaw: string) {
   const lower = text.toLowerCase();
 
   let docType = "unknown";
-  if (lower.includes("medical record") || lower.includes("patient") || lower.includes("diagnosis")) docType = "medical_record";
+  if (
+    lower.includes("medical record") ||
+    lower.includes("patient") ||
+    lower.includes("diagnosis") ||
+    lower.includes("emergency department") ||
+    lower.includes("mri report") ||
+    lower.includes("chiropractic") ||
+    lower.includes("treatment note")
+  ) {
+    docType = "medical_record";
+  }
   else if (lower.includes("police") || lower.includes("incident report") || lower.includes("offense")) docType = "police_report";
-  else if (lower.includes("invoice") || lower.includes("amount due") || lower.includes("balance")) docType = "invoice";
+  else if (
+    lower.includes("billing ledger") ||
+    lower.includes("billing statement") ||
+    lower.includes("invoice") ||
+    lower.includes("amount due") ||
+    lower.includes("balance")
+  ) docType = "billing_statement";
+  else if (
+    lower.includes("adjuster") ||
+    lower.includes("insurance letter") ||
+    lower.includes("claim number") ||
+    lower.includes("policy number") ||
+    lower.includes("carrier")
+  ) docType = "insurance_letter";
   else if (lower.includes("demand") && lower.includes("settlement")) docType = "demand_letter";
   else if (lower.includes("intake") || lower.includes("new client") || lower.includes("questionnaire")) docType = "client_intake";
 
@@ -113,10 +136,14 @@ export function classifyAndExtract(textRaw: string) {
     text.match(/\b(case\s*(no|#|number)\s*[:\-]?\s*)([A-Z0-9\-\/]{4,})/i)?.[3] || null;
 
   const clientName =
-    text.match(/\b(client|patient|claimant)\s*[:\-]\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b/)?.[2] || null;
+    text.match(
+      /\b(?:[Cc]lient|[Pp]atient|[Cc]laimant)\b(?:\s*[:\-]\s*|\s{2,}|\s+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b/
+    )?.[1] || null;
 
   const incidentDate =
-    text.match(/\b(date of loss|incident date|loss date)\s*[:\-]?\s*([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{2,4})/i)?.[2] || null;
+    text.match(
+      /\b(date of loss|incident date|loss date)\s*[:\-]?\s*([0-9]{1,2}\/[0-9]{1,2}\/[0-9]{2,4}|[0-9]{4}-[0-9]{2}-[0-9]{2})/i
+    )?.[2] || null;
 
   let confidence = 0.4;
   if (docType !== "unknown") confidence += 0.2;
