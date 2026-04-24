@@ -12,11 +12,13 @@ node_modules/.pnpm-workspace-state-v1.json
 .env.test.local
 .env.production.local
 .env*.local
+*.local
 
 # Build outputs
 dist
 build
 .next
+apps/web/.next/
 out
 *.tsbuildinfo
 apps/api/build-meta.json
