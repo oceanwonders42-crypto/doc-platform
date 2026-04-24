@@ -8163,6 +8163,8 @@ app.post("/cases/:id/documents", auth, requireRole(Role.STAFF), async (req, res)
       action: "attached_to_case",
       routedSystem: "manual",
       routingStatus: "routed",
+      reviewState: "APPROVED",
+      status: "UPLOADED",
     });
     if (!result.ok) return res.status(404).json({ ok: false, error: result.error });
 

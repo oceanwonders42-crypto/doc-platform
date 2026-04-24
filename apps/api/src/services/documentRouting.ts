@@ -28,6 +28,50 @@ export type RouteDocumentOptions = {
   timingReporter?: RouteDocumentTimingReporter;
 };
 
+type RouteDocumentStoredStatus =
+  | "RECEIVED"
+  | "PROCESSING"
+  | "NEEDS_REVIEW"
+  | "UPLOADED"
+  | "FAILED"
+  | "UNMATCHED";
+
+type RouteDocumentCurrentState = {
+  status: RouteDocumentStoredStatus;
+};
+
+type RouteDocumentUpdateData = {
+  routedCaseId?: string | null;
+  routedSystem?: string | null;
+  routingStatus?: string | null;
+  reviewState?: DocumentReviewStateValue | null;
+  status?: RouteDocumentStoredStatus;
+};
+
+export function buildRouteDocumentUpdateData(
+  doc: RouteDocumentCurrentState,
+  toCaseId: string | null,
+  options: RouteDocumentOptions
+): RouteDocumentUpdateData {
+  const { routedSystem, routingStatus, reviewState, status } = options;
+  const updateData: RouteDocumentUpdateData = {
+    routedCaseId: toCaseId ?? null,
+  };
+  if (routedSystem !== undefined) updateData.routedSystem = routedSystem;
+  if (routingStatus !== undefined) updateData.routingStatus = routingStatus;
+  if (reviewState !== undefined) updateData.reviewState = reviewState;
+  if (status !== undefined) {
+    updateData.status = status;
+  } else if (
+    toCaseId &&
+    (doc.status === "PROCESSING" || doc.status === "NEEDS_REVIEW" || doc.status === "UNMATCHED")
+  ) {
+    updateData.status = "UPLOADED";
+  }
+
+  return updateData;
+}
+
 export async function routeDocument(
   firmId: string,
   documentId: string,
@@ -38,23 +82,11 @@ export async function routeDocument(
 
   const doc = await prisma.document.findFirst({
     where: { id: documentId, firmId },
-    select: { id: true, routedCaseId: true },
+    select: { id: true, routedCaseId: true, status: true },
   });
   if (!doc) return { ok: false, error: "document not found" };
 
-  const updateData: {
-    routedCaseId?: string | null;
-    routedSystem?: string | null;
-    routingStatus?: string | null;
-    reviewState?: DocumentReviewStateValue | null;
-    status?: "RECEIVED" | "PROCESSING" | "NEEDS_REVIEW" | "UPLOADED" | "FAILED" | "UNMATCHED";
-  } = {
-    routedCaseId: toCaseId ?? null,
-  };
-  if (routedSystem !== undefined) updateData.routedSystem = routedSystem;
-  if (routingStatus !== undefined) updateData.routingStatus = routingStatus;
-  if (reviewState !== undefined) updateData.reviewState = reviewState;
-  if (status !== undefined) updateData.status = status;
+  const updateData = buildRouteDocumentUpdateData(doc, toCaseId, options);
 
   await prisma.document.updateMany({
     where: { id: documentId, firmId },
