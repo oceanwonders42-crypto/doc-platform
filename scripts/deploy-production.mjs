@@ -740,6 +740,19 @@ async function main() {
 
   await createReleaseWorktree();
   await buildRelease();
+  if (dryRun) {
+    logStep("dry run skipped release verification and activation", {
+      selectedBranch: buildMeta.branch,
+      selectedSha: buildMeta.sha,
+      releaseRoot,
+      pm2Mutation: false,
+      sshMutation: false,
+      dbMutation: false,
+      productionSwitch: false,
+    });
+    printPass(`dry run completed for release ${releaseRoot}`);
+    return;
+  }
   await verifyReleaseBuild();
   await enforceSchemaDriftGuardBeforeActivation({
     releaseRoot,
@@ -780,11 +793,6 @@ async function main() {
   await replacePm2Apps(targetPm2Apps);
   await waitForHealth("http://127.0.0.1:4000/health", "API");
   await waitForHealth("http://127.0.0.1:3000/healthz", "web");
-
-  if (dryRun) {
-    printPass(`dry run completed for release ${releaseRoot}`);
-    return;
-  }
 
   const liveVersions = await verifyLiveVersions();
   await assertNoOpenAiRuntimeWarning();
