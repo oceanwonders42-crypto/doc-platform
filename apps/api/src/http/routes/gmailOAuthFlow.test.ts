@@ -67,6 +67,24 @@ async function main() {
     process.env.ENCRYPTION_KEY = createHexKey();
     process.env.JWT_SECRET = "gmail-oauth-test-secret";
 
+    const staleIntegration = await prisma.firmIntegration.create({
+      data: {
+        firmId,
+        provider: "GMAIL",
+        type: "EMAIL",
+        status: "CONNECTED",
+      },
+    });
+    const staleMailbox = await prisma.mailboxConnection.create({
+      data: {
+        firmId,
+        provider: "GMAIL",
+        emailAddress: "stale-gmail@example.com",
+        active: true,
+        integrationId: staleIntegration.id,
+      },
+    });
+
     const connectResponse = await fetch(
       `${started.baseUrl}/gmail/connect?login_hint=qa-gmail@example.com`,
       {
@@ -197,6 +215,11 @@ async function main() {
     assert.equal(integration!.credentials.length, 1);
     assert.ok(mailbox, "Expected Gmail mailbox row");
     assert.equal(mailbox!.active, true);
+    const staleMailboxAfterConnect = await prisma.mailboxConnection.findUnique({
+      where: { id: staleMailbox.id },
+      select: { active: true },
+    });
+    assert.equal(staleMailboxAfterConnect?.active, false, "Expected stale Gmail mailbox to be disabled");
 
     assert.equal(statusResponse.status, 200);
     const statusJson = (await statusResponse.json()) as {

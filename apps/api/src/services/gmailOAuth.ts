@@ -654,6 +654,25 @@ export async function completeGmailOAuthCallback(params: {
       });
     }
 
+    await tx.firmIntegration.updateMany({
+      where: {
+        firmId: statePayload.firmId,
+        provider: IntegrationProvider.GMAIL,
+        type: IntegrationType.EMAIL,
+        id: { not: integrationRow.id },
+      },
+      data: { status: IntegrationStatus.DISCONNECTED },
+    });
+
+    await tx.mailboxConnection.updateMany({
+      where: {
+        firmId: statePayload.firmId,
+        provider: "GMAIL",
+        id: { not: mailbox.id },
+      },
+      data: { active: false },
+    });
+
     await tx.integrationSyncLog.create({
       data: {
         firmId: statePayload.firmId,

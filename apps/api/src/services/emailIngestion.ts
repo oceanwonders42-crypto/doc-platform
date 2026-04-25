@@ -8,6 +8,7 @@ import { decryptSecret } from "./credentialEncryption";
 import { ensureFreshGmailCredential } from "./gmailOAuth";
 import {
   pollImapSinceUid,
+  sha256,
   shouldUseLocalMailboxSandbox,
   type ImapConfig,
   type ImapSandboxConfig,
@@ -16,6 +17,7 @@ import { ingestDocumentFromBuffer } from "./ingestFromBuffer";
 import { extractEmailAutomationSnapshot } from "./emailAutomation";
 import { isEmailAutomationAllowedForFirm } from "./featureCompatibility";
 import { createNotification } from "./notifications";
+import { IntegrationStatus } from "@prisma/client";
 import type { MailboxConnection } from "@prisma/client";
 import type { FirmIntegration } from "@prisma/client";
 import type { IntegrationCredential } from "@prisma/client";
@@ -81,6 +83,57 @@ function isIngestibleAttachment(filename: string, mimeType?: string | null): boo
   return false;
 }
 
+function normalizeEmailAddress(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function hashExternalIdPart(value: string): string {
+  return sha256(Buffer.from(value)).slice(0, 24);
+}
+
+function buildEmailAttachmentExternalId(params: {
+  provider: string;
+  accountEmail: string;
+  providerMessageId: string;
+  filename: string;
+  contentHash: string;
+}): string {
+  const provider = params.provider.trim().toLowerCase() || "mailbox";
+  const account = normalizeEmailAddress(params.accountEmail) || "unknown-account";
+  const messageHash = hashExternalIdPart(params.providerMessageId || "unknown-message");
+  const filenameHash = hashExternalIdPart(params.filename.trim().toLowerCase() || "attachment");
+  return `integration:${provider}:${account}:${messageHash}:${filenameHash}:${params.contentHash}`;
+}
+
+async function skipStaleGmailMailbox(params: {
+  firmId: string;
+  integrationId: string;
+  mailboxId: string;
+  mailboxEmail: string;
+  credentialEmail: string;
+}): Promise<PollMailboxResult> {
+  await prisma.mailboxConnection.update({
+    where: { id: params.mailboxId },
+    data: { active: false, lastSyncAt: new Date() },
+  }).catch(() => undefined);
+  await prisma.integrationSyncLog.create({
+    data: {
+      firmId: params.firmId,
+      integrationId: params.integrationId,
+      eventType: "mailbox_disabled",
+      status: "success",
+      message: `Disabled stale Gmail mailbox ${params.mailboxEmail}; OAuth credential is for ${params.credentialEmail}.`,
+    },
+  }).catch(() => undefined);
+  return {
+    ok: true,
+    mailboxId: params.mailboxId,
+    firmId: params.firmId,
+    messagesProcessed: 0,
+    attachmentsIngested: 0,
+  };
+}
+
 export type PollMailboxResult = {
   ok: boolean;
   mailboxId: string;
@@ -121,6 +174,20 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
     }
   } else {
     return { ok: false, mailboxId, firmId, messagesProcessed: 0, attachmentsIngested: 0, error: "No credentials" };
+  }
+
+  if (mailbox.provider === "GMAIL") {
+    const mailboxEmail = normalizeEmailAddress(mailbox.emailAddress);
+    const credentialEmail = normalizeEmailAddress(credentials.imapUsername);
+    if (mailboxEmail && credentialEmail && mailboxEmail !== credentialEmail) {
+      return skipStaleGmailMailbox({
+        firmId,
+        integrationId: integration!.id,
+        mailboxId,
+        mailboxEmail,
+        credentialEmail,
+      });
+    }
   }
 
   const lastUid = mailbox.lastUid ? parseInt(mailbox.lastUid, 10) : null;
@@ -194,10 +261,25 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
     for (const a of m.attachments ?? []) {
       if (!a?.content || !a.filename) continue;
       if (!isIngestibleAttachment(a.filename, a.mimeType)) continue;
-      const externalId = `integration:${mailboxId}:${m.uid}:${a.filename}`;
       const content = Buffer.isBuffer(a.content) ? a.content : Buffer.from(a.content as ArrayBuffer);
+      const contentHash = sha256(content);
+      const externalId = buildEmailAttachmentExternalId({
+        provider: mailbox.provider,
+        accountEmail: credentials.imapUsername || mailbox.emailAddress,
+        providerMessageId: m.providerMessageId || `imap-uid:${m.uid}`,
+        filename: a.filename,
+        contentHash,
+      });
+      const legacyExternalId = `integration:${mailboxId}:${m.uid}:${a.filename}`;
       const existingDocument = await prisma.document.findFirst({
-        where: { firmId, external_id: externalId },
+        where: {
+          firmId,
+          source: "email",
+          OR: [
+            { external_id: { in: [externalId, legacyExternalId] } },
+            { originalName: a.filename, file_sha256: contentHash },
+          ],
+        },
         select: { id: true },
       });
       if (existingDocument) {
@@ -300,6 +382,12 @@ export async function pollAllActiveMailboxes(
   const effectiveMailboxId = scope.mailboxId ?? sandboxScope.mailboxId;
   const where: Prisma.MailboxConnectionWhereInput = {
     active: true,
+    integration: {
+      is: {
+        status: IntegrationStatus.CONNECTED,
+        credentials: { some: {} },
+      },
+    },
     ...(effectiveFirmId ? { firmId: effectiveFirmId } : {}),
     ...(effectiveMailboxId ? { id: effectiveMailboxId } : {}),
   };
