@@ -8921,12 +8921,10 @@ app.post("/mailboxes/:id/test", auth, requireRole(Role.FIRM_ADMIN), async (req, 
           message: result.ok ? "Connection OK" : result.error ?? "Connection failed",
         },
       });
-      if (result.ok) {
-        await prisma.firmIntegration.update({
-          where: { id: mailbox.integrationId },
-          data: { status: IntegrationStatus.CONNECTED },
-        });
-      }
+      await prisma.firmIntegration.update({
+        where: { id: mailbox.integrationId },
+        data: { status: result.ok ? IntegrationStatus.CONNECTED : IntegrationStatus.ERROR },
+      });
     }
 
     if (result.ok) {

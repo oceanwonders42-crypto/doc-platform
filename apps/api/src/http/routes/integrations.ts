@@ -104,15 +104,21 @@ router.post(
         },
       });
 
-      // Test connection for IMAP
-      if (provider === "IMAP" && encryptedSecret) {
+      // Test the stored mailbox credentials before marking the integration connected.
+      if (encryptedSecret) {
         try {
           const config = JSON.parse(decryptSecret(encryptedSecret));
           const result = await testImapConnection({
-            host: config.imapHost,
+            host:
+              config.imapHost ||
+              (provider === "GMAIL"
+                ? "imap.gmail.com"
+                : provider === "OUTLOOK"
+                  ? "outlook.office365.com"
+                  : ""),
             port: config.imapPort || 993,
             secure: config.imapSecure ?? true,
-            auth: { user: config.imapUsername, pass: config.imapPassword },
+            auth: { user: config.imapUsername || body.emailAddress, pass: config.imapPassword },
             mailbox: config.folder || "INBOX",
           });
           if (!result.ok) {
