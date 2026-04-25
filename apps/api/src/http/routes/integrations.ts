@@ -266,7 +266,16 @@ router.get("/status", auth, requireRole(Role.STAFF), async (req: Request, res: R
       }),
       prisma.mailboxConnection.findMany({
         where: buildFirmWhere(firmId),
-        select: { id: true, emailAddress: true, provider: true, lastSyncAt: true, active: true },
+        orderBy: { updatedAt: "desc" },
+        select: {
+          id: true,
+          emailAddress: true,
+          provider: true,
+          lastSyncAt: true,
+          active: true,
+          integrationId: true,
+          updatedAt: true,
+        },
       }),
     ]);
     return res.json({
@@ -285,6 +294,8 @@ router.get("/status", auth, requireRole(Role.STAFF), async (req: Request, res: R
         provider: m.provider,
         lastSyncAt: m.lastSyncAt?.toISOString() ?? null,
         active: m.active,
+        integrationId: m.integrationId,
+        updatedAt: m.updatedAt.toISOString(),
       })),
     });
   } catch (e: unknown) {

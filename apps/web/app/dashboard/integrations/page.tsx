@@ -33,6 +33,8 @@ type IntegrationsStatusResponse = {
     provider: string;
     lastSyncAt: string | null;
     active: boolean;
+    integrationId?: string | null;
+    updatedAt?: string | null;
   }>;
   error?: string;
 };
@@ -171,21 +173,26 @@ export default function IntegrationsPage() {
     return items[0] ?? null;
   }, [statusPayload]);
 
-  const emailMailbox = useMemo(() => {
-    const items = [...(statusPayload?.mailboxes ?? [])].sort((left, right) => {
-      const rightValue = Date.parse(right.lastSyncAt ?? "") || 0;
-      const leftValue = Date.parse(left.lastSyncAt ?? "") || 0;
-      return rightValue - leftValue;
-    });
-    return items.find((mailbox) => mailbox.active) ?? items[0] ?? null;
-  }, [statusPayload]);
-
   const emailIntegration = useMemo(() => {
     const items = [...(statusPayload?.integrations ?? [])]
       .filter((integration) => integration.type === "EMAIL")
       .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
     return items[0] ?? null;
   }, [statusPayload]);
+
+  const emailMailbox = useMemo(() => {
+    const items = [...(statusPayload?.mailboxes ?? [])].sort((left, right) => {
+      const rightValue = Date.parse(right.updatedAt ?? right.lastSyncAt ?? "") || 0;
+      const leftValue = Date.parse(left.updatedAt ?? left.lastSyncAt ?? "") || 0;
+      return rightValue - leftValue;
+    });
+    const activeItems = items.filter((mailbox) => mailbox.active);
+    const matchingMailbox = emailIntegration
+      ? activeItems.find((mailbox) => mailbox.integrationId === emailIntegration.id)
+      : null;
+    if (matchingMailbox) return matchingMailbox;
+    return activeItems[0] ?? items[0] ?? null;
+  }, [emailIntegration, statusPayload]);
 
   const clioStatus = useMemo(() => {
     if (!clioIntegration) {
