@@ -35,6 +35,7 @@ router.post(
       imapSecure?: boolean;
       imapUsername?: string;
       imapPassword?: string;
+      password?: string;
       folder?: string;
     };
 
@@ -43,8 +44,29 @@ router.post(
     }
 
     const provider = body.provider as MailboxProvider;
+    const submittedPassword =
+      typeof body.imapPassword === "string" && body.imapPassword.trim()
+        ? body.imapPassword
+        : typeof body.password === "string" && body.password.trim()
+          ? body.password
+          : "";
+
+    if ((provider === "GMAIL" || provider === "OUTLOOK") && !submittedPassword) {
+      return res.status(400).json({
+        ok: false,
+        error: "Password / app password required",
+      });
+    }
+
+    if (provider === "IMAP" && !submittedPassword) {
+      return res.status(400).json({
+        ok: false,
+        error: "IMAP password required",
+      });
+    }
+
     let encryptedSecret = "";
-    if (provider === "IMAP" && (body.imapPassword != null || body.imapUsername != null)) {
+    if (provider === "IMAP") {
       try {
         encryptedSecret = encryptSecret(
           JSON.stringify({
@@ -52,19 +74,19 @@ router.post(
             imapPort: body.imapPort ?? 993,
             imapSecure: body.imapSecure ?? true,
             imapUsername: body.imapUsername || body.emailAddress,
-            imapPassword: body.imapPassword || "",
+            imapPassword: submittedPassword,
             folder: body.folder || "INBOX",
           })
         );
       } catch (e: unknown) {
         return res.status(500).json({ ok: false, error: "Encryption not configured (ENCRYPTION_KEY)" });
       }
-    } else if ((provider === "GMAIL" || provider === "OUTLOOK") && body.imapPassword != null) {
+    } else if (provider === "GMAIL" || provider === "OUTLOOK") {
       try {
         encryptedSecret = encryptSecret(
           JSON.stringify({
             imapUsername: body.emailAddress,
-            imapPassword: body.imapPassword,
+            imapPassword: submittedPassword,
             folder: body.folder || "INBOX",
             ...(provider === "GMAIL" && { imapHost: "imap.gmail.com", imapPort: 993, imapSecure: true }),
             ...(provider === "OUTLOOK" && { imapHost: "outlook.office365.com", imapPort: 993, imapSecure: true }),
