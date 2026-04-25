@@ -6368,6 +6368,109 @@ app.get("/documents/:id/export-preview", auth, requireRole(Role.STAFF), async (r
   }
 });
 
+app.get("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const documentId = String(req.params.id ?? "");
+    if (!(await enforceDemandPackageDocumentAccess(res, {
+      firmId,
+      documentId,
+      authRole: (req as any).authRole as Role | undefined,
+      action: "read",
+    }))) return;
+
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, firmId },
+      select: {
+        id: true,
+        source: true,
+        originalName: true,
+        status: true,
+        reviewState: true,
+        routedCaseId: true,
+        routingStatus: true,
+        mimeType: true,
+        confidence: true,
+        extractedFields: true,
+        duplicateMatchCount: true,
+        duplicateOfId: true,
+        pageCount: true,
+        ingestedAt: true,
+        createdAt: true,
+        processedAt: true,
+        processingStage: true,
+        metaJson: true,
+      },
+    });
+    if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
+
+    const normalizedStatus = getNormalizedDocumentStatus(doc) ?? doc.status;
+    if (normalizedStatus !== doc.status) {
+      await prisma.document.updateMany({
+        where: { id: documentId, firmId },
+        data: { status: normalizedStatus as DocumentStatus },
+      });
+    }
+
+    const { rows } = await pgPool.query(
+      `select document_id, text_excerpt, doc_type, client_name, case_number, incident_date, confidence, match_confidence, match_reason, risks, insights, insurance_fields, court_fields, updated_at
+       from document_recognition where document_id = $1`,
+      [documentId]
+    );
+    const rec = rows[0] || null;
+    const document = {
+      id: doc.id,
+      source: doc.source,
+      originalName: doc.originalName,
+      status: normalizedStatus,
+      reviewState: getEffectiveDocumentReviewState(doc),
+      routedCaseId: doc.routedCaseId ?? null,
+      routingStatus: doc.routingStatus ?? null,
+      mimeType: doc.mimeType ?? null,
+      confidence: doc.confidence,
+      extractedFields: doc.extractedFields,
+      metaJson: doc.metaJson ?? null,
+      lastRunAt: rec?.updated_at ?? null,
+      errors: doc.status === "FAILED" ? "Document processing failed" : null,
+      duplicateMatchCount: doc.duplicateMatchCount ?? 0,
+      duplicateOfId: doc.duplicateOfId ?? null,
+      pageCount: doc.pageCount ?? 0,
+      ingestedAt: doc.ingestedAt?.toISOString?.() ?? null,
+      createdAt: doc.createdAt?.toISOString?.() ?? null,
+      processedAt: doc.processedAt?.toISOString?.() ?? null,
+      processingStage: doc.processingStage ?? "uploaded",
+    };
+
+    res.json({
+      ok: true,
+      document,
+      item: document,
+      recognition: rec
+        ? {
+            docType: rec.doc_type,
+            clientName: rec.client_name,
+            caseNumber: rec.case_number,
+            incidentDate: rec.incident_date,
+            confidence: rec.confidence,
+            textExcerpt: rec.text_excerpt,
+            excerptLength: (rec.text_excerpt || "").length,
+            updatedAt: rec.updated_at,
+            lastRunAt: rec.updated_at,
+            matchConfidence: rec.match_confidence != null ? Number(rec.match_confidence) : null,
+            matchReason: rec.match_reason ?? null,
+            risks: rec.risks != null ? (Array.isArray(rec.risks) ? rec.risks : (rec.risks as any)?.risks ?? []) : [],
+            insights: rec.insights != null ? (Array.isArray(rec.insights) ? rec.insights : (rec.insights as any)?.insights ?? []) : [],
+            insuranceFields: rec.insurance_fields ?? null,
+            courtFields: rec.court_fields ?? null,
+          }
+        : null,
+    });
+  } catch (e: any) {
+    console.error("Failed to load document detail", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.patch("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;

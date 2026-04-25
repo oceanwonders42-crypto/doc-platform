@@ -9,6 +9,32 @@ function getConfig() {
   return { base, key };
 }
 
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const config = getConfig();
+  if (!config) {
+    return NextResponse.json(
+      { ok: false, error: "Missing DOC_API_URL or DOC_API_KEY" },
+      { status: 500 }
+    );
+  }
+  const { id } = await params;
+  const res = await fetch(`${config.base}/documents/${id}`, {
+    headers: {
+      Authorization: `Bearer ${config.key}`,
+      Accept: "application/json",
+    },
+    cache: "no-store",
+  }).catch(() => null);
+  if (!res) {
+    return NextResponse.json({ ok: false, error: "Upstream failed" }, { status: 502 });
+  }
+  const data = await res.json().catch(() => ({ ok: false, error: "Upstream returned non-JSON response" }));
+  return NextResponse.json(data, { status: res.status });
+}
+
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
