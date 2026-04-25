@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+  formatImapError,
   pollImapSinceUid,
   shouldUseLocalMailboxSandbox,
   testImapConnection,
@@ -57,6 +58,16 @@ async function main() {
 
   const connectionTest = await testImapConnection(cfg);
   assert.deepEqual(connectionTest, { ok: true });
+
+  assert.equal(
+    formatImapError({
+      message: "Command failed",
+      response: "3 NO [AUTHENTICATIONFAILED] Invalid credentials (Failure)",
+      responseText: "Invalid credentials (Failure)",
+      authenticationFailed: true,
+    }),
+    "IMAP authentication failed: Invalid credentials (Failure)"
+  );
 
   process.env.NODE_ENV = "production";
   assert.equal(shouldUseLocalMailboxSandbox(cfg), false);

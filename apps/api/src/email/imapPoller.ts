@@ -54,6 +54,40 @@ function normalizeBodyText(text: string | undefined): string | undefined {
   return normalized ? normalized.slice(0, 20_000) : undefined;
 }
 
+export function formatImapError(err: unknown): string {
+  const candidate = err as {
+    message?: string;
+    response?: string;
+    responseText?: string;
+    authenticationFailed?: boolean;
+    code?: string;
+  } | null;
+  const message = candidate?.message?.trim() || "";
+  const responseText = candidate?.responseText?.trim() || "";
+  const response = candidate?.response?.trim() || "";
+  const authFailed =
+    candidate?.authenticationFailed === true ||
+    /AUTHENTICATIONFAILED/i.test(response) ||
+    /Invalid credentials/i.test(responseText);
+
+  if (authFailed) {
+    return `IMAP authentication failed: ${responseText || "Invalid credentials"}`;
+  }
+  if (responseText && responseText !== message) {
+    return responseText;
+  }
+  if (response && response !== message) {
+    return response;
+  }
+  if (message) {
+    return message;
+  }
+  if (candidate?.code) {
+    return String(candidate.code);
+  }
+  return String(err);
+}
+
 export function shouldUseLocalMailboxSandbox(cfg: ImapConfig): boolean {
   return (
     process.env.NODE_ENV !== "production" &&
@@ -332,13 +366,14 @@ export async function testImapConnection(
     greetingTimeout: 10 * 1000,
     connectionTimeout: 10 * 1000,
   });
+  client.on("error", () => {});
   try {
     await client.connect();
     await client.mailboxOpen(cfg.mailbox);
     await client.logout();
     return { ok: true };
   } catch (err: any) {
-    const msg = String(err?.message || err?.stack || err);
+    const msg = formatImapError(err);
     return { ok: false, error: msg };
   }
 }
