@@ -75,6 +75,39 @@ router.post(
       }
     }
 
+    if (encryptedSecret) {
+      try {
+        const config = JSON.parse(decryptSecret(encryptedSecret));
+        const result = await testImapConnection({
+          host:
+            config.imapHost ||
+            (provider === "GMAIL"
+              ? "imap.gmail.com"
+              : provider === "OUTLOOK"
+                ? "outlook.office365.com"
+                : ""),
+          port: config.imapPort || 993,
+          secure: config.imapSecure ?? true,
+          auth: { user: config.imapUsername || body.emailAddress, pass: config.imapPassword },
+          mailbox: config.folder || "INBOX",
+        });
+        if (!result.ok) {
+          return res.status(400).json({
+            ok: false,
+            error: "Mailbox test failed",
+            details: result.error,
+          });
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return res.status(400).json({
+          ok: false,
+          error: "Mailbox test failed",
+          details: msg,
+        });
+      }
+    }
+
     try {
       const integration = await prisma.firmIntegration.create({
         data: {
@@ -103,64 +136,6 @@ router.post(
           integrationId: integration.id,
         },
       });
-
-      // Test the stored mailbox credentials before marking the integration connected.
-      if (encryptedSecret) {
-        try {
-          const config = JSON.parse(decryptSecret(encryptedSecret));
-          const result = await testImapConnection({
-            host:
-              config.imapHost ||
-              (provider === "GMAIL"
-                ? "imap.gmail.com"
-                : provider === "OUTLOOK"
-                  ? "outlook.office365.com"
-                  : ""),
-            port: config.imapPort || 993,
-            secure: config.imapSecure ?? true,
-            auth: { user: config.imapUsername || body.emailAddress, pass: config.imapPassword },
-            mailbox: config.folder || "INBOX",
-          });
-          if (!result.ok) {
-            await prisma.firmIntegration.update({
-              where: { id: integration.id },
-              data: { status: IntegrationStatus.ERROR },
-            });
-            await prisma.integrationSyncLog.create({
-              data: {
-                firmId,
-                integrationId: integration.id,
-                eventType: "connection_test",
-                status: "error",
-                message: result.error ?? "Connection failed",
-              },
-            });
-            return res.status(400).json({
-              ok: false,
-              error: "Mailbox test failed",
-              details: result.error,
-              integrationId: integration.id,
-              mailboxId: mailbox.id,
-            });
-          }
-        } catch (e: unknown) {
-          const msg = e instanceof Error ? e.message : String(e);
-          await prisma.integrationSyncLog.create({
-            data: {
-              firmId,
-              integrationId: integration.id,
-              eventType: "connection_test",
-              status: "error",
-              message: msg,
-            },
-          });
-          return res.status(400).json({
-            ok: false,
-            error: "Mailbox test failed",
-            details: msg,
-          });
-        }
-      }
 
       await prisma.firmIntegration.update({
         where: { id: integration.id },
