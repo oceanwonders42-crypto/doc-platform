@@ -21,6 +21,8 @@ const GOOGLE_SCOPE =
   process.env.GOOGLE_OAUTH_SCOPE?.trim() ||
   "openid email profile https://mail.google.com/";
 const GOOGLE_STATE_MAX_AGE_MS = 15 * 60 * 1000;
+const DEFAULT_PRODUCTION_GMAIL_REDIRECT_URI =
+  "https://api.onyxintels.com/api/gmail/callback";
 
 type GmailOAuthEnv = {
   clientId: string;
@@ -105,6 +107,9 @@ function getGmailOAuthEnv(): GmailOAuthEnv {
   const redirectUri =
     process.env.GOOGLE_OAUTH_REDIRECT_URI?.trim() ||
     process.env.GMAIL_OAUTH_REDIRECT_URI?.trim() ||
+    (process.env.NODE_ENV === "production"
+      ? DEFAULT_PRODUCTION_GMAIL_REDIRECT_URI
+      : "") ||
     "";
 
   const missingEnvVars: string[] = [];
@@ -141,6 +146,9 @@ export function getGmailEnvStatus(): {
       const redirectUri =
         process.env.GOOGLE_OAUTH_REDIRECT_URI?.trim() ||
         process.env.GMAIL_OAUTH_REDIRECT_URI?.trim() ||
+        (process.env.NODE_ENV === "production"
+          ? DEFAULT_PRODUCTION_GMAIL_REDIRECT_URI
+          : "") ||
         null;
       return {
         configured: false,
