@@ -265,6 +265,19 @@ export async function pollImapSinceUid(
     const mb = await client.mailboxOpen(cfg.mailbox);
     console.log(`[imap] opened mailbox=${cfg.mailbox} mailboxUidValidity=${mb.uidValidity}`);
 
+    const uidNext = Number((mb as { uidNext?: number | bigint | string }).uidNext);
+    const highestExistingUid = Number.isFinite(uidNext) ? uidNext - 1 : null;
+    if (
+      lastUid != null &&
+      highestExistingUid != null &&
+      highestExistingUid <= lastUid
+    ) {
+      console.log(
+        `[imap] no new UIDs mailbox=${cfg.mailbox} lastUid=${lastUid} uidNext=${uidNext}`
+      );
+      return { messages: [], highestUid: lastUid };
+    }
+
     const range = lastUid ? `${lastUid + 1}:*` : "1:*";
     console.log(`[imap] uid range=${range} maxMessages=${maxMessages}`);
 

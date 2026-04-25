@@ -196,6 +196,22 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
       if (!isIngestibleAttachment(a.filename, a.mimeType)) continue;
       const externalId = `integration:${mailboxId}:${m.uid}:${a.filename}`;
       const content = Buffer.isBuffer(a.content) ? a.content : Buffer.from(a.content as ArrayBuffer);
+      const existingDocument = await prisma.document.findFirst({
+        where: { firmId, external_id: externalId },
+        select: { id: true },
+      });
+      if (existingDocument) {
+        await prisma.integrationSyncLog.create({
+          data: {
+            firmId,
+            integrationId: integration!.id,
+            eventType: "attachment_skipped",
+            status: "success",
+            message: `Skipped duplicate ${a.filename} already ingested as ${existingDocument.id}`,
+          },
+        }).catch(() => {});
+        continue;
+      }
       const emailAutomation = emailAutomationAllowed
         ? extractEmailAutomationSnapshot({
             fromEmail: m.fromEmail,

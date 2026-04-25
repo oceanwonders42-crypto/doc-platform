@@ -22,7 +22,7 @@ const POLL_SCOPE = LOCAL_SANDBOX_SCOPE_ENABLED
     }
   : {};
 
-async function runOnce(): Promise<void> {
+export async function runIntegrationSyncOnce(): Promise<void> {
   try {
     const results = await pollAllActiveMailboxes(POLL_SCOPE);
     const failed = results.filter((r) => !r.ok);
@@ -40,13 +40,23 @@ async function runOnce(): Promise<void> {
   }
 }
 
-async function run() {
+let integrationSyncStarted = false;
+
+export async function startIntegrationSyncWorker(): Promise<void> {
+  if (integrationSyncStarted) {
+    return;
+  }
+  integrationSyncStarted = true;
   console.log("[integration-sync] started", { intervalMs: INTERVAL_MS, scope: POLL_SCOPE });
-  await runOnce();
-  setInterval(runOnce, INTERVAL_MS);
+  await runIntegrationSyncOnce();
+  setInterval(() => {
+    void runIntegrationSyncOnce();
+  }, INTERVAL_MS);
 }
 
-run().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (require.main === module) {
+  startIntegrationSyncWorker().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
