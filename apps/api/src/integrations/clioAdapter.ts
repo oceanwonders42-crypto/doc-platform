@@ -98,7 +98,7 @@ export type SyncClioMatterWriteBackOnIngestParams = {
 };
 
 export type SyncClioMatterWriteBackOnIngestResult = {
-  noteStatus: "added" | "failed" | "skipped";
+  noteStatus: "added" | "already_added" | "failed" | "skipped";
   noteId?: string;
   noteError?: string;
   claimNumberStatus:
@@ -576,6 +576,37 @@ async function auditClioWriteBackEvent(input: {
   });
 }
 
+async function findExistingClioNoteWriteBack(input: {
+  firmId: string;
+  caseId: string;
+  documentId: string;
+  matterId: string;
+}): Promise<{ noteId?: string } | null> {
+  const existing = await prisma.documentAuditEvent.findFirst({
+    where: {
+      firmId: input.firmId,
+      documentId: input.documentId,
+      action: "clio_note_added",
+      OR: [{ fromCaseId: input.caseId }, { toCaseId: input.caseId }],
+    },
+    orderBy: { createdAt: "desc" },
+    select: { metaJson: true },
+  });
+  if (!existing) {
+    return null;
+  }
+
+  const meta = toObjectRecord(existing.metaJson);
+  const clioMatterId = normalizeString(meta?.clioMatterId);
+  if (clioMatterId && clioMatterId !== input.matterId) {
+    return null;
+  }
+
+  return {
+    noteId: normalizeString(meta?.clioNoteId) ?? undefined,
+  };
+}
+
 async function recordClioSandboxEvent(input: {
   firmId: string;
   caseId: string;
@@ -821,15 +852,36 @@ export async function syncClioMatterWriteBackOnIngest(
     };
   }
 
-  const noteResult = await createClioMatterNote({
-    accessToken: context.accessToken,
+  const existingNote = await findExistingClioNoteWriteBack({
+    firmId,
+    caseId,
+    documentId,
     matterId: context.matterId,
-    note,
   });
-  const noteStatus = noteResult.ok ? "added" : "failed";
-  const noteId = noteResult.ok ? noteResult.noteId : undefined;
-  const noteError = "error" in noteResult ? noteResult.error : undefined;
-  if (noteResult.ok) {
+  let noteStatus: SyncClioMatterWriteBackOnIngestResult["noteStatus"];
+  let noteId: string | undefined;
+  let noteError: string | undefined;
+  if (existingNote) {
+    noteStatus = "already_added";
+    noteId = existingNote.noteId;
+    logInfo("clio_note_writeback_deduped", {
+      firmId,
+      caseId,
+      documentId,
+      clioMatterId: context.matterId,
+      clioNoteId: noteId ?? null,
+    });
+  } else {
+    const noteResult = await createClioMatterNote({
+      accessToken: context.accessToken,
+      matterId: context.matterId,
+      note,
+    });
+    noteStatus = noteResult.ok ? "added" : "failed";
+    noteId = noteResult.ok ? noteResult.noteId : undefined;
+    noteError = "error" in noteResult ? noteResult.error : undefined;
+  }
+  if (noteStatus === "added") {
     await auditClioWriteBackEvent({
       firmId,
       caseId,
@@ -837,7 +889,7 @@ export async function syncClioMatterWriteBackOnIngest(
       action: "clio_note_added",
       metaJson: {
         clioMatterId: context.matterId,
-        clioNoteId: noteResult.noteId ?? null,
+        clioNoteId: noteId ?? null,
       },
     });
   }
