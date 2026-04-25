@@ -9,6 +9,7 @@ import { auth } from "../middleware/auth";
 import { requireRole } from "../middleware/requireRole";
 import { requireFirmIdFromRequest, buildFirmWhere } from "../../lib/tenant";
 import { encryptSecret, decryptSecret } from "../../services/credentialEncryption";
+import { ensureFreshGmailCredential } from "../../services/gmailOAuth";
 import { testImapConnection } from "../../email/imapPoller";
 import {
   IntegrationType,
@@ -44,6 +45,14 @@ router.post(
     }
 
     const provider = body.provider as MailboxProvider;
+    if (provider === "GMAIL") {
+      return res.status(400).json({
+        ok: false,
+        error: "Use the Gmail browser sign-in flow instead of a saved password.",
+        nextStep: "/dashboard/integrations/setup?flow=email",
+      });
+    }
+
     const submittedPassword =
       typeof body.imapPassword === "string" && body.imapPassword.trim()
         ? body.imapPassword
@@ -51,7 +60,7 @@ router.post(
           ? body.password
           : "";
 
-    if ((provider === "GMAIL" || provider === "OUTLOOK") && !submittedPassword) {
+    if (provider === "OUTLOOK" && !submittedPassword) {
       return res.status(400).json({
         ok: false,
         error: "Password / app password required",
@@ -81,15 +90,16 @@ router.post(
       } catch (e: unknown) {
         return res.status(500).json({ ok: false, error: "Encryption not configured (ENCRYPTION_KEY)" });
       }
-    } else if (provider === "GMAIL" || provider === "OUTLOOK") {
+    } else if (provider === "OUTLOOK") {
       try {
         encryptedSecret = encryptSecret(
           JSON.stringify({
             imapUsername: body.emailAddress,
             imapPassword: submittedPassword,
             folder: body.folder || "INBOX",
-            ...(provider === "GMAIL" && { imapHost: "imap.gmail.com", imapPort: 993, imapSecure: true }),
-            ...(provider === "OUTLOOK" && { imapHost: "outlook.office365.com", imapPort: 993, imapSecure: true }),
+            imapHost: "outlook.office365.com",
+            imapPort: 993,
+            imapSecure: true,
           })
         );
       } catch (e: unknown) {
@@ -103,11 +113,7 @@ router.post(
         const result = await testImapConnection({
           host:
             config.imapHost ||
-            (provider === "GMAIL"
-              ? "imap.gmail.com"
-              : provider === "OUTLOOK"
-                ? "outlook.office365.com"
-                : ""),
+            (provider === "OUTLOOK" ? "outlook.office365.com" : ""),
           port: config.imapPort || 993,
           secure: config.imapSecure ?? true,
           auth: { user: config.imapUsername || body.emailAddress, pass: config.imapPassword },
@@ -314,12 +320,20 @@ router.post("/test", auth, requireRole(Role.FIRM_ADMIN), async (req: Request, re
       return res.status(400).json({ ok: false, error: "No credentials stored" });
     }
     try {
-      const config = JSON.parse(decryptSecret(cred.encryptedSecret));
+      const config =
+        integration.provider === IntegrationProvider.GMAIL
+          ? await ensureFreshGmailCredential({
+              credentialId: cred.id,
+              encryptedSecret: cred.encryptedSecret,
+            })
+          : JSON.parse(decryptSecret(cred.encryptedSecret));
       const result = await testImapConnection({
         host: config.imapHost || "imap.gmail.com",
         port: config.imapPort || 993,
         secure: config.imapSecure ?? true,
-        auth: { user: config.imapUsername, pass: config.imapPassword },
+        auth: config.accessToken
+          ? { user: config.imapUsername, accessToken: config.accessToken }
+          : { user: config.imapUsername, pass: config.imapPassword },
         mailbox: config.folder || "INBOX",
       });
       const success = result.ok;

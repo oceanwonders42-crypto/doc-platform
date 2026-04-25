@@ -149,6 +149,20 @@ export default function IntegrationsPage() {
   }, [checked, role]);
 
   const emailFocusRequested = searchParams.get("focus") === "email";
+  const emailStatusParam = searchParams.get("emailStatus");
+  const emailMessageParam = searchParams.get("message");
+
+  useEffect(() => {
+    if (!emailStatusParam) return;
+    if (emailStatusParam === "success") {
+      setFlash(emailMessageParam || "Email connection saved.");
+      const timeout = setTimeout(() => setFlash(null), 4000);
+      return () => clearTimeout(timeout);
+    }
+    if (emailStatusParam === "error") {
+      setError(emailMessageParam || "Email connection failed.");
+    }
+  }, [emailStatusParam, emailMessageParam]);
 
   const clioIntegration = useMemo(() => {
     const items = [...(statusPayload?.integrations ?? [])]
@@ -164,6 +178,13 @@ export default function IntegrationsPage() {
       return rightValue - leftValue;
     });
     return items.find((mailbox) => mailbox.active) ?? items[0] ?? null;
+  }, [statusPayload]);
+
+  const emailIntegration = useMemo(() => {
+    const items = [...(statusPayload?.integrations ?? [])]
+      .filter((integration) => integration.type === "EMAIL")
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+    return items[0] ?? null;
   }, [statusPayload]);
 
   const clioStatus = useMemo(() => {
@@ -204,6 +225,44 @@ export default function IntegrationsPage() {
       detail: `Last updated: ${formatTimestamp(clioIntegration.updatedAt)}`,
     };
   }, [clioIntegration, healthPayload]);
+
+  const emailConnectionState = useMemo(() => {
+    if (!emailIntegration && !emailMailbox) {
+      return {
+        badgeLabel: "Not connected",
+        badgeTone: "neutral" as const,
+        headline: "Connect a live mailbox so Onyx can ingest emailed PDFs into the review workflow.",
+        detail: "No intake mailbox is connected for this firm yet.",
+      };
+    }
+
+    if (emailMailbox?.active && emailIntegration?.status === "CONNECTED") {
+      return {
+        badgeLabel: "Connected",
+        badgeTone: "success" as const,
+        headline: "Email intake is connected and ready to receive PDF attachments.",
+        detail: `Mailbox ${emailMailbox.emailAddress} • Last sync ${formatTimestamp(emailMailbox.lastSyncAt)}`,
+      };
+    }
+
+    if (emailIntegration?.status === "ERROR") {
+      return {
+        badgeLabel: "Needs attention",
+        badgeTone: "error" as const,
+        headline: "The saved mailbox connection is reporting an error and should be retested.",
+        detail: `Errors in the last 24 hours: ${healthPayload?.errorCountLast24h ?? 0}`,
+      };
+    }
+
+    return {
+      badgeLabel: "Disconnected",
+      badgeTone: "warning" as const,
+      headline: "A mailbox connection exists, but it is not currently active.",
+      detail: emailMailbox
+        ? `Mailbox ${emailMailbox.emailAddress} is paused or disconnected.`
+        : "Reconnect the intake mailbox to resume automatic ingestion.",
+    };
+  }, [emailIntegration, emailMailbox, healthPayload]);
 
   async function runClioTest() {
     if (!clioIntegration) return;
@@ -387,6 +446,66 @@ export default function IntegrationsPage() {
           </div>
         </DashboardCard>
 
+        <DashboardCard
+          title="Email intake"
+          style={
+            emailFocusRequested
+              ? {
+                  borderColor: "var(--onyx-accent)",
+                  boxShadow: "0 0 0 1px rgba(161, 98, 7, 0.18)",
+                }
+              : undefined
+          }
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "0.75rem",
+              marginBottom: "0.75rem",
+            }}
+          >
+            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
+              Gmail uses a browser-based Google login. Other providers can still use direct IMAP credentials.
+            </p>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                padding: "0.2rem 0.6rem",
+                borderRadius: "999px",
+                fontSize: "0.75rem",
+                fontWeight: 600,
+                whiteSpace: "nowrap",
+                ...getBadgeStyle(emailConnectionState.badgeTone),
+              }}
+            >
+              {emailConnectionState.badgeLabel}
+            </span>
+          </div>
+
+          <p style={{ margin: "0 0 0.35rem", fontSize: "0.875rem", color: "var(--onyx-text)" }}>
+            {emailConnectionState.headline}
+          </p>
+          <p style={{ margin: 0, fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+            {emailConnectionState.detail}
+          </p>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap", marginTop: "1rem" }}>
+            <Link
+              href="/dashboard/integrations/setup?flow=email"
+              className="onyx-btn-primary"
+              style={{ display: "inline-flex", textDecoration: "none" }}
+            >
+              {emailMailbox ? "Reconnect Email" : "Connect Email"}
+            </Link>
+            <Link href="/dashboard/email" className="onyx-link" style={{ fontSize: "0.875rem" }}>
+              Open email intake dashboard
+            </Link>
+          </div>
+        </DashboardCard>
+
         <DashboardCard title="Connected systems">
           <dl style={{ margin: 0, display: "grid", gap: "0.75rem" }}>
             <div>
@@ -442,12 +561,12 @@ export default function IntegrationsPage() {
         }}
       >
         <ul style={{ margin: 0, paddingLeft: "1.25rem", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>
-          <li style={{ marginBottom: "0.35rem" }}>Clio is the primary call to action here.</li>
+          <li style={{ marginBottom: "0.35rem" }}>Clio and Email are both managed from this surface.</li>
           <li style={{ marginBottom: "0.35rem" }}>
-            Connection status is shown from the live integrations API instead of static copy.
+            Gmail uses browser OAuth instead of a saved password field.
           </li>
           <li>
-            Admin-only actions remain bounded to connect, test, disconnect, and detailed settings.
+            Connection status is shown from the live integrations API instead of static copy.
           </li>
         </ul>
       </DashboardCard>

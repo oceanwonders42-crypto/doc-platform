@@ -66,9 +66,11 @@ async function main() {
     const json = (await response.json()) as {
       ok?: boolean;
       error?: string;
+      nextStep?: string;
     };
     assert.equal(json.ok, false);
-    assert.match(json.error ?? "", /password/i);
+    assert.match(json.error ?? "", /browser sign-in/i);
+    assert.equal(json.nextStep, "/dashboard/integrations/setup?flow=email");
 
     const [integrations, mailboxes] = await Promise.all([
       prisma.firmIntegration.findMany({ where: { firmId, type: "EMAIL" } }),
@@ -108,4 +110,5 @@ main()
       Promise.allSettled([prisma.$disconnect(), pgPool.end(), redis.quit()]),
       new Promise((resolve) => setTimeout(resolve, 1000)),
     ]);
+    process.exit(process.exitCode ?? 0);
   });

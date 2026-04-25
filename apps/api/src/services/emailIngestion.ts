@@ -5,6 +5,7 @@
  */
 import { prisma } from "../db/prisma";
 import { decryptSecret } from "./credentialEncryption";
+import { ensureFreshGmailCredential } from "./gmailOAuth";
 import {
   pollImapSinceUid,
   shouldUseLocalMailboxSandbox,
@@ -27,7 +28,11 @@ type MailboxCredentialPayload = {
   imapPort: number;
   imapSecure: boolean;
   imapUsername: string;
-  imapPassword: string;
+  imapPassword?: string;
+  accessToken?: string;
+  refreshToken?: string | null;
+  tokenType?: string | null;
+  expiresAt?: string | null;
   folder: string;
   sandboxMode?: ImapSandboxConfig["mode"] | null;
   sandboxLabel?: string | null;
@@ -98,7 +103,15 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
   let credentials: MailboxCredentialPayload;
   if (integrationId && integration?.credentials?.length) {
     try {
-      credentials = JSON.parse(decryptSecret(integration.credentials[0].encryptedSecret));
+      const currentCredential = integration.credentials[0];
+      if (mailbox.provider === "GMAIL") {
+        credentials = await ensureFreshGmailCredential({
+          credentialId: currentCredential.id,
+          encryptedSecret: currentCredential.encryptedSecret,
+        });
+      } else {
+        credentials = JSON.parse(decryptSecret(currentCredential.encryptedSecret));
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       await prisma.integrationSyncLog.create({
@@ -124,7 +137,9 @@ export async function pollMailbox(mailbox: MailboxConnection, integration: FirmI
     host: credentials.imapHost,
     port: credentials.imapPort || 993,
     secure: credentials.imapSecure ?? true,
-    auth: { user: credentials.imapUsername, pass: credentials.imapPassword },
+    auth: credentials.accessToken
+      ? { user: credentials.imapUsername, accessToken: credentials.accessToken }
+      : { user: credentials.imapUsername, pass: credentials.imapPassword || "" },
     mailbox: credentials.folder || "INBOX",
     sandbox:
       credentials.sandboxMode === "local_imap_fixture"

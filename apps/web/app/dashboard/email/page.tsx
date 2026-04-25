@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 import {
@@ -35,7 +35,7 @@ type RecentIngest = {
 };
 
 function fmtDate(iso: string | null) {
-  if (!iso) return "—";
+  if (!iso) return "-";
   try {
     return new Date(iso).toLocaleString();
   } catch {
@@ -56,10 +56,7 @@ export default function EmailDashboardPage() {
     try {
       const apiBase = getApiBase();
       const [mbRes, ingRes] = await Promise.all([
-        fetch(
-          `${apiBase}/mailboxes`,
-          getApiFetchInit({ cache: "no-store" })
-        ),
+        fetch(`${apiBase}/mailboxes`, getApiFetchInit({ cache: "no-store" })),
         fetch(
           `${apiBase}/mailboxes/recent-ingests?limit=50`,
           getApiFetchInit({ cache: "no-store" })
@@ -77,14 +74,15 @@ export default function EmailDashboardPage() {
       if (mbData.ok && Array.isArray(mbData.items)) setMailboxes(mbData.items);
       else setMailboxes([]);
 
-      if (ingData.ok && Array.isArray(ingData.items)) setRecentIngests(ingData.items);
-      else setRecentIngests([]);
+      if (ingData.ok && Array.isArray(ingData.items)) {
+        setRecentIngests(ingData.items);
+      } else {
+        setRecentIngests([]);
+      }
 
       if (!mbData.ok && mbData.error) setError(mbData.error);
     } catch (e) {
-      setError(
-        formatApiClientError(e, "Failed to load email intake status.")
-      );
+      setError(formatApiClientError(e, "Failed to load email intake status."));
     } finally {
       setLoading(false);
     }
@@ -147,24 +145,47 @@ export default function EmailDashboardPage() {
 
   if (loading) {
     return (
-      <main style={{ padding: 24, maxWidth: 1000, margin: "0 auto", fontFamily: "system-ui, -apple-system" }}>
-        <p>Loading…</p>
+      <main
+        style={{
+          padding: 24,
+          maxWidth: 1000,
+          margin: "0 auto",
+          fontFamily: "system-ui, -apple-system",
+        }}
+      >
+        <p>Loading...</p>
       </main>
     );
   }
 
   return (
-    <main style={{ padding: 24, maxWidth: 1000, margin: "0 auto", fontFamily: "system-ui, -apple-system" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-        <Link href="/dashboard" style={{ fontSize: 14, color: "#111", textDecoration: "underline" }}>
-          ← Dashboard
+    <main
+      style={{
+        padding: 24,
+        maxWidth: 1000,
+        margin: "0 auto",
+        fontFamily: "system-ui, -apple-system",
+      }}
+    >
+      <div
+        style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}
+      >
+        <Link
+          href="/dashboard"
+          style={{ fontSize: 14, color: "#111", textDecoration: "underline" }}
+        >
+          &larr; Dashboard
+        </Link>
+        <Link
+          href="/dashboard/integrations/setup?flow=email"
+          style={{ fontSize: 14, color: "#111", textDecoration: "underline" }}
+        >
+          Connect email
         </Link>
         <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>Email intake</h1>
       </div>
 
-      {error && (
-        <p style={{ color: "#c00", marginBottom: 16 }}>{error}</p>
-      )}
+      {error && <p style={{ color: "#c00", marginBottom: 16 }}>{error}</p>}
 
       <section style={{ marginBottom: 32 }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Mailboxes</h2>
@@ -175,11 +196,21 @@ export default function EmailDashboardPage() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ background: "#f8f8f8", textAlign: "left" }}>
-                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>Status</th>
-                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>User / Host</th>
-                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>Folder</th>
-                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>Last sync / error</th>
-                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>Actions</th>
+                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>
+                    Status
+                  </th>
+                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>
+                    User / Host
+                  </th>
+                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>
+                    Folder
+                  </th>
+                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>
+                    Last sync / error
+                  </th>
+                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -201,17 +232,18 @@ export default function EmailDashboardPage() {
                       </span>
                     </td>
                     <td style={{ padding: "10px 12px", fontSize: 14 }}>
-                      <span style={{ fontWeight: 500 }}>{mb.imap_username || "—"}</span>
+                      <span style={{ fontWeight: 500 }}>{mb.imap_username || "-"}</span>
                       {mb.imap_host && (
                         <span style={{ color: "#666", marginLeft: 6 }}>{mb.imap_host}</span>
                       )}
                     </td>
                     <td style={{ padding: "10px 12px", fontSize: 14 }}>{mb.folder || "INBOX"}</td>
                     <td style={{ padding: "10px 12px", fontSize: 13, color: "#666" }}>
-                      {mb.last_sync_at ? fmtDate(mb.last_sync_at) : "—"}
+                      {mb.last_sync_at ? fmtDate(mb.last_sync_at) : "-"}
                       {mb.last_error && (
                         <div style={{ marginTop: 4, color: "#c00", fontSize: 12 }} title={mb.last_error}>
-                          {mb.last_error.slice(0, 60)}{mb.last_error.length > 60 ? "…" : ""}
+                          {mb.last_error.slice(0, 60)}
+                          {mb.last_error.length > 60 ? "..." : ""}
                         </div>
                       )}
                     </td>
@@ -230,7 +262,7 @@ export default function EmailDashboardPage() {
                           cursor: testingId ? "not-allowed" : "pointer",
                         }}
                       >
-                        {testingId === mb.id ? "Testing…" : "Test connection"}
+                        {testingId === mb.id ? "Testing..." : "Test connection"}
                       </button>
                       <button
                         type="button"
@@ -245,11 +277,7 @@ export default function EmailDashboardPage() {
                           cursor: toggleLoadingId ? "not-allowed" : "pointer",
                         }}
                       >
-                        {toggleLoadingId === mb.id
-                          ? "…"
-                          : mb.status === "active"
-                            ? "Disable"
-                            : "Enable"}
+                        {toggleLoadingId === mb.id ? "..." : mb.status === "active" ? "Disable" : "Enable"}
                       </button>
                     </td>
                   </tr>
@@ -269,12 +297,22 @@ export default function EmailDashboardPage() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ background: "#f8f8f8", textAlign: "left" }}>
-                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>Document</th>
-                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>From</th>
-                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>Subject</th>
-                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>Received</th>
-                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>Status</th>
-                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}></th>
+                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>
+                    Document
+                  </th>
+                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>
+                    From
+                  </th>
+                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>
+                    Subject
+                  </th>
+                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>
+                    Received
+                  </th>
+                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }}>
+                    Status
+                  </th>
+                  <th style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#555" }} />
                 </tr>
               </thead>
               <tbody>
@@ -282,12 +320,16 @@ export default function EmailDashboardPage() {
                   <tr key={ing.id} style={{ borderTop: "1px solid #eee" }}>
                     <td style={{ padding: "10px 12px", fontSize: 13 }}>
                       <code style={{ background: "#f0f0f0", padding: "2px 6px", borderRadius: 4 }}>
-                        {ing.documentId || "—"}
+                        {ing.documentId || "-"}
                       </code>
                     </td>
-                    <td style={{ padding: "10px 12px", fontSize: 13 }}>{ing.from || "—"}</td>
-                    <td style={{ padding: "10px 12px", fontSize: 13, maxWidth: 200 }} title={ing.subject ?? ""}>
-                      {(ing.subject || "—").slice(0, 40)}{(ing.subject?.length ?? 0) > 40 ? "…" : ""}
+                    <td style={{ padding: "10px 12px", fontSize: 13 }}>{ing.from || "-"}</td>
+                    <td
+                      style={{ padding: "10px 12px", fontSize: 13, maxWidth: 200 }}
+                      title={ing.subject ?? ""}
+                    >
+                      {(ing.subject || "-").slice(0, 40)}
+                      {(ing.subject?.length ?? 0) > 40 ? "..." : ""}
                     </td>
                     <td style={{ padding: "10px 12px", fontSize: 13, color: "#666" }}>
                       {fmtDate(ing.receivedAt)}
@@ -302,7 +344,7 @@ export default function EmailDashboardPage() {
                           Open
                         </Link>
                       ) : (
-                        "—"
+                        "-"
                       )}
                     </td>
                   </tr>

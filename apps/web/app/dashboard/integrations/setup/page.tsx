@@ -25,6 +25,13 @@ type MailboxCreateResponse = {
   };
 };
 
+type GmailConnectStartResponse = {
+  ok?: boolean;
+  error?: string;
+  authorizeUrl?: string;
+  redirectUri?: string | null;
+};
+
 type ClioConnectStartResponse = {
   ok?: boolean;
   error?: string;
@@ -126,15 +133,15 @@ export default function IntegrationsSetupPage() {
         ...getFetchOptions({ cache: "no-store" }),
       });
       const data = (await parseJsonResponse(res)) as MailboxCreateResponse;
-      if (!res.ok || !data.ok || !data.mailbox?.id) {
+      const mailboxId = data.mailboxId || data.mailbox?.id;
+      if (!res.ok || !data.ok || !mailboxId) {
         throw new Error(data.details || data.error || "Email connection could not be created.");
       }
 
-      const mailboxId = data.mailbox.id;
       setConnectedMailboxId(mailboxId);
       setTestResult({ ok: true });
       if (emailFlowRequested) {
-        router.push("/dashboard/integrations?focus=email&emailStatus=connected");
+        router.push("/dashboard/integrations?focus=email&emailStatus=success");
         return;
       }
       setStep(3);
@@ -143,6 +150,38 @@ export default function IntegrationsSetupPage() {
         formatApiClientError(e, "Connect Email failed.", {
           deploymentMessage:
             "The email connection flow reached the wrong server target. Check the mounted /integrations/connect-email route and the active web build.",
+        })
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function connectGmail() {
+    setLoading(true);
+    setError(null);
+    setTestResult(null);
+
+    try {
+      const url = new URL(`${getApiBase()}/gmail/connect`);
+      if (emailAddress.trim()) {
+        url.searchParams.set("login_hint", emailAddress.trim());
+      }
+      const res = await fetch(url.toString(), {
+        method: "GET",
+        headers: getAuthHeader(),
+        ...getFetchOptions({ cache: "no-store" }),
+      });
+      const data = (await parseJsonResponse(res)) as GmailConnectStartResponse;
+      if (!res.ok || !data.ok || !data.authorizeUrl) {
+        throw new Error(data.error || "Failed to start the Gmail OAuth flow.");
+      }
+      window.location.assign(data.authorizeUrl);
+    } catch (e) {
+      setError(
+        formatApiClientError(e, "Connect Gmail failed.", {
+          deploymentMessage:
+            "The Gmail OAuth flow reached the wrong server target. Check NEXT_PUBLIC_API_URL and whether the latest API build is deployed.",
         })
       );
     } finally {
@@ -357,9 +396,36 @@ export default function IntegrationsSetupPage() {
                     onChange={(e) => setEmailAddress(e.target.value)}
                     className="onyx-input"
                     style={{ width: "100%" }}
-                    placeholder="you@firm.com"
+                    placeholder={emailProvider === "GMAIL" ? "Optional Google account hint" : "you@firm.com"}
                   />
                 </div>
+                {emailProvider === "GMAIL" ? (
+                  <>
+                    <div
+                      className="onyx-card"
+                      style={{
+                        padding: "1rem",
+                        marginBottom: "1rem",
+                        borderColor: "rgba(11, 99, 206, 0.16)",
+                        background: "rgba(11, 99, 206, 0.04)",
+                      }}
+                    >
+                      <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--onyx-text-muted)", lineHeight: 1.6 }}>
+                        Gmail uses a browser-based Google login now. We will redirect you to Google, save the mailbox to
+                        this firm after the callback succeeds, and return you to Integrations automatically.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={connectGmail}
+                      disabled={loading}
+                      className="onyx-btn-primary"
+                    >
+                      {loading ? "Redirecting..." : "Continue with Gmail"}
+                    </button>
+                  </>
+                ) : (
+                  <>
                 {emailProvider === "IMAP" && (
                   <>
                     <div style={fieldGap}>
@@ -414,6 +480,8 @@ export default function IntegrationsSetupPage() {
                 >
                   {loading ? "Connecting..." : "Connect Email"}
                 </button>
+                  </>
+                )}
               </DashboardCard>
             )}
 

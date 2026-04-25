@@ -94,6 +94,7 @@ import casesRouter from "./routes/cases";
 import clioRouter from "./routes/clio";
 import contactsRouter from "./routes/contacts";
 import demandBankRouter from "./routes/demandBank";
+import gmailRouter from "./routes/gmail";
 import integrationsRouter from "./routes/integrations";
 import migrationRouter from "./routes/migration";
 import {
@@ -179,6 +180,7 @@ import {
   normalizePlanSlug,
   type CanIngestResult,
 } from "../services/billingPlans";
+import { ensureFreshGmailCredential } from "../services/gmailOAuth";
 import { enqueueJob, getJobCounts } from "../services/jobQueue";
 import {
   acceptTeamInvite,
@@ -1049,6 +1051,8 @@ app.use("/clio", clioRouter);
 app.use("/api/clio", clioRouter);
 app.use("/contacts", contactsRouter);
 app.use("/demand-bank", demandBankRouter);
+app.use("/gmail", gmailRouter);
+app.use("/api/gmail", gmailRouter);
 app.use("/integrations", integrationsRouter);
 app.use("/integrations/quickbooks", quickbooksIntegrationRouter);
 app.use("/api/qbo", quickbooksIntegrationRouter);
@@ -8715,6 +8719,7 @@ type StoredMailboxSecret = {
   imapSecure?: boolean;
   imapUsername?: string;
   imapPassword?: string;
+  accessToken?: string;
   folder?: string;
 };
 
@@ -8839,13 +8844,41 @@ app.post("/mailboxes/:id/poll-now", auth, requireRole(Role.FIRM_ADMIN), async (r
       `select id from mailbox_connections where id = $1 and firm_id = $2 limit 1`,
       [mailboxId, firmId]
     );
-    if (!rows.length) {
+    if (rows.length) {
+      const { runEmailPollForMailbox } = await import("../email/emailIngestRunner");
+      await runEmailPollForMailbox(mailboxId);
+      return res.json({ ok: true, message: "Poll completed" });
+    }
+
+    const mailbox = await prisma.mailboxConnection.findFirst({
+      where: { id: mailboxId, firmId },
+      include: {
+        integration: {
+          include: {
+            credentials: {
+              orderBy: { updatedAt: "desc" },
+              take: 1,
+            },
+          },
+        },
+      },
+    });
+    if (!mailbox) {
       return res.status(404).json({ ok: false, error: "mailbox not found" });
     }
 
-    const { runEmailPollForMailbox } = await import("../email/emailIngestRunner");
-    await runEmailPollForMailbox(mailboxId);
-    res.json({ ok: true, message: "Poll completed" });
+    const { pollMailbox } = await import("../services/emailIngestion");
+    const result = await pollMailbox(mailbox, mailbox.integration ?? null);
+    if (!result.ok) {
+      return res.status(400).json({ ok: false, error: result.error ?? "Poll failed" });
+    }
+
+    return res.json({
+      ok: true,
+      message: "Poll completed",
+      messagesProcessed: result.messagesProcessed,
+      attachmentsIngested: result.attachmentsIngested,
+    });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
@@ -8898,8 +8931,19 @@ app.post("/mailboxes/:id/test", auth, requireRole(Role.FIRM_ADMIN), async (req, 
       return res.status(404).json({ ok: false, error: "mailbox not found" });
     }
 
-    const secret = parseStoredMailboxSecret(mailbox.integration?.credentials?.[0]?.encryptedSecret);
-    if (!secret?.imapUsername || !secret.imapPassword) {
+    const currentCredential = mailbox.integration?.credentials?.[0] ?? null;
+    const secret =
+      mailbox.provider === "GMAIL" && currentCredential
+        ? await ensureFreshGmailCredential({
+            credentialId: currentCredential.id,
+            encryptedSecret: currentCredential.encryptedSecret,
+          })
+        : parseStoredMailboxSecret(currentCredential?.encryptedSecret);
+    const secretPassword =
+      secret && "imapPassword" in secret ? secret.imapPassword : undefined;
+    const secretAccessToken =
+      secret && "accessToken" in secret ? secret.accessToken : undefined;
+    if (!secret?.imapUsername || (!secretPassword && !secretAccessToken)) {
       return res.status(400).json({ ok: false, error: "mailbox missing host/username/password" });
     }
 
@@ -8907,7 +8951,9 @@ app.post("/mailboxes/:id/test", auth, requireRole(Role.FIRM_ADMIN), async (req, 
       host: secret.imapHost ?? getDefaultImapHost(mailbox.provider) ?? "",
       port: secret.imapPort || 993,
       secure: secret.imapSecure !== false,
-      auth: { user: secret.imapUsername, pass: secret.imapPassword },
+      auth: secretAccessToken
+        ? { user: secret.imapUsername, accessToken: secretAccessToken }
+        : { user: secret.imapUsername, pass: secretPassword },
       mailbox: secret.folder || "INBOX",
     });
 
