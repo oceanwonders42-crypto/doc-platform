@@ -51,6 +51,7 @@ import {
   markNotificationRead,
   markAllNotificationsRead,
 } from "../services/notifications";
+import { decryptSecret } from "../services/credentialEncryption";
 import { buildCaseReportPdf } from "../services/caseReportPdf";
 import { fetchCourtDocket } from "../court/docketFetcher";
 import { testImapConnection } from "../email/imapPoller";
@@ -102,7 +103,7 @@ import {
 } from "./routes/quickbooks";
 import recordsRequestsRouter from "./routes/recordsRequests";
 import trafficRouter from "./routes/traffic";
-import { DemandReviewStatus, DocumentStatus, Prisma, Role } from "@prisma/client";
+import { DemandReviewStatus, DocumentStatus, IntegrationStatus, Prisma, Role } from "@prisma/client";
 import { generateClioContactsCsv, generateClioMattersCsv } from "../exports/clioExport";
 import { importClioMappingsFromCsv } from "../services/clioMappingsImport";
 import { logSystemError } from "../services/errorLog";
@@ -8708,6 +8709,31 @@ app.post(
   }
 );
 
+type StoredMailboxSecret = {
+  imapHost?: string;
+  imapPort?: number;
+  imapSecure?: boolean;
+  imapUsername?: string;
+  imapPassword?: string;
+  folder?: string;
+};
+
+function getDefaultImapHost(provider: string | null | undefined): string | null {
+  if (provider === "GMAIL") return "imap.gmail.com";
+  if (provider === "OUTLOOK") return "outlook.office365.com";
+  return null;
+}
+
+function parseStoredMailboxSecret(encryptedSecret: string | null | undefined): StoredMailboxSecret | null {
+  if (!encryptedSecret) return null;
+  try {
+    const parsed = JSON.parse(decryptSecret(encryptedSecret)) as StoredMailboxSecret;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 app.get("/mailboxes/recent-ingests", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
@@ -8828,7 +8854,7 @@ app.post("/mailboxes/:id/poll-now", auth, requireRole(Role.FIRM_ADMIN), async (r
 app.post("/mailboxes/:id/test", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
-    const mailboxId = req.params.id;
+    const mailboxId = String(req.params.id ?? "");
 
     const { rows } = await pgPool.query(
       `select id, firm_id, imap_host, imap_port, imap_secure, imap_username, imap_password, folder
@@ -8836,26 +8862,77 @@ app.post("/mailboxes/:id/test", auth, requireRole(Role.FIRM_ADMIN), async (req, 
       [mailboxId, firmId]
     );
     const mb = rows[0];
-    if (!mb || mb.firm_id !== firmId) {
+    if (mb && mb.firm_id === firmId) {
+      if (!mb.imap_host || !mb.imap_username || !mb.imap_password) {
+        return res.status(400).json({ ok: false, error: "mailbox missing host/username/password" });
+      }
+
+      const result = await testImapConnection({
+        host: mb.imap_host,
+        port: mb.imap_port || 993,
+        secure: mb.imap_secure !== false,
+        auth: { user: mb.imap_username, pass: mb.imap_password },
+        mailbox: mb.folder || "INBOX",
+      });
+
+      if (result.ok) {
+        return res.json({ ok: true });
+      }
+      return res.status(400).json({ ok: false, error: result.error });
+    }
+
+    const mailbox = await prisma.mailboxConnection.findFirst({
+      where: { id: mailboxId, firmId },
+      include: {
+        integration: {
+          include: {
+            credentials: {
+              orderBy: { updatedAt: "desc" },
+              take: 1,
+            },
+          },
+        },
+      },
+    });
+    if (!mailbox) {
       return res.status(404).json({ ok: false, error: "mailbox not found" });
     }
-    if (!mb.imap_host || !mb.imap_username || !mb.imap_password) {
+
+    const secret = parseStoredMailboxSecret(mailbox.integration?.credentials?.[0]?.encryptedSecret);
+    if (!secret?.imapUsername || !secret.imapPassword) {
       return res.status(400).json({ ok: false, error: "mailbox missing host/username/password" });
     }
 
     const result = await testImapConnection({
-      host: mb.imap_host,
-      port: mb.imap_port || 993,
-      secure: mb.imap_secure !== false,
-      auth: { user: mb.imap_username, pass: mb.imap_password },
-      mailbox: mb.folder || "INBOX",
+      host: secret.imapHost ?? getDefaultImapHost(mailbox.provider) ?? "",
+      port: secret.imapPort || 993,
+      secure: secret.imapSecure !== false,
+      auth: { user: secret.imapUsername, pass: secret.imapPassword },
+      mailbox: secret.folder || "INBOX",
     });
 
-    if (result.ok) {
-      res.json({ ok: true });
-    } else {
-      res.status(400).json({ ok: false, error: result.error });
+    if (mailbox.integrationId) {
+      await prisma.integrationSyncLog.create({
+        data: {
+          firmId,
+          integrationId: mailbox.integrationId,
+          eventType: "connection_test",
+          status: result.ok ? "success" : "error",
+          message: result.ok ? "Connection OK" : result.error ?? "Connection failed",
+        },
+      });
+      if (result.ok) {
+        await prisma.firmIntegration.update({
+          where: { id: mailbox.integrationId },
+          data: { status: IntegrationStatus.CONNECTED },
+        });
+      }
     }
+
+    if (result.ok) {
+      return res.json({ ok: true });
+    }
+    return res.status(400).json({ ok: false, error: result.error });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
@@ -8864,7 +8941,7 @@ app.post("/mailboxes/:id/test", auth, requireRole(Role.FIRM_ADMIN), async (req, 
 app.patch("/mailboxes/:id", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
-    const mailboxId = req.params.id;
+    const mailboxId = String(req.params.id ?? "");
     const body = (req.body ?? {}) as { status?: string; enabled?: boolean };
 
     let status: string | null = null;
@@ -8881,7 +8958,25 @@ app.patch("/mailboxes/:id", auth, requireRole(Role.FIRM_ADMIN), async (req, res)
       [status, mailboxId, firmId]
     );
     if (rowCount === 0) {
-      return res.status(404).json({ ok: false, error: "mailbox not found" });
+      const mailbox = await prisma.mailboxConnection.findFirst({
+        where: { id: mailboxId, firmId },
+        select: { id: true, integrationId: true },
+      });
+      if (!mailbox) {
+        return res.status(404).json({ ok: false, error: "mailbox not found" });
+      }
+      await prisma.mailboxConnection.update({
+        where: { id: mailbox.id },
+        data: { active: status === "active" },
+      });
+      if (mailbox.integrationId) {
+        await prisma.firmIntegration.update({
+          where: { id: mailbox.integrationId },
+          data: {
+            status: status === "active" ? IntegrationStatus.CONNECTED : IntegrationStatus.DISCONNECTED,
+          },
+        });
+      }
     }
     res.json({ ok: true, status });
   } catch (e: any) {
@@ -8947,28 +9042,71 @@ app.post("/mailboxes", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
 app.get("/mailboxes", auth, requireRole(Role.FIRM_ADMIN), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
-    const { rows } = await pgPool.query(
-      `
-      select
-        id,
-        firm_id,
-        provider,
-        imap_username,
-        imap_host,
-        folder,
-        status,
-        last_uid,
-        last_sync_at,
-        last_error,
-        updated_at
-      from mailbox_connections
-      where firm_id = $1
-      order by updated_at desc
-      limit 50
-      `,
-      [firmId]
-    );
-    res.json({ ok: true, items: rows });
+    const [{ rows: legacyRows }, prismaMailboxes] = await Promise.all([
+      pgPool.query(
+        `
+        select
+          id,
+          firm_id,
+          provider,
+          imap_username,
+          imap_host,
+          folder,
+          status,
+          last_uid,
+          last_sync_at,
+          last_error,
+          updated_at
+        from mailbox_connections
+        where firm_id = $1
+        order by updated_at desc
+        limit 50
+        `,
+        [firmId]
+      ),
+      prisma.mailboxConnection.findMany({
+        where: { firmId },
+        include: {
+          integration: {
+            include: {
+              credentials: {
+                orderBy: { updatedAt: "desc" },
+                take: 1,
+              },
+              syncLogs: {
+                where: { status: "error" },
+                orderBy: { createdAt: "desc" },
+                take: 1,
+              },
+            },
+          },
+        },
+        orderBy: { updatedAt: "desc" },
+        take: 50,
+      }),
+    ]);
+
+    const legacyIds = new Set<string>(legacyRows.map((row) => String(row.id)));
+    const prismaRows = prismaMailboxes
+      .filter((mailbox) => !legacyIds.has(mailbox.id))
+      .map((mailbox) => {
+        const secret = parseStoredMailboxSecret(mailbox.integration?.credentials?.[0]?.encryptedSecret);
+        return {
+          id: mailbox.id,
+          firm_id: mailbox.firmId,
+          provider: mailbox.provider,
+          imap_username: secret?.imapUsername ?? mailbox.emailAddress,
+          imap_host: secret?.imapHost ?? getDefaultImapHost(mailbox.provider),
+          folder: secret?.folder ?? "INBOX",
+          status: mailbox.active ? "active" : "paused",
+          last_uid: mailbox.lastUid,
+          last_sync_at: mailbox.lastSyncAt?.toISOString() ?? null,
+          last_error: mailbox.integration?.syncLogs?.[0]?.message ?? null,
+          updated_at: mailbox.updatedAt.toISOString(),
+        };
+      });
+
+    res.json({ ok: true, items: [...legacyRows, ...prismaRows] });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
