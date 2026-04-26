@@ -9,7 +9,7 @@ const DEFAULT_FIRM_PLAN = "essential";
 const DEFAULT_API_KEY_NAME = "API Key";
 const DEFAULT_MIN_AUTO_ROUTE_CONFIDENCE = 0.9;
 
-type SupportedFirmRole = "FIRM_ADMIN" | "PARALEGAL" | "STAFF";
+type SupportedFirmRole = "FIRM_ADMIN" | "ATTORNEY" | "PARALEGAL" | "ASSISTANT" | "STAFF";
 
 export class FirmOnboardingInputError extends Error {}
 
@@ -99,8 +99,13 @@ function normalizeUserEmail(email: string): string {
 
 function normalizeUserRole(role?: string | null): SupportedFirmRole {
   switch (role) {
+    case "ATTORNEY":
+      return "ATTORNEY";
     case "PARALEGAL":
       return "PARALEGAL";
+    case "ASSISTANT":
+    case "LEGAL_ASSISTANT":
+      return "ASSISTANT";
     case "STAFF":
       return "STAFF";
     case "FIRM_ADMIN":
@@ -109,7 +114,7 @@ function normalizeUserRole(role?: string | null): SupportedFirmRole {
     case "":
       return "FIRM_ADMIN";
     default:
-      throw new FirmOnboardingInputError("role must be FIRM_ADMIN, PARALEGAL, or STAFF");
+      throw new FirmOnboardingInputError("role must be FIRM_ADMIN, ATTORNEY, PARALEGAL, ASSISTANT, or STAFF");
   }
 }
 

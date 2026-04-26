@@ -175,6 +175,7 @@ import {
   FirmOnboardingInputError,
 } from "../services/firmOnboarding";
 import {
+  canCreateDemandPackage,
   canIngestDocument,
   getFirmBillingUsageSnapshot,
   normalizePlanSlug,
@@ -185,8 +186,10 @@ import { enqueueJob, getJobCounts } from "../services/jobQueue";
 import {
   acceptTeamInvite,
   createTeamInviteForSession,
+  deactivateTeamMemberForSession,
   inspectTeamInvite,
   listTeamMembersForSession,
+  resendTeamInviteForSession,
   updateTeamMemberForSession,
 } from "../services/teamInvites";
 import {
@@ -914,6 +917,12 @@ app.post("/auth/login", async (req, res) => {
     if (!user) {
       return res.status(401).json({ ok: false, error: "Invalid email or password" });
     }
+    if (user.deactivatedAt) {
+      return res.status(403).json({ ok: false, error: "This account has been deactivated. Contact your firm admin." });
+    }
+    if (user.firm.status !== "active") {
+      return res.status(403).json({ ok: false, error: "This firm is not active. Contact Onyx Intel support." });
+    }
     const isDemo =
       process.env.NODE_ENV !== "production" &&
       !user.passwordHash &&
@@ -1036,6 +1045,39 @@ app.patch("/me/team/:userId", auth, async (req, res) => {
   }
 });
 
+app.post("/me/team/:userId/resend-invite", auth, async (req, res) => {
+  const authToken = getBearerTokenFromRequest(req);
+  if (!authToken) {
+    return res.status(401).json({ ok: false, error: "Missing bearer token" });
+  }
+  try {
+    const response = await resendTeamInviteForSession({
+      authToken,
+      userId: String(req.params.userId ?? ""),
+      baseUrl: resolveWebBaseUrl(req),
+    });
+    res.json(response);
+  } catch (error) {
+    sendTeamInviteError(res, error);
+  }
+});
+
+app.delete("/me/team/:userId", auth, async (req, res) => {
+  const authToken = getBearerTokenFromRequest(req);
+  if (!authToken) {
+    return res.status(401).json({ ok: false, error: "Missing bearer token" });
+  }
+  try {
+    const response = await deactivateTeamMemberForSession({
+      authToken,
+      userId: String(req.params.userId ?? ""),
+    });
+    res.json(response);
+  } catch (error) {
+    sendTeamInviteError(res, error);
+  }
+});
+
 app.get("/team/invite/accept", async (req, res) => {
   try {
     const token = typeof req.query.token === "string" ? req.query.token : "";
@@ -1105,9 +1147,27 @@ function serializeCompatibilityRecordsRequest<
 // Admin: list firms with stats (requires PLATFORM_ADMIN_API_KEY)
 app.get("/admin/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res) => {
   try {
-    const [firms, docCounts, userCounts, usageAgg] = await Promise.all([
+    const [
+      firms,
+      docCounts,
+      activeUserCounts,
+      pendingInviteCounts,
+      usageAgg,
+      integrations,
+      mailboxConnections,
+      lastActivityRows,
+    ] = await Promise.all([
       prisma.firm.findMany({
-        select: { id: true, name: true, status: true, plan: true, pageLimitMonthly: true, createdAt: true, features: true },
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          plan: true,
+          billingStatus: true,
+          pageLimitMonthly: true,
+          createdAt: true,
+          features: true,
+        },
         orderBy: { createdAt: "desc" },
       }),
       prisma.document.groupBy({
@@ -1116,16 +1176,41 @@ app.get("/admin/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res
       }),
       prisma.user.groupBy({
         by: ["firmId"],
+        where: { deactivatedAt: null, passwordHash: { not: null } },
+        _count: { id: true },
+      }),
+      prisma.user.groupBy({
+        by: ["firmId"],
+        where: { deactivatedAt: null, passwordHash: null },
         _count: { id: true },
       }),
       prisma.usageMonthly.groupBy({
         by: ["firmId"],
         _sum: { docsProcessed: true, narrativeGenerated: true, pagesProcessed: true },
       }),
+      prisma.firmIntegration.findMany({
+        select: {
+          firmId: true,
+          provider: true,
+          status: true,
+          updatedAt: true,
+        },
+        orderBy: { updatedAt: "desc" },
+      }),
+      prisma.mailboxConnection.findMany({
+        where: { active: true },
+        select: { firmId: true, emailAddress: true, provider: true, updatedAt: true },
+        orderBy: { updatedAt: "desc" },
+      }),
+      prisma.activityFeedItem.groupBy({
+        by: ["firmId"],
+        _max: { createdAt: true },
+      }),
     ]);
 
     const docByFirm = new Map(docCounts.map((d) => [d.firmId, d._count.id]));
-    const userByFirm = new Map(userCounts.map((u) => [u.firmId, u._count.id]));
+    const activeUserByFirm = new Map(activeUserCounts.map((u) => [u.firmId, u._count.id]));
+    const pendingInviteByFirm = new Map(pendingInviteCounts.map((u) => [u.firmId, u._count.id]));
     const usageByFirm = new Map(
       usageAgg.map((u) => [
         u.firmId,
@@ -1136,6 +1221,19 @@ app.get("/admin/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res
         },
       ])
     );
+    const integrationByFirm = new Map<string, { gmail: string; clio: string }>();
+    for (const integration of integrations) {
+      const current = integrationByFirm.get(integration.firmId) ?? { gmail: "DISCONNECTED", clio: "DISCONNECTED" };
+      if (integration.provider === "GMAIL") current.gmail = integration.status;
+      if (integration.provider === "CLIO") current.clio = integration.status;
+      integrationByFirm.set(integration.firmId, current);
+    }
+    for (const mailbox of mailboxConnections) {
+      const current = integrationByFirm.get(mailbox.firmId) ?? { gmail: "DISCONNECTED", clio: "DISCONNECTED" };
+      current.gmail = "CONNECTED";
+      integrationByFirm.set(mailbox.firmId, current);
+    }
+    const lastActivityByFirm = new Map(lastActivityRows.map((row) => [row.firmId, row._max.createdAt]));
 
     const body = firms.map((f) => ({
       ...getClioAutoUpdateGateState({
@@ -1147,10 +1245,14 @@ app.get("/admin/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (_req, res
       planSlug: f.plan,
       status: f.status,
       plan: f.plan,
+      billingStatus: f.billingStatus,
       pageLimitMonthly: f.pageLimitMonthly,
       createdAt: f.createdAt.toISOString(),
+      lastActivityAt: lastActivityByFirm.get(f.id)?.toISOString() ?? null,
       documentsProcessed: docByFirm.get(f.id) ?? 0,
-      activeUsers: userByFirm.get(f.id) ?? 0,
+      activeUsers: activeUserByFirm.get(f.id) ?? 0,
+      pendingInvites: pendingInviteByFirm.get(f.id) ?? 0,
+      integrationStatus: integrationByFirm.get(f.id) ?? { gmail: "DISCONNECTED", clio: "DISCONNECTED" },
       usageStats: usageByFirm.get(f.id) ?? {
         documentsProcessed: 0,
         narrativeGenerated: 0,
@@ -1178,11 +1280,14 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
         id: true,
         name: true,
         plan: true,
+        billingStatus: true,
+        trialEndsAt: true,
+        settings: true,
         pageLimitMonthly: true,
         retentionDays: true,
         status: true,
         createdAt: true,
-        users: { select: { id: true, email: true, role: true, createdAt: true } },
+        users: { select: { id: true, email: true, role: true, passwordHash: true, deactivatedAt: true, createdAt: true } },
         apiKeys: {
           where: { revokedAt: null },
           select: {
@@ -1198,7 +1303,7 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
     });
     if (!firm) return res.status(404).json({ ok: false, error: "Firm not found" });
 
-    const [usageRow, docCountRows, featureOverrides] = await Promise.all([
+    const [usageRow, docCountRows, featureOverrides, integrations, mailboxConnections, lastActivity, billingSnapshot] = await Promise.all([
       prisma.usageMonthly.findUnique({
         where: { firmId_yearMonth: { firmId, yearMonth: ym } },
         select: { yearMonth: true, pagesProcessed: true, docsProcessed: true, updatedAt: true },
@@ -1223,6 +1328,29 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
           updatedAt: true,
         },
       }),
+      prisma.firmIntegration.findMany({
+        where: { firmId },
+        orderBy: { updatedAt: "desc" },
+        select: { id: true, type: true, provider: true, status: true, updatedAt: true },
+      }),
+      prisma.mailboxConnection.findMany({
+        where: { firmId },
+        orderBy: { updatedAt: "desc" },
+        select: {
+          id: true,
+          emailAddress: true,
+          provider: true,
+          active: true,
+          lastSyncAt: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.activityFeedItem.findFirst({
+        where: { firmId },
+        orderBy: { createdAt: "desc" },
+        select: { type: true, title: true, createdAt: true },
+      }),
+      getFirmBillingUsageSnapshot(firmId),
     ]);
     const docCount = docCountRows[0];
 
@@ -1232,16 +1360,22 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
         id: firm.id,
         name: firm.name,
         plan: firm.plan,
+        billingStatus: firm.billingStatus,
+        trialEndsAt: firm.trialEndsAt?.toISOString() ?? null,
+        settings: firm.settings ?? null,
         pageLimitMonthly: firm.pageLimitMonthly,
         retentionDays: firm.retentionDays,
         status: firm.status,
         createdAt: firm.createdAt.toISOString(),
         documentCount: docCount?._count.id ?? 0,
+        lastActivityAt: lastActivity?.createdAt.toISOString() ?? null,
       },
       users: firm.users.map((u) => ({
         id: u.id,
         email: u.email,
         role: u.role,
+        status: u.deactivatedAt ? "DEACTIVATED" : u.passwordHash ? "ACTIVE" : "PENDING_PASSWORD",
+        deactivatedAt: u.deactivatedAt?.toISOString() ?? null,
         createdAt: u.createdAt.toISOString(),
       })),
       apiKeys: firm.apiKeys.map((k) => ({
@@ -1258,6 +1392,40 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
         docsProcessed: usageRow?.docsProcessed ?? 0,
         updatedAt: usageRow?.updatedAt?.toISOString() ?? null,
       },
+      billingSnapshot,
+      integrationStatus: {
+        gmail:
+          mailboxConnections.some((mailbox) => mailbox.active) ||
+          integrations.some((integration) => integration.provider === "GMAIL" && integration.status === "CONNECTED")
+            ? "CONNECTED"
+            : "DISCONNECTED",
+        clio:
+          integrations.find((integration) => integration.provider === "CLIO")?.status ?? "DISCONNECTED",
+      },
+      integrations: integrations.map((integration) => ({
+        id: integration.id,
+        type: integration.type,
+        provider: integration.provider,
+        status: integration.status,
+        updatedAt: integration.updatedAt.toISOString(),
+      })),
+      mailboxConnections: mailboxConnections.map((mailbox) => ({
+        id: mailbox.id,
+        emailAddress: mailbox.emailAddress,
+        provider: mailbox.provider,
+        active: mailbox.active,
+        lastSyncAt: mailbox.lastSyncAt?.toISOString() ?? null,
+        updatedAt: mailbox.updatedAt.toISOString(),
+      })),
+      auditLog: lastActivity
+        ? [
+            {
+              type: lastActivity.type,
+              title: lastActivity.title,
+              createdAt: lastActivity.createdAt.toISOString(),
+            },
+          ]
+        : [],
       featureOverrides: featureOverrides.map((override) => ({
         id: override.id,
         featureKey: override.featureKey,
@@ -1282,18 +1450,29 @@ app.patch("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async 
     const firmId = String(req.params.firmId ?? "");
     const body = (req.body ?? {}) as {
       plan?: string;
+      billingStatus?: string;
       pageLimitMonthly?: number;
+      seatLimit?: number;
+      demandLimitMonthly?: number;
       status?: string;
       featureOverrides?: Record<string, unknown>;
     };
 
-    const data: { plan?: string; pageLimitMonthly?: number; status?: string } = {};
+    const data: { plan?: string; billingStatus?: string; pageLimitMonthly?: number; status?: string } = {};
+    const settingsOverrides: Record<string, number> = {};
     if (typeof body.plan === "string" && body.plan.trim()) {
       const plan = normalizePlanSlug(body.plan);
       data.plan = plan;
       data.pageLimitMonthly = getPlanMetadata(plan).docLimitMonthly;
     }
+    if (typeof body.billingStatus === "string" && body.billingStatus.trim()) {
+      data.billingStatus = body.billingStatus.trim();
+    }
     if (typeof body.pageLimitMonthly === "number" && body.pageLimitMonthly >= 0) data.pageLimitMonthly = body.pageLimitMonthly;
+    if (typeof body.seatLimit === "number" && body.seatLimit >= 0) settingsOverrides.seatLimit = Math.floor(body.seatLimit);
+    if (typeof body.demandLimitMonthly === "number" && body.demandLimitMonthly >= 0) {
+      settingsOverrides.demandLimitMonthly = Math.floor(body.demandLimitMonthly);
+    }
     if (typeof body.status === "string" && body.status.trim()) data.status = body.status.trim();
 
     const allowedFeatureKeys = new Set<string>(DASHBOARD_FEATURE_KEYS);
@@ -1301,22 +1480,50 @@ app.patch("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async 
       .filter(([featureKey, enabled]) => allowedFeatureKeys.has(featureKey) && typeof enabled === "boolean")
       .map(([featureKey, enabled]) => ({ featureKey, enabled: Boolean(enabled) }));
 
-    if (Object.keys(data).length === 0 && requestedFeatureOverrides.length === 0) {
+    if (Object.keys(data).length === 0 && Object.keys(settingsOverrides).length === 0 && requestedFeatureOverrides.length === 0) {
       return res.status(400).json({ ok: false, error: "No valid fields to update" });
     }
 
     const actor = String((req as any).userId ?? (req as any).apiKeyId ?? "platform_admin");
     const firm = await prisma.$transaction(async (tx) => {
+      const currentFirm = await tx.firm.findUnique({
+        where: { id: firmId },
+        select: { settings: true },
+      });
+      if (!currentFirm) throw new Error("Firm not found");
+      const nextSettings =
+        Object.keys(settingsOverrides).length > 0
+          ? ({
+              ...getJsonRecord(currentFirm.settings),
+              ...settingsOverrides,
+            } as Prisma.InputJsonValue)
+          : undefined;
       const nextFirm =
-        Object.keys(data).length > 0
+        Object.keys(data).length > 0 || nextSettings !== undefined
           ? await tx.firm.update({
               where: { id: firmId },
-              data,
-              select: { id: true, name: true, plan: true, pageLimitMonthly: true, status: true },
+              data: { ...data, ...(nextSettings !== undefined ? { settings: nextSettings } : {}) },
+              select: {
+                id: true,
+                name: true,
+                plan: true,
+                billingStatus: true,
+                pageLimitMonthly: true,
+                status: true,
+                settings: true,
+              },
             })
           : await tx.firm.findUnique({
               where: { id: firmId },
-              select: { id: true, name: true, plan: true, pageLimitMonthly: true, status: true },
+              select: {
+                id: true,
+                name: true,
+                plan: true,
+                billingStatus: true,
+                pageLimitMonthly: true,
+                status: true,
+                settings: true,
+              },
             });
       if (!nextFirm) throw new Error("Firm not found");
 
@@ -1337,6 +1544,19 @@ app.patch("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async 
       }
 
       return nextFirm;
+    });
+    logActivity({
+      firmId,
+      type: "platform_firm_controls.updated",
+      title: "Developer controls updated",
+      meta: {
+        actor,
+        plan: data.plan ?? null,
+        billingStatus: data.billingStatus ?? null,
+        status: data.status ?? null,
+        settingsOverrides,
+        featureOverrideKeys: requestedFeatureOverrides.map((override) => override.featureKey),
+      },
     });
     res.json({ ok: true, firm });
   } catch (e: any) {
@@ -7006,25 +7226,30 @@ app.get("/documents/:id/preview", auth, requireRole(Role.STAFF), async (req, res
 
     const doc = await prisma.document.findFirst({
       where: { id: documentId, firmId },
-      select: { id: true, mimeType: true },
+      select: { id: true, mimeType: true, originalName: true, spacesKey: true },
     });
     if (!doc) return res.status(404).json({ ok: false, error: "document not found" });
 
-    // Only serve preview for PDFs for now
     const mime = doc.mimeType || "";
-    if (mime !== "application/pdf") {
-      return res.status(415).json({ ok: false, error: "preview only supported for PDFs" });
+    const canPreview = mime === "application/pdf" || mime.startsWith("image/");
+    if (!canPreview) {
+      return res.status(415).json({
+        ok: false,
+        error: "Browser preview is available for PDF and image files only. Use OCR text or download for this file.",
+        unsupportedMimeType: mime || null,
+      });
     }
 
-    // Placeholder: 1x1 transparent PNG. Replace with real PDF thumbnail rendering.
-    const transparentPngBase64 =
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
-    const buf = Buffer.from(transparentPngBase64, "base64");
-
-    res.setHeader("Content-Type", "image/png");
-    res.setHeader("Cache-Control", "public, max-age=3600");
+    const buf = await getObjectBuffer(doc.spacesKey);
+    const safeFileName = (doc.originalName || "document").replace(/["\r\n]/g, "");
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Content-Length", String(buf.length));
+    res.setHeader("Content-Disposition", `inline; filename="${safeFileName}"`);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.setHeader("X-Content-Type-Options", "nosniff");
     res.send(buf);
   } catch (e: any) {
+    console.error("Failed to preview document", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
@@ -7779,6 +8004,23 @@ app.post("/cases/:id/demand-packages", auth, requireRole(Role.STAFF), async (req
       return res.status(403).json({
         ok: false,
         error: "Demand drafts are not enabled for this firm.",
+      });
+    }
+
+    const demandPolicy = await canCreateDemandPackage(firmId);
+    if (!demandPolicy.allowed) {
+      return res.status(402).json({
+        ok: false,
+        error: demandPolicy.error,
+        upgradeMessage: demandPolicy.upgradeMessage,
+        enforcement: {
+          demands: {
+            used: demandPolicy.currentDemands,
+            included: demandPolicy.limit,
+            status: demandPolicy.status,
+            softCapReached: demandPolicy.softCapReached,
+          },
+        },
       });
     }
 

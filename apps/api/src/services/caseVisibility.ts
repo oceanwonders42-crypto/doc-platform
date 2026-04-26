@@ -1,10 +1,11 @@
 import { Prisma, Role } from "@prisma/client";
 
 const ASSIGNED_CASE_ROLES = new Set<string>([
+  Role.ATTORNEY,
   Role.PARALEGAL,
+  Role.ASSISTANT,
   Role.STAFF,
   "LEGAL_ASSISTANT",
-  "ATTORNEY",
   "DOC_REVIEWER",
 ]);
 

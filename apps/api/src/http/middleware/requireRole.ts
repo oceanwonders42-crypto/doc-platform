@@ -8,15 +8,18 @@ import { Role } from "@prisma/client";
 const ROLE_RANK: Record<Role, number> = {
   [Role.PLATFORM_ADMIN]: 3,
   [Role.FIRM_ADMIN]: 2,
+  [Role.ATTORNEY]: 1,
   [Role.PARALEGAL]: 1,
+  [Role.ASSISTANT]: 1,
   [Role.STAFF]: 1,
 };
 
 const ROLE_ALIAS_RANK: Record<string, number> = {
   OWNER: ROLE_RANK[Role.FIRM_ADMIN],
   ADMIN: ROLE_RANK[Role.FIRM_ADMIN],
-  ATTORNEY: ROLE_RANK[Role.STAFF],
+  ATTORNEY: ROLE_RANK[Role.ATTORNEY],
   LEGAL_ASSISTANT: ROLE_RANK[Role.PARALEGAL],
+  ASSISTANT: ROLE_RANK[Role.ASSISTANT],
   DOC_REVIEWER: ROLE_RANK[Role.STAFF],
   READ_ONLY: 0,
 };

@@ -17,6 +17,7 @@ export type DashboardRole =
   | "FIRM_ADMIN"
   | "ATTORNEY"
   | "PARALEGAL"
+  | "ASSISTANT"
   | "STAFF"
   | "READ_ONLY";
 
@@ -71,13 +72,13 @@ const DEFAULT_FEATURE_FLAGS: DashboardFeatureFlags = {
 const FEATURE_ROLE_ALLOWLIST: Record<DashboardFeatureKey, DashboardRole[]> = {
   exports_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY"],
   migration_batch_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY"],
-  traffic_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "STAFF"],
+  traffic_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "ASSISTANT", "STAFF"],
   providers_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY"],
-  providers_map_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "STAFF"],
-  case_qa_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "STAFF"],
-  missing_records_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "STAFF"],
-  bills_vs_treatment_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "STAFF"],
-  demand_drafts_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "STAFF"],
+  providers_map_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "ASSISTANT", "STAFF"],
+  case_qa_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "ASSISTANT", "STAFF"],
+  missing_records_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "ASSISTANT", "STAFF"],
+  bills_vs_treatment_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "ASSISTANT", "STAFF"],
+  demand_drafts_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN", "ATTORNEY", "PARALEGAL", "ASSISTANT", "STAFF"],
   demand_audit_enabled: ["PLATFORM_ADMIN", "FIRM_ADMIN"],
 };
 
@@ -155,6 +156,7 @@ const ROLE_PRIMARY_ITEMS: Record<DashboardRole, DashboardNavItemId[]> = {
   FIRM_ADMIN: ["dashboard", "audit", "usage"],
   ATTORNEY: ["dashboard", "cases", "demands"],
   PARALEGAL: ["dashboard", "cases", "demands"],
+  ASSISTANT: ["dashboard", "cases", "demands"],
   STAFF: ["dashboard", "cases", "demands"],
   READ_ONLY: ["dashboard"],
 };
@@ -164,6 +166,7 @@ const ROLE_SECONDARY_ITEMS: Record<DashboardRole, DashboardNavItemId[]> = {
   FIRM_ADMIN: ["team", "firmSettings"],
   ATTORNEY: ["recordsRequests", "providers", "providerMap", "team"],
   PARALEGAL: ["recordsRequests", "providerMap", "team"],
+  ASSISTANT: ["recordsRequests", "providerMap", "team"],
   STAFF: ["recordsRequests", "providerMap", "team"],
   READ_ONLY: [],
 };
@@ -173,6 +176,7 @@ const OPERATOR_ROLES: DashboardRole[] = [
   "FIRM_ADMIN",
   "ATTORNEY",
   "PARALEGAL",
+  "ASSISTANT",
   "STAFF",
 ];
 
@@ -221,22 +225,22 @@ const ROUTE_RULES: DashboardRouteRule[] = [
   {
     match: (pathname) => pathname === "/dashboard/cases" || pathname.startsWith("/dashboard/cases/"),
     label: "Cases",
-    allowedRoles: ["ATTORNEY", "PARALEGAL", "STAFF"],
+    allowedRoles: ["ATTORNEY", "PARALEGAL", "ASSISTANT", "STAFF"],
   },
   {
     match: (pathname) => pathname === "/dashboard/demands" || pathname.startsWith("/dashboard/demands/"),
     label: "Demands",
-    allowedRoles: ["ATTORNEY", "PARALEGAL", "STAFF"],
+    allowedRoles: ["ATTORNEY", "PARALEGAL", "ASSISTANT", "STAFF"],
   },
   {
     match: (pathname) => pathname === "/dashboard/records-requests" || pathname.startsWith("/dashboard/records-requests/"),
     label: "Records Requests",
-    allowedRoles: ["ATTORNEY", "PARALEGAL", "STAFF"],
+    allowedRoles: ["ATTORNEY", "PARALEGAL", "ASSISTANT", "STAFF"],
   },
   {
     match: (pathname) => pathname === "/dashboard/providers/map" || pathname.startsWith("/dashboard/providers/map/"),
     label: "Providers Map",
-    allowedRoles: ["ATTORNEY", "PARALEGAL", "STAFF"],
+    allowedRoles: ["ATTORNEY", "PARALEGAL", "ASSISTANT", "STAFF"],
     featureKey: "providers_map_enabled",
   },
   {
@@ -297,9 +301,10 @@ export function normalizeDashboardRole(role: string | null | undefined): Dashboa
       return "FIRM_ADMIN";
     case "ATTORNEY":
       return "ATTORNEY";
-    case "PARALEGAL":
-    case "LEGAL_ASSISTANT":
     case "ASSISTANT":
+    case "LEGAL_ASSISTANT":
+      return "ASSISTANT";
+    case "PARALEGAL":
       return "PARALEGAL";
     case "STAFF":
     case "DOC_REVIEWER":
@@ -465,6 +470,8 @@ export function formatDashboardRoleLabel(role: string | null | undefined): strin
       return "Attorney";
     case "PARALEGAL":
       return "Paralegal";
+    case "ASSISTANT":
+      return "Assistant";
     case "STAFF":
       return "Staff";
     default:

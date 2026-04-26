@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
+import { FloatingAssistantWidget } from "@/components/dashboard/FloatingAssistantWidget";
 import { I18nProvider } from "@/contexts/I18nContext";
 import { DashboardAuthProvider, useDashboardAuth } from "@/contexts/DashboardAuthContext";
 import "../globals.css";
@@ -69,6 +70,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               {children}
             </div>
           </main>
+          <FloatingAssistantWidget />
         </div>
       </div>
     </I18nProvider>

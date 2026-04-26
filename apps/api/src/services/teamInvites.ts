@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 
 import { prisma } from "../db/prisma";
 import { signToken, verifyToken } from "../lib/jwt";
+import { canInviteFirmUser, type CanInviteUserResult } from "./billingPlans";
 
 const INVITE_SECRET =
   process.env.JWT_SECRET ||
@@ -15,16 +16,31 @@ const INVITE_TTL_DAYS = 7;
 export type CanonicalTeamRole =
   | "PLATFORM_ADMIN"
   | "FIRM_ADMIN"
+  | "ATTORNEY"
   | "PARALEGAL"
+  | "ASSISTANT"
   | "STAFF";
+
+export type TeamMemberStatus = "ACTIVE" | "PENDING_PASSWORD" | "DEACTIVATED";
 
 export type TeamMemberView = {
   id: string;
   email: string;
   role: CanonicalTeamRole;
-  status: "ACTIVE" | "PENDING_PASSWORD";
+  status: TeamMemberStatus;
   createdAt: string;
+  deactivatedAt: string | null;
   displayName: string;
+};
+
+export type TeamSeatPolicyView = {
+  currentUsers: number;
+  activeUsers: number;
+  pendingInvites: number;
+  limit: number;
+  status: string;
+  softCapReached: boolean;
+  upgradeMessage: string | null;
 };
 
 export type TeamInvitePreview = {
@@ -71,9 +87,9 @@ function normalizeRole(role: string | null | undefined): CanonicalTeamRole {
   if (normalized === "FIRM_ADMIN" || normalized === "OWNER" || normalized === "ADMIN") {
     return "FIRM_ADMIN";
   }
-  if (normalized === "PARALEGAL" || normalized === "LEGAL_ASSISTANT") {
-    return "PARALEGAL";
-  }
+  if (normalized === "ATTORNEY") return "ATTORNEY";
+  if (normalized === "PARALEGAL") return "PARALEGAL";
+  if (normalized === "ASSISTANT" || normalized === "LEGAL_ASSISTANT") return "ASSISTANT";
   return "STAFF";
 }
 
@@ -144,6 +160,18 @@ function computeExpiresAt(token: string): string {
   return new Date(decoded.exp * 1000).toISOString();
 }
 
+function toSeatPolicyView(policy: CanInviteUserResult): TeamSeatPolicyView {
+  return {
+    currentUsers: policy.currentUsers,
+    activeUsers: policy.activeUsers,
+    pendingInvites: policy.pendingInvites,
+    limit: policy.limit,
+    status: policy.status,
+    softCapReached: policy.softCapReached,
+    upgradeMessage: policy.allowed ? null : policy.upgradeMessage,
+  };
+}
+
 async function resolveSessionIdentity(authToken: string): Promise<SessionIdentity> {
   const payload = verifyToken(authToken);
   if (!payload?.userId || !payload?.firmId) {
@@ -152,10 +180,10 @@ async function resolveSessionIdentity(authToken: string): Promise<SessionIdentit
 
   const user = await prisma.user.findUnique({
     where: { id: payload.userId },
-    select: { id: true, firmId: true, role: true },
+    select: { id: true, firmId: true, role: true, deactivatedAt: true },
   });
 
-  if (!user || user.firmId !== payload.firmId) {
+  if (!user || user.firmId !== payload.firmId || user.deactivatedAt) {
     throw new TeamInviteError("Unauthorized", 401);
   }
 
@@ -170,34 +198,64 @@ function buildDisplayName(email: string): string {
   return email.split("@")[0]?.trim() || email;
 }
 
+function buildInviteLink(input: {
+  token: string;
+  baseUrl?: string | null;
+}): string {
+  const trimmedBase =
+    input.baseUrl?.trim().replace(/\/$/, "") ||
+    process.env.DOC_WEB_BASE_URL?.trim().replace(/\/$/, "") ||
+    process.env.NEXT_PUBLIC_DOC_WEB_BASE_URL?.trim().replace(/\/$/, "") ||
+    process.env.NEXT_PUBLIC_WEB_BASE_URL?.trim().replace(/\/$/, "") ||
+    "http://localhost:3000";
+  return `${trimmedBase}/team/invite/accept?token=${encodeURIComponent(input.token)}`;
+}
+
+function serializeUser(user: {
+  id: string;
+  email: string;
+  role: string;
+  passwordHash: string | null;
+  createdAt: Date;
+  deactivatedAt: Date | null;
+}): TeamMemberView {
+  return {
+    id: user.id,
+    email: user.email,
+    role: normalizeRole(user.role),
+    status: user.deactivatedAt ? "DEACTIVATED" : user.passwordHash ? "ACTIVE" : "PENDING_PASSWORD",
+    createdAt: user.createdAt.toISOString(),
+    deactivatedAt: user.deactivatedAt?.toISOString() ?? null,
+    displayName: buildDisplayName(user.email),
+  };
+}
+
 export async function listTeamMembersForSession(
   authToken: string
-): Promise<{ ok: true; users: TeamMemberView[] }> {
+): Promise<{ ok: true; users: TeamMemberView[]; seatPolicy: TeamSeatPolicyView }> {
   const session = await resolveSessionIdentity(authToken);
   ensureAdminRole(session.role);
 
-  const users = await prisma.user.findMany({
-    where: { firmId: session.firmId },
-    orderBy: [{ role: "asc" }, { email: "asc" }],
-    select: {
-      id: true,
-      email: true,
-      role: true,
-      passwordHash: true,
-      createdAt: true,
-    },
-  });
+  const [users, seatPolicy] = await Promise.all([
+    prisma.user.findMany({
+      where: { firmId: session.firmId },
+      orderBy: [{ deactivatedAt: "asc" }, { role: "asc" }, { email: "asc" }],
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        passwordHash: true,
+        createdAt: true,
+        deactivatedAt: true,
+      },
+    }),
+    canInviteFirmUser(session.firmId),
+  ]);
 
   return {
     ok: true,
-    users: users.map((user) => ({
-      id: user.id,
-      email: user.email,
-      role: normalizeRole(user.role),
-      status: user.passwordHash ? "ACTIVE" : "PENDING_PASSWORD",
-      createdAt: user.createdAt.toISOString(),
-      displayName: buildDisplayName(user.email),
-    })),
+    users: users.map(serializeUser),
+    seatPolicy: toSeatPolicyView(seatPolicy),
   };
 }
 
@@ -210,6 +268,8 @@ export async function createTeamInviteForSession(input: {
   ok: true;
   inviteLink: string;
   invite: TeamInvitePreview;
+  user: TeamMemberView;
+  seatPolicy: TeamSeatPolicyView;
   message: string;
 }> {
   const session = await resolveSessionIdentity(input.authToken);
@@ -225,27 +285,40 @@ export async function createTeamInviteForSession(input: {
     throw new TeamInviteError("Platform admin invites are not supported from the firm team page", 400);
   }
 
-  const [firm, existingUser] = await Promise.all([
+  const [firm, existingUser, seatPolicy] = await Promise.all([
     prisma.firm.findUnique({
       where: { id: session.firmId },
       select: { id: true, name: true },
     }),
     prisma.user.findUnique({
       where: { email },
-      select: { id: true, firmId: true },
+      select: {
+        id: true,
+        firmId: true,
+        email: true,
+        role: true,
+        passwordHash: true,
+        createdAt: true,
+        deactivatedAt: true,
+      },
     }),
+    canInviteFirmUser(session.firmId),
   ]);
 
   if (!firm) {
     throw new TeamInviteError("Firm not found", 404);
   }
 
-  if (existingUser?.firmId === session.firmId) {
-    throw new TeamInviteError("That user is already a member of this firm", 409);
-  }
-
   if (existingUser && existingUser.firmId !== session.firmId) {
     throw new TeamInviteError("That email is already in use by another firm", 409);
+  }
+
+  if (existingUser?.firmId === session.firmId && existingUser.passwordHash && !existingUser.deactivatedAt) {
+    throw new TeamInviteError("That user is already an active member of this firm", 409);
+  }
+
+  if (!existingUser && !seatPolicy.allowed) {
+    throw new TeamInviteError(seatPolicy.upgradeMessage, 402);
   }
 
   const inviteToken = signInviteToken({
@@ -257,17 +330,49 @@ export async function createTeamInviteForSession(input: {
     inviterRole: session.role,
   });
   const expiresAt = computeExpiresAt(inviteToken);
-  const trimmedBase =
-    input.baseUrl?.trim().replace(/\/$/, "") ||
-    process.env.DOC_WEB_BASE_URL?.trim().replace(/\/$/, "") ||
-    process.env.NEXT_PUBLIC_DOC_WEB_BASE_URL?.trim().replace(/\/$/, "") ||
-    process.env.NEXT_PUBLIC_WEB_BASE_URL?.trim().replace(/\/$/, "") ||
-    "http://localhost:3000";
-  const inviteLink = `${trimmedBase}/team/invite/accept?token=${encodeURIComponent(inviteToken)}`;
+  const inviteLink = buildInviteLink({ token: inviteToken, baseUrl: input.baseUrl });
+
+  const pendingUser = existingUser
+    ? await prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          role,
+          passwordHash: null,
+          deactivatedAt: null,
+        },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          passwordHash: true,
+          createdAt: true,
+          deactivatedAt: true,
+        },
+      })
+    : await prisma.user.create({
+        data: {
+          firmId: firm.id,
+          email,
+          role,
+          passwordHash: null,
+        },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          passwordHash: true,
+          createdAt: true,
+          deactivatedAt: true,
+        },
+      });
+
+  const refreshedSeatPolicy = await canInviteFirmUser(session.firmId);
 
   return {
     ok: true,
     inviteLink,
+    user: serializeUser(pendingUser),
+    seatPolicy: toSeatPolicyView(refreshedSeatPolicy),
     invite: {
       email,
       role,
@@ -277,6 +382,117 @@ export async function createTeamInviteForSession(input: {
     },
     message:
       "Email delivery is not configured in this lane yet. Share the invite link below with your teammate.",
+  };
+}
+
+export async function resendTeamInviteForSession(input: {
+  authToken: string;
+  userId: string;
+  baseUrl?: string | null;
+}): Promise<{
+  ok: true;
+  inviteLink: string;
+  invite: TeamInvitePreview;
+  message: string;
+}> {
+  const session = await resolveSessionIdentity(input.authToken);
+  ensureAdminRole(session.role);
+
+  const user = await prisma.user.findFirst({
+    where: { id: input.userId.trim(), firmId: session.firmId },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      passwordHash: true,
+      deactivatedAt: true,
+      firm: { select: { id: true, name: true } },
+    },
+  });
+  if (!user) {
+    throw new TeamInviteError("User not found", 404);
+  }
+  if (user.deactivatedAt) {
+    throw new TeamInviteError("Cannot resend an invite for a deactivated user", 400);
+  }
+  if (user.passwordHash) {
+    throw new TeamInviteError("This user has already accepted the invite", 409);
+  }
+
+  const role = normalizeRole(user.role);
+  const inviteToken = signInviteToken({
+    email: user.email,
+    role,
+    firmId: user.firm.id,
+    firmName: user.firm.name,
+    inviterUserId: session.userId,
+    inviterRole: session.role,
+  });
+  const expiresAt = computeExpiresAt(inviteToken);
+
+  return {
+    ok: true,
+    inviteLink: buildInviteLink({ token: inviteToken, baseUrl: input.baseUrl }),
+    invite: {
+      email: user.email,
+      role,
+      firmId: user.firm.id,
+      firmName: user.firm.name,
+      expiresAt,
+    },
+    message:
+      "Invite link refreshed. Share this link directly if email delivery is not configured.",
+  };
+}
+
+export async function deactivateTeamMemberForSession(input: {
+  authToken: string;
+  userId: string;
+}): Promise<{
+  ok: true;
+  user: TeamMemberView;
+  seatPolicy: TeamSeatPolicyView;
+}> {
+  const session = await resolveSessionIdentity(input.authToken);
+  ensureAdminRole(session.role);
+
+  const existingUser = await prisma.user.findFirst({
+    where: { id: input.userId.trim(), firmId: session.firmId },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      passwordHash: true,
+      createdAt: true,
+      deactivatedAt: true,
+    },
+  });
+
+  if (!existingUser) {
+    throw new TeamInviteError("User not found", 404);
+  }
+  if (existingUser.id === session.userId) {
+    throw new TeamInviteError("You cannot deactivate yourself from the team page", 400);
+  }
+
+  const updatedUser = await prisma.user.update({
+    where: { id: existingUser.id },
+    data: { deactivatedAt: existingUser.deactivatedAt ?? new Date() },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      passwordHash: true,
+      createdAt: true,
+      deactivatedAt: true,
+    },
+  });
+  const seatPolicy = await canInviteFirmUser(session.firmId);
+
+  return {
+    ok: true,
+    user: serializeUser(updatedUser),
+    seatPolicy: toSeatPolicyView(seatPolicy),
   };
 }
 
@@ -301,8 +517,8 @@ export async function updateTeamMemberForSession(input: {
     throw new TeamInviteError("Platform admin access cannot be granted from the firm team page", 400);
   }
 
-  const existingUser = await prisma.user.findUnique({
-    where: { id: userId },
+  const existingUser = await prisma.user.findFirst({
+    where: { id: userId, firmId: session.firmId },
     select: {
       id: true,
       email: true,
@@ -310,15 +526,19 @@ export async function updateTeamMemberForSession(input: {
       passwordHash: true,
       createdAt: true,
       firmId: true,
+      deactivatedAt: true,
     },
   });
 
-  if (!existingUser || existingUser.firmId !== session.firmId) {
+  if (!existingUser) {
     throw new TeamInviteError("User not found", 404);
   }
 
   if (existingUser.id === session.userId && normalizeRole(existingUser.role) !== nextRole) {
     throw new TeamInviteError("You cannot change your own role from the team page", 400);
+  }
+  if (existingUser.deactivatedAt) {
+    throw new TeamInviteError("Reactivate this user by creating a new invite before changing their role", 400);
   }
 
   const updatedUser = await prisma.user.update({
@@ -330,19 +550,13 @@ export async function updateTeamMemberForSession(input: {
       role: true,
       passwordHash: true,
       createdAt: true,
+      deactivatedAt: true,
     },
   });
 
   return {
     ok: true,
-    user: {
-      id: updatedUser.id,
-      email: updatedUser.email,
-      role: normalizeRole(updatedUser.role),
-      status: updatedUser.passwordHash ? "ACTIVE" : "PENDING_PASSWORD",
-      createdAt: updatedUser.createdAt.toISOString(),
-      displayName: buildDisplayName(updatedUser.email),
-    },
+    user: serializeUser(updatedUser),
   };
 }
 
@@ -354,7 +568,7 @@ export async function inspectTeamInvite(token: string): Promise<{
   const payload = verifyInviteToken(token.trim());
   const existingUser = await prisma.user.findUnique({
     where: { email: payload.email },
-    select: { id: true, firmId: true },
+    select: { id: true, firmId: true, passwordHash: true, deactivatedAt: true },
   });
 
   return {
@@ -368,7 +582,12 @@ export async function inspectTeamInvite(token: string): Promise<{
         ? new Date(payload.exp * 1000).toISOString()
         : computeExpiresAt(token),
     },
-    alreadyJoined: Boolean(existingUser && existingUser.firmId === payload.firmId),
+    alreadyJoined: Boolean(
+      existingUser &&
+        existingUser.firmId === payload.firmId &&
+        existingUser.passwordHash &&
+        !existingUser.deactivatedAt
+    ),
   };
 }
 
@@ -401,33 +620,66 @@ export async function acceptTeamInvite(input: {
 
   const existingUser = await prisma.user.findUnique({
     where: { email: payload.email },
-    select: { id: true, firmId: true, role: true, passwordHash: true, createdAt: true },
+    select: {
+      id: true,
+      firmId: true,
+      role: true,
+      passwordHash: true,
+      createdAt: true,
+      deactivatedAt: true,
+    },
   });
 
   if (existingUser && existingUser.firmId !== payload.firmId) {
     throw new TeamInviteError("That email already belongs to another firm", 409);
   }
-  if (existingUser && existingUser.firmId === payload.firmId) {
+  if (existingUser && existingUser.firmId === payload.firmId && existingUser.passwordHash && !existingUser.deactivatedAt) {
     throw new TeamInviteError("This invite has already been accepted", 409);
   }
 
+  if (!existingUser) {
+    const seatPolicy = await canInviteFirmUser(payload.firmId);
+    if (!seatPolicy.allowed) {
+      throw new TeamInviteError(seatPolicy.upgradeMessage, 402);
+    }
+  }
+
   const passwordHash = await bcrypt.hash(password, 10);
-  const user = await prisma.user.create({
-    data: {
-      firmId: payload.firmId,
-      email: payload.email,
-      role: payload.role,
-      passwordHash,
-    },
-    select: {
-      id: true,
-      email: true,
-      role: true,
-      passwordHash: true,
-      createdAt: true,
-      firmId: true,
-    },
-  });
+  const user = existingUser
+    ? await prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          role: payload.role,
+          passwordHash,
+          deactivatedAt: null,
+        },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          passwordHash: true,
+          createdAt: true,
+          firmId: true,
+          deactivatedAt: true,
+        },
+      })
+    : await prisma.user.create({
+        data: {
+          firmId: payload.firmId,
+          email: payload.email,
+          role: payload.role,
+          passwordHash,
+        },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          passwordHash: true,
+          createdAt: true,
+          firmId: true,
+          deactivatedAt: true,
+        },
+      });
 
   return {
     ok: true,
@@ -437,14 +689,7 @@ export async function acceptTeamInvite(input: {
       role: user.role,
       email: user.email,
     }),
-    user: {
-      id: user.id,
-      email: user.email,
-      role: normalizeRole(user.role),
-      status: user.passwordHash ? "ACTIVE" : "PENDING_PASSWORD",
-      createdAt: user.createdAt.toISOString(),
-      displayName: buildDisplayName(user.email),
-    },
+    user: serializeUser(user),
     invite: {
       email: payload.email,
       role: payload.role,

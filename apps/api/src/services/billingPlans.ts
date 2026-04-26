@@ -31,6 +31,8 @@ export type PlanMetadata = {
   slug: CanonicalPlanSlug;
   name: string;
   docLimitMonthly: number;
+  seatLimit: number;
+  demandLimitMonthly: number;
   overagePerDocDollars: number;
   aiIncludedMonthlyUsd: number;
   aiOveragePerUsdDollars: number;
@@ -38,6 +40,11 @@ export type PlanMetadata = {
   overagePerExtraFirmMonthlyDollars: number;
   priceMonthlyDollars: number;
   priceOneTimeDollars: number | null;
+  includedFeatures: string[];
+  integrations: {
+    gmail: boolean;
+    clio: boolean;
+  };
 };
 
 export type UsageLimitMeter = {
@@ -98,6 +105,46 @@ export type CanIngestResult =
       error: string;
     };
 
+export type CanInviteUserResult =
+  | {
+      allowed: true;
+      currentUsers: number;
+      activeUsers: number;
+      pendingInvites: number;
+      limit: number;
+      status: UsageLimitStatus;
+      softCapReached: boolean;
+    }
+  | {
+      allowed: false;
+      currentUsers: number;
+      activeUsers: number;
+      pendingInvites: number;
+      limit: number;
+      status: UsageLimitStatus;
+      softCapReached: boolean;
+      error: string;
+      upgradeMessage: string;
+    };
+
+export type CanCreateDemandResult =
+  | {
+      allowed: true;
+      currentDemands: number;
+      limit: number;
+      status: UsageLimitStatus;
+      softCapReached: boolean;
+    }
+  | {
+      allowed: false;
+      currentDemands: number;
+      limit: number;
+      status: UsageLimitStatus;
+      softCapReached: boolean;
+      error: string;
+      upgradeMessage: string;
+    };
+
 export type DocumentIngestPolicyContext = {
   billingStatus: string;
   trialEndsAt: Date | null;
@@ -126,6 +173,8 @@ export type FirmBillingUsageSnapshot = {
   };
   plan: PlanMetadata & {
     documentLimitMonthly: number;
+    seatLimitEffective: number;
+    demandLimitMonthlyEffective: number;
     aiIncludedMonthlyUsdEffective: number;
     aiOveragePerUsdDollarsEffective: number;
     includedFirmsEffective: number;
@@ -141,15 +190,21 @@ export type FirmBillingUsageSnapshot = {
     aiCompletionTokens: number;
     aiTotalTokens: number;
     currentFirmCount: number;
+    activeUserCount: number;
+    pendingInviteCount: number;
+    demandPackagesCreated: number;
   };
   enforcement: {
     documents: UsageLimitMeter;
+    users: UsageLimitMeter;
+    demands: UsageLimitMeter;
     ai: UsageLimitMeter;
     firms: UsageLimitMeter;
     softCapReached: boolean;
     overageActive: boolean;
     totalOverageDollars: number;
     totalOverageCents: number;
+    upgradeMessage: string | null;
   };
 };
 
@@ -158,6 +213,8 @@ export const PLAN_METADATA: Record<CanonicalPlanSlug, PlanMetadata> = {
     slug: "essential",
     name: "Essential",
     docLimitMonthly: 1500,
+    seatLimit: 3,
+    demandLimitMonthly: 10,
     overagePerDocDollars: 0.2,
     aiIncludedMonthlyUsd: 25,
     aiOveragePerUsdDollars: 1.2,
@@ -165,11 +222,20 @@ export const PLAN_METADATA: Record<CanonicalPlanSlug, PlanMetadata> = {
     overagePerExtraFirmMonthlyDollars: 499,
     priceMonthlyDollars: 499,
     priceOneTimeDollars: null,
+    includedFeatures: [
+      "case_qa_enabled",
+      "missing_records_enabled",
+      "bills_vs_treatment_enabled",
+      "demand_drafts_enabled",
+    ],
+    integrations: { gmail: true, clio: false },
   },
   growth: {
     slug: "growth",
     name: "Growth",
     docLimitMonthly: 4000,
+    seatLimit: 10,
+    demandLimitMonthly: 35,
     overagePerDocDollars: 0.15,
     aiIncludedMonthlyUsd: 100,
     aiOveragePerUsdDollars: 1.1,
@@ -177,11 +243,23 @@ export const PLAN_METADATA: Record<CanonicalPlanSlug, PlanMetadata> = {
     overagePerExtraFirmMonthlyDollars: 399,
     priceMonthlyDollars: 999,
     priceOneTimeDollars: null,
+    includedFeatures: [
+      "case_qa_enabled",
+      "missing_records_enabled",
+      "bills_vs_treatment_enabled",
+      "demand_drafts_enabled",
+      "providers_enabled",
+      "providers_map_enabled",
+      "exports_enabled",
+    ],
+    integrations: { gmail: true, clio: true },
   },
   premium: {
     slug: "premium",
     name: "Premium",
     docLimitMonthly: 10000,
+    seatLimit: 25,
+    demandLimitMonthly: 100,
     overagePerDocDollars: 0.1,
     aiIncludedMonthlyUsd: 300,
     aiOveragePerUsdDollars: 1,
@@ -189,11 +267,26 @@ export const PLAN_METADATA: Record<CanonicalPlanSlug, PlanMetadata> = {
     overagePerExtraFirmMonthlyDollars: 299,
     priceMonthlyDollars: 1999,
     priceOneTimeDollars: null,
+    includedFeatures: [
+      "case_qa_enabled",
+      "missing_records_enabled",
+      "bills_vs_treatment_enabled",
+      "demand_drafts_enabled",
+      "demand_audit_enabled",
+      "providers_enabled",
+      "providers_map_enabled",
+      "exports_enabled",
+      "migration_batch_enabled",
+      "traffic_enabled",
+    ],
+    integrations: { gmail: true, clio: true },
   },
   paperless_transition: {
     slug: "paperless_transition",
     name: "Paperless Transition",
     docLimitMonthly: 0,
+    seatLimit: 50,
+    demandLimitMonthly: 0,
     overagePerDocDollars: 0,
     aiIncludedMonthlyUsd: 0,
     aiOveragePerUsdDollars: 0,
@@ -201,6 +294,13 @@ export const PLAN_METADATA: Record<CanonicalPlanSlug, PlanMetadata> = {
     overagePerExtraFirmMonthlyDollars: 0,
     priceMonthlyDollars: 0,
     priceOneTimeDollars: 3500,
+    includedFeatures: [
+      "providers_enabled",
+      "providers_map_enabled",
+      "exports_enabled",
+      "migration_batch_enabled",
+    ],
+    integrations: { gmail: true, clio: true },
   },
 };
 
@@ -260,6 +360,22 @@ function resolveDocumentLimit(firm: {
     return Math.floor(override);
   }
   return getPlanMetadata(firm.plan).docLimitMonthly;
+}
+
+function resolveSeatLimit(firm: {
+  plan: string;
+  settings: Prisma.JsonValue | null;
+}): number {
+  const override = readNumericSetting(firm.settings, "seatLimit");
+  return override != null ? Math.floor(override) : getPlanMetadata(firm.plan).seatLimit;
+}
+
+function resolveDemandLimit(firm: {
+  plan: string;
+  settings: Prisma.JsonValue | null;
+}): number {
+  const override = readNumericSetting(firm.settings, "demandLimitMonthly");
+  return override != null ? Math.floor(override) : getPlanMetadata(firm.plan).demandLimitMonthly;
 }
 
 function resolveAiIncludedMonthlyUsd(firm: {
@@ -392,6 +508,41 @@ async function getFirmCountForBillingCustomer(
   });
 }
 
+async function getFirmUserCounts(firmId: string): Promise<{
+  activeUserCount: number;
+  pendingInviteCount: number;
+  billableUserCount: number;
+}> {
+  const [activeUserCount, pendingInviteCount] = await Promise.all([
+    prisma.user.count({
+      where: { firmId, deactivatedAt: null, passwordHash: { not: null } },
+    }),
+    prisma.user.count({
+      where: { firmId, deactivatedAt: null, passwordHash: null },
+    }),
+  ]);
+  return {
+    activeUserCount,
+    pendingInviteCount,
+    billableUserCount: activeUserCount + pendingInviteCount,
+  };
+}
+
+async function getDemandPackageCountForPeriod(
+  firmId: string,
+  period: { from: Date; to: Date }
+): Promise<number> {
+  return prisma.demandPackage.count({
+    where: {
+      firmId,
+      createdAt: {
+        gte: period.from,
+        lt: period.to,
+      },
+    },
+  });
+}
+
 function isBillingActiveNow(input: {
   billingStatus: string;
   trialEndsAt: Date | null;
@@ -508,6 +659,107 @@ export async function canIngestDocument(firmId: string): Promise<CanIngestResult
   });
 }
 
+export async function canInviteFirmUser(firmId: string): Promise<CanInviteUserResult> {
+  const firm = await prisma.firm.findUnique({
+    where: { id: firmId },
+    select: { plan: true, settings: true },
+  });
+  if (!firm) {
+    return {
+      allowed: false,
+      currentUsers: 0,
+      activeUsers: 0,
+      pendingInvites: 0,
+      limit: 0,
+      status: "within_limit",
+      softCapReached: false,
+      error: "Firm not found",
+      upgradeMessage: "Firm not found.",
+    };
+  }
+
+  const plan = getPlanMetadata(firm.plan);
+  const limit = resolveSeatLimit(firm);
+  const counts = await getFirmUserCounts(firmId);
+  const meter = buildUsageLimitMeter({
+    included: limit,
+    used: counts.billableUserCount,
+    overageRateDollars: 0,
+  });
+
+  if (limit > 0 && counts.billableUserCount >= limit) {
+    return {
+      allowed: false,
+      currentUsers: counts.billableUserCount,
+      activeUsers: counts.activeUserCount,
+      pendingInvites: counts.pendingInviteCount,
+      limit,
+      status: meter.status,
+      softCapReached: meter.softCapReached,
+      error: `Seat limit reached for the ${plan.name} plan.`,
+      upgradeMessage: `This firm has used ${counts.billableUserCount} of ${limit} seats on ${plan.name}. Upgrade or increase the seat override before inviting another user.`,
+    };
+  }
+
+  return {
+    allowed: true,
+    currentUsers: counts.billableUserCount,
+    activeUsers: counts.activeUserCount,
+    pendingInvites: counts.pendingInviteCount,
+    limit,
+    status: meter.status,
+    softCapReached: meter.softCapReached,
+  };
+}
+
+export async function canCreateDemandPackage(firmId: string): Promise<CanCreateDemandResult> {
+  const firm = await prisma.firm.findUnique({
+    where: { id: firmId },
+    select: { plan: true, settings: true },
+  });
+  if (!firm) {
+    return {
+      allowed: false,
+      currentDemands: 0,
+      limit: 0,
+      status: "within_limit",
+      softCapReached: false,
+      error: "Firm not found",
+      upgradeMessage: "Firm not found.",
+    };
+  }
+
+  const plan = getPlanMetadata(firm.plan);
+  const limit = resolveDemandLimit(firm);
+  const period = getBillingPeriodRange();
+  const currentDemands = await getDemandPackageCountForPeriod(firmId, period);
+  const meter = buildUsageLimitMeter({
+    included: limit,
+    used: currentDemands,
+    overageRateDollars: 0,
+  });
+
+  if (limit > 0 && currentDemands >= limit) {
+    return {
+      allowed: false,
+      currentDemands,
+      limit,
+      status: meter.status,
+      softCapReached: meter.softCapReached,
+      error: `Monthly demand limit reached for the ${plan.name} plan.`,
+      upgradeMessage: `This firm has created ${currentDemands} of ${limit} demand drafts this month. Upgrade or increase the demand override to continue.`,
+    };
+  }
+
+  return {
+    allowed: true,
+    currentDemands,
+    limit,
+    status: meter.status,
+    softCapReached: meter.softCapReached,
+  };
+}
+
 export async function getUsageForPeriod(
   firmId: string,
   yearMonth: string
@@ -573,15 +825,19 @@ export async function getFirmBillingUsageSnapshot(
   const period = getBillingPeriodRange(at);
   const plan = getPlanMetadata(firm.plan);
   const documentLimitMonthly = resolveDocumentLimit(firm);
+  const seatLimitEffective = resolveSeatLimit(firm);
+  const demandLimitMonthlyEffective = resolveDemandLimit(firm);
   const aiIncludedMonthlyUsdEffective = resolveAiIncludedMonthlyUsd(firm);
   const aiOveragePerUsdDollarsEffective = resolveAiOveragePerUsdDollars(firm);
   const includedFirmsEffective = resolveIncludedFirmCount(firm);
   const overagePerExtraFirmMonthlyDollarsEffective = resolveOveragePerExtraFirmMonthlyDollars(firm);
 
-  const [usage, aiSummary, currentFirmCount] = await Promise.all([
+  const [usage, aiSummary, currentFirmCount, userCounts, demandPackagesCreated] = await Promise.all([
     getFirmUsageMonthlyRecord(firmId, period.yearMonth),
     getFirmAiCostSummary(firmId, { from: period.from, to: period.to }) as Promise<AiCostEntitySummary>,
     getFirmCountForBillingCustomer(firm.billingCustomerId),
+    getFirmUserCounts(firmId),
+    getDemandPackageCountForPeriod(firmId, period),
   ]);
 
   const documents = buildUsageLimitMeter({
@@ -593,6 +849,16 @@ export async function getFirmBillingUsageSnapshot(
     included: aiIncludedMonthlyUsdEffective,
     used: aiSummary.totals.executedCostUsd,
     overageRateDollars: aiOveragePerUsdDollarsEffective,
+  });
+  const users = buildUsageLimitMeter({
+    included: seatLimitEffective,
+    used: userCounts.billableUserCount,
+    overageRateDollars: 0,
+  });
+  const demands = buildUsageLimitMeter({
+    included: demandLimitMonthlyEffective,
+    used: demandPackagesCreated,
+    overageRateDollars: 0,
   });
   const firms = buildUsageLimitMeter({
     included: includedFirmsEffective,
@@ -625,6 +891,8 @@ export async function getFirmBillingUsageSnapshot(
     plan: {
       ...plan,
       documentLimitMonthly,
+      seatLimitEffective,
+      demandLimitMonthlyEffective,
       aiIncludedMonthlyUsdEffective,
       aiOveragePerUsdDollarsEffective,
       includedFirmsEffective,
@@ -641,19 +909,40 @@ export async function getFirmBillingUsageSnapshot(
       aiCompletionTokens: aiSummary.totals.completionTokens,
       aiTotalTokens: aiSummary.totals.totalTokens,
       currentFirmCount,
+      activeUserCount: userCounts.activeUserCount,
+      pendingInviteCount: userCounts.pendingInviteCount,
+      demandPackagesCreated,
     },
     enforcement: {
       documents,
+      users,
+      demands,
       ai,
       firms,
-      softCapReached: documents.softCapReached || ai.softCapReached || firms.softCapReached,
+      softCapReached:
+        documents.softCapReached ||
+        users.softCapReached ||
+        demands.softCapReached ||
+        ai.softCapReached ||
+        firms.softCapReached,
       overageActive: documents.overageUnits > 0 || ai.overageUnits > 0 || firms.overageUnits > 0,
       totalOverageDollars,
       totalOverageCents: Math.round(totalOverageDollars * 100),
+      upgradeMessage:
+        (seatLimitEffective > 0 && userCounts.billableUserCount >= seatLimitEffective) ||
+        (demandLimitMonthlyEffective > 0 && demandPackagesCreated >= demandLimitMonthlyEffective) ||
+        documents.softCapReached
+          ? "You are at or near a plan limit. Contact Onyx Intel to upgrade or request a developer override."
+          : null,
     },
   };
 }
 
 export function listPlansForDisplay(): PlanMetadata[] {
-  return [PLAN_METADATA.essential, PLAN_METADATA.growth, PLAN_METADATA.premium];
+  return [
+    PLAN_METADATA.essential,
+    PLAN_METADATA.growth,
+    PLAN_METADATA.premium,
+    PLAN_METADATA.paperless_transition,
+  ];
 }

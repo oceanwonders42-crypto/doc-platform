@@ -14,7 +14,6 @@ import { DashboardCard } from "@/components/dashboard/DashboardCard";
 import { ErrorNotice } from "@/components/dashboard/ErrorNotice";
 import { Timeline, type TimelineItem } from "@/components/dashboard/Timeline";
 import { DocumentPreview } from "@/components/dashboard/DocumentPreview";
-import { AssistantChatPanel } from "@/components/dashboard/AssistantChatPanel";
 
 type CaseHandoffHistoryItem = {
   exportId: string;
@@ -1082,15 +1081,9 @@ export default function CaseDetailPage() {
           </DashboardCard>
 
           {caseQaEnabled ? (
-            <DashboardCard title="AI assistant chat" style={{ marginBottom: "1rem" }}>
-              <p style={{ margin: "0 0 0.75rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
-                Ask open questions about this case, Onyx workflow, missing records, bills vs treatment, chronology, or the demand draft. Answers stay firm- and case-scoped.
-              </p>
-              <AssistantChatPanel
-                caseId={id}
-                placeholder="Ask about this case, missing records, bills, chronology, or demand draft..."
-              />
-            </DashboardCard>
+            <p style={{ margin: "0 0 1rem", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>
+              The floating Ask Onyx assistant in the bottom-left corner is scoped to this case for open chat. The structured Case Q&A tool remains below for saved case questions.
+            </p>
           ) : null}
 
           {caseQaEnabled ? (

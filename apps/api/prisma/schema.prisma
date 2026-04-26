@@ -9,7 +9,9 @@ datasource db {
 enum Role {
   PLATFORM_ADMIN
   FIRM_ADMIN
+  ATTORNEY
   PARALEGAL
+  ASSISTANT
   STAFF
 }
 
@@ -246,12 +248,13 @@ model DeferredJobTelemetry {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  firmId       String
-  email        String   @unique
-  role         Role     @default(STAFF)
-  passwordHash String?
-  createdAt    DateTime @default(now())
+  id            String    @id @default(cuid())
+  firmId        String
+  email         String    @unique
+  role          Role      @default(STAFF)
+  passwordHash  String?
+  createdAt     DateTime  @default(now())
+  deactivatedAt DateTime?
 
   firm          Firm        @relation(fields: [firmId], references: [id])
   assignedCases LegalCase[] @relation("CaseAssignedUser")

@@ -15,7 +15,6 @@ import {
   type DashboardFeatureFlags,
 } from "@/lib/dashboardAccess";
 import { useDashboardAuth } from "@/contexts/DashboardAuthContext";
-import { AssistantChatPanel } from "@/components/dashboard/AssistantChatPanel";
 import { DashboardCard } from "@/components/dashboard/DashboardCard";
 import { ErrorNotice } from "@/components/dashboard/ErrorNotice";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -681,20 +680,9 @@ export default function DashboardHomePage() {
         </DashboardCard>
       </div>
 
-      <div style={{ marginTop: "1rem" }}>
-        <DashboardCard title="AI assistant">
-          <p style={{ margin: 0, fontSize: "0.88rem", color: "var(--onyx-text-secondary)", lineHeight: 1.55 }}>
-            Ask the assistant about app navigation, firm status, active cases, review queues, and enabled AI workflows.
-            Case-specific questions are grounded in the case workspace.
-          </p>
-          <p style={{ margin: "0.5rem 0 0", fontSize: "0.82rem", color: "var(--onyx-text-muted)" }}>
-            Signed in as {user?.email ?? "unknown user"}.
-          </p>
-          <div style={{ marginTop: "0.85rem" }}>
-            <AssistantChatPanel placeholder="Ask about firm status, integrations, review queues, or enabled features..." />
-          </div>
-        </DashboardCard>
-      </div>
+      <p style={{ margin: "1rem 0 0", color: "var(--onyx-text-muted)", fontSize: "0.84rem" }}>
+        The floating Ask Onyx assistant is available in the bottom-left corner across dashboard pages and automatically switches to case context inside a case.
+      </p>
     </div>
   );
 }

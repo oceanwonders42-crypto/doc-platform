@@ -70,9 +70,16 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
   if (token && !token.startsWith(API_KEY_PREFIX)) {
     const payload = verifyToken(token);
     if (payload) {
-      (req as any).firmId = payload.firmId;
-      (req as any).userId = payload.userId;
-      (req as any).authRole = payload.role as Role;
+      const user = await prisma.user.findUnique({
+        where: { id: payload.userId },
+        select: { id: true, firmId: true, role: true, deactivatedAt: true },
+      });
+      if (!user || user.firmId !== payload.firmId || user.deactivatedAt) {
+        return res.status(401).json({ ok: false, error: "Unauthorized" });
+      }
+      (req as any).firmId = user.firmId;
+      (req as any).userId = user.id;
+      (req as any).authRole = user.role;
       (req as any).authScopes = new Set<string>();
       return next();
     }
@@ -106,8 +113,11 @@ export async function auth(req: Request, res: Response, next: NextFunction) {
       if (k.userId) {
         const user = await prisma.user.findUnique({
           where: { id: k.userId },
-          select: { role: true },
+          select: { role: true, deactivatedAt: true },
         });
+        if (user?.deactivatedAt) {
+          return res.status(401).json({ ok: false, error: "User is deactivated" });
+        }
         (req as any).userId = k.userId;
         (req as any).authRole = user?.role ?? Role.STAFF;
       } else {

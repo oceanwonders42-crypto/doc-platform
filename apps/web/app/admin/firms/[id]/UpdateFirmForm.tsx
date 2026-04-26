@@ -18,18 +18,27 @@ const FEATURE_LABELS = [
 export function UpdateFirmForm({
   firmId,
   initialPlan,
+  initialBillingStatus,
   initialPageLimit,
+  initialSeatLimit,
+  initialDemandLimit,
   initialStatus,
   initialFeatureOverrides,
 }: {
   firmId: string;
   initialPlan: string;
+  initialBillingStatus: string;
   initialPageLimit: number;
+  initialSeatLimit: number;
+  initialDemandLimit: number;
   initialStatus: string;
   initialFeatureOverrides: Record<string, boolean>;
 }) {
   const [plan, setPlan] = useState(initialPlan);
+  const [billingStatus, setBillingStatus] = useState(initialBillingStatus);
   const [pageLimitMonthly, setPageLimitMonthly] = useState(String(initialPageLimit));
+  const [seatLimit, setSeatLimit] = useState(String(initialSeatLimit));
+  const [demandLimitMonthly, setDemandLimitMonthly] = useState(String(initialDemandLimit));
   const [status, setStatus] = useState(initialStatus);
   const [featureOverrides, setFeatureOverrides] = useState<Record<string, boolean>>(initialFeatureOverrides);
   const [saving, setSaving] = useState(false);
@@ -49,7 +58,10 @@ export function UpdateFirmForm({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           plan: plan.trim(),
+          billingStatus: billingStatus.trim(),
           pageLimitMonthly: parseInt(pageLimitMonthly, 10) || 0,
+          seatLimit: parseInt(seatLimit, 10) || 0,
+          demandLimitMonthly: parseInt(demandLimitMonthly, 10) || 0,
           status: status.trim(),
           featureOverrides,
         }),
@@ -129,12 +141,45 @@ export function UpdateFirmForm({
           />
         </div>
         <div>
+          <label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 6, fontWeight: 700 }}>Billing status</label>
+          <select
+            value={billingStatus}
+            onChange={(e) => setBillingStatus(e.target.value)}
+            style={{ padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: 10, width: "100%" }}
+          >
+            <option value="trial">trial</option>
+            <option value="active">active</option>
+            <option value="past_due">past_due</option>
+            <option value="cancelled">cancelled</option>
+          </select>
+        </div>
+        <div>
           <label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 6, fontWeight: 700 }}>Page limit (monthly)</label>
           <input
             type="number"
             min={0}
             value={pageLimitMonthly}
             onChange={(e) => setPageLimitMonthly(e.target.value)}
+            style={{ padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: 10, width: "100%" }}
+          />
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 6, fontWeight: 700 }}>Seat limit</label>
+          <input
+            type="number"
+            min={0}
+            value={seatLimit}
+            onChange={(e) => setSeatLimit(e.target.value)}
+            style={{ padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: 10, width: "100%" }}
+          />
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 6, fontWeight: 700 }}>Demand limit (monthly)</label>
+          <input
+            type="number"
+            min={0}
+            value={demandLimitMonthly}
+            onChange={(e) => setDemandLimitMonthly(e.target.value)}
             style={{ padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: 10, width: "100%" }}
           />
         </div>

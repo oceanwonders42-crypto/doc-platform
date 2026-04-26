@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import {
   formatApiClientError,
   getApiBase,
@@ -25,16 +25,40 @@ type AssistantMessage = {
 type AssistantChatPanelProps = {
   caseId?: string;
   placeholder?: string;
+  storageKey?: string;
+  intro?: string;
 };
 
 export function AssistantChatPanel({
   caseId,
   placeholder = "Ask Onyx about this workspace...",
+  storageKey,
+  intro,
 }: AssistantChatPanelProps) {
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const resolvedStorageKey = storageKey ?? `onyx-assistant:${caseId ?? "dashboard"}`;
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(resolvedStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as AssistantMessage[];
+      if (Array.isArray(parsed)) setMessages(parsed.slice(-12));
+    } catch {
+      // Ignore corrupted session chat state.
+    }
+  }, [resolvedStorageKey]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(resolvedStorageKey, JSON.stringify(messages.slice(-12)));
+    } catch {
+      // Session persistence is a convenience only.
+    }
+  }, [messages, resolvedStorageKey]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -103,8 +127,8 @@ export function AssistantChatPanel({
       >
         {messages.length === 0 ? (
           <p style={{ margin: 0, color: "var(--onyx-text-muted)", fontSize: "0.88rem", lineHeight: 1.55 }}>
-            Ask about navigation, firm status, missing records, bills vs treatment, demand drafts, or this case.
-            Answers are grounded in the firm or case context currently available.
+            {intro ??
+              "Ask about navigation, firm status, missing records, bills vs treatment, demand drafts, or this case. Answers are grounded in the firm or case context currently available."}
           </p>
         ) : (
           messages.map((message, index) => (

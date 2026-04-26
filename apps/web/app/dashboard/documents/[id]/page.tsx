@@ -698,7 +698,15 @@ export default function DocumentDetailPage() {
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-        <DocumentPreview id={doc.id} name={doc.originalName} type={doc.mimeType ?? undefined} status={doc.status} pageCount={doc.pageCount ?? undefined} showPreview={true} />
+        <DocumentPreview
+          id={doc.id}
+          name={doc.originalName}
+          type={doc.mimeType ?? undefined}
+          status={doc.status}
+          pageCount={doc.pageCount ?? undefined}
+          ocrText={recognition?.textExcerpt ?? null}
+          showPreview={true}
+        />
 
         <DashboardCard title="Operator action center">
           <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "1rem" }}>
