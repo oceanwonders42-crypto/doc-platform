@@ -102,4 +102,5 @@ main()
       Promise.allSettled([prisma.$disconnect(), pgPool.end(), redis.quit()]),
       new Promise((resolve) => setTimeout(resolve, 1000)),
     ]);
+    process.exit(process.exitCode ?? 0);
   });
