@@ -942,6 +942,7 @@ async function main() {
       if (secondContactId) {
         await prisma.contact.deleteMany({ where: { id: secondContactId } });
       }
+      await prisma.user.deleteMany({ where: { id: actorUserId } });
       await prisma.firm.deleteMany({ where: { id: firmId } });
     } catch (cleanupError) {
       const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
