@@ -47,11 +47,12 @@ export function AssistantChatPanel({
     setError(null);
 
     try {
-      const response = await fetch(`${getApiBase()}/assistant/chat`, {
+      const endpoint = caseId ? `/cases/${encodeURIComponent(caseId)}/chat` : "/ai/chat";
+      const response = await fetch(`${getApiBase()}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeader() },
         ...getFetchOptions(),
-        body: JSON.stringify({ question: trimmed, caseId }),
+        body: JSON.stringify({ question: trimmed }),
       });
       const data = (await parseJsonResponse(response)) as {
         ok?: boolean;

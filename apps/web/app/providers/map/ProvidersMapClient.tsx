@@ -24,7 +24,10 @@ declare global {
       };
       tileLayer: (url: string, opts?: unknown) => { addTo: (m: unknown) => unknown };
       marker: (latlng: [number, number], opts?: unknown) => {
-        addTo: (m: unknown) => { bindPopup: (html: string) => void };
+        addTo: (m: unknown) => {
+          bindPopup: (html: string) => void;
+          on?: (event: string, handler: () => void) => void;
+        };
         bindPopup: (html: string) => unknown;
       };
     };

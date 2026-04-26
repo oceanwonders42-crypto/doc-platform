@@ -7,6 +7,7 @@ import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@
 type MapProvider = {
   id: string;
   name: string;
+  type?: string | null;
   address: string | null;
   city: string | null;
   state: string | null;
@@ -15,6 +16,23 @@ type MapProvider = {
   email?: string | null;
   lat: number | null;
   lng: number | null;
+  linkedCaseCount?: number;
+  recordsRequestCount?: number;
+  linkedCases?: Array<{
+    id: string;
+    title: string | null;
+    caseNumber: string | null;
+    clientName: string | null;
+    status: string | null;
+    relationship?: string | null;
+  }>;
+  recordsRequestHistory?: Array<{
+    id: string;
+    status: string;
+    sentAt: string | null;
+    dueAt: string | null;
+    createdAt: string;
+  }>;
 };
 
 type ProviderCategory = {
@@ -32,7 +50,10 @@ declare global {
       };
       tileLayer: (url: string, opts?: unknown) => { addTo: (m: unknown) => unknown };
       marker: (latlng: [number, number], opts?: unknown) => {
-        addTo: (m: unknown) => { bindPopup: (html: string) => void };
+        addTo: (m: unknown) => {
+          bindPopup: (html: string) => void;
+          on?: (event: string, handler: () => void) => void;
+        };
         bindPopup: (html: string) => unknown;
       };
     };
@@ -61,6 +82,10 @@ function escapeHtml(value: string | null | undefined): string {
 
 function providerLocation(provider: MapProvider): string {
   return [provider.address, provider.city, provider.state].filter(Boolean).join(", ") || "Needs location";
+}
+
+function categoryLabel(value: string | null | undefined): string {
+  return CATEGORIES.find((item) => item.key === value)?.label ?? "Other";
 }
 
 export default function ProvidersMapClient() {
@@ -143,8 +168,9 @@ export default function ProvidersMapClient() {
       valid.forEach((provider) => {
         const marker = L.marker([provider.lat, provider.lng]).addTo(map);
         marker.bindPopup(
-          `<div style="min-width:190px"><strong><a href="/dashboard/providers/${provider.id}">${escapeHtml(provider.name)}</a></strong><br/>${escapeHtml(providerLocation(provider))}${provider.specialty ? `<br/><em>${escapeHtml(provider.specialty)}</em>` : ""}</div>`
+          `<div style="min-width:190px"><strong><a href="/dashboard/providers/${provider.id}">${escapeHtml(provider.name)}</a></strong><br/>${escapeHtml(providerLocation(provider))}<br/><em>${escapeHtml(categoryLabel(provider.type))}</em>${provider.specialty ? `<br/>${escapeHtml(provider.specialty)}` : ""}</div>`
         );
+        marker.on?.("click", () => setSelectedProvider(provider));
       });
 
       if (valid.length > 1) {
@@ -280,8 +306,41 @@ export default function ProvidersMapClient() {
               <p style={{ margin: "0.4rem 0 0", fontSize: 13, color: "var(--onyx-text-muted)" }}>
                 {providerLocation(selectedProvider)}
               </p>
+              <p style={{ margin: "0.4rem 0 0", fontSize: 13 }}>
+                <span className="onyx-badge onyx-badge-info">{categoryLabel(selectedProvider.type)}</span>
+              </p>
               {selectedProvider.specialty ? (
                 <p style={{ margin: "0.4rem 0 0", fontSize: 13 }}>{selectedProvider.specialty}</p>
+              ) : null}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", marginTop: "0.75rem" }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: 12, color: "var(--onyx-text-muted)" }}>Linked cases</p>
+                  <p style={{ margin: "0.1rem 0 0", fontWeight: 700 }}>{selectedProvider.linkedCaseCount ?? selectedProvider.linkedCases?.length ?? 0}</p>
+                </div>
+                <div>
+                  <p style={{ margin: 0, fontSize: 12, color: "var(--onyx-text-muted)" }}>Records requests</p>
+                  <p style={{ margin: "0.1rem 0 0", fontWeight: 700 }}>{selectedProvider.recordsRequestCount ?? selectedProvider.recordsRequestHistory?.length ?? 0}</p>
+                </div>
+              </div>
+              {selectedProvider.linkedCases && selectedProvider.linkedCases.length > 0 ? (
+                <div style={{ marginTop: "0.75rem", display: "grid", gap: "0.35rem" }}>
+                  <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "var(--onyx-text-muted)" }}>Cases</p>
+                  {selectedProvider.linkedCases.slice(0, 4).map((legalCase) => (
+                    <Link key={legalCase.id} href={`/dashboard/cases/${legalCase.id}`} className="onyx-link" style={{ fontSize: 13 }}>
+                      {legalCase.clientName ?? legalCase.caseNumber ?? legalCase.title ?? legalCase.id}
+                    </Link>
+                  ))}
+                </div>
+              ) : null}
+              {selectedProvider.recordsRequestHistory && selectedProvider.recordsRequestHistory.length > 0 ? (
+                <div style={{ marginTop: "0.75rem", display: "grid", gap: "0.35rem" }}>
+                  <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "var(--onyx-text-muted)" }}>Records request history</p>
+                  {selectedProvider.recordsRequestHistory.slice(0, 4).map((request) => (
+                    <span key={request.id} style={{ fontSize: 13, color: "var(--onyx-text-secondary)" }}>
+                      {request.status} - {request.sentAt ? new Date(request.sentAt).toLocaleDateString() : new Date(request.createdAt).toLocaleDateString()}
+                    </span>
+                  ))}
+                </div>
               ) : null}
               <Link href={`/dashboard/providers/${selectedProvider.id}`} className="onyx-link" style={{ display: "inline-block", marginTop: "0.6rem" }}>
                 Open provider
@@ -312,8 +371,14 @@ export default function ProvidersMapClient() {
                     }}
                   >
                     <strong>{provider.name}</strong>
+                    <span className="onyx-badge onyx-badge-info" style={{ marginTop: "0.35rem" }}>
+                      {categoryLabel(provider.type)}
+                    </span>
                     <span style={{ display: "block", fontSize: 12, color: "var(--onyx-text-muted)" }}>
                       {providerLocation(provider)}
+                    </span>
+                    <span style={{ display: "block", fontSize: 12, color: "var(--onyx-text-muted)" }}>
+                      {provider.linkedCaseCount ?? 0} linked case{(provider.linkedCaseCount ?? 0) === 1 ? "" : "s"} | {provider.recordsRequestCount ?? 0} request{(provider.recordsRequestCount ?? 0) === 1 ? "" : "s"}
                     </span>
                   </button>
                 ))}

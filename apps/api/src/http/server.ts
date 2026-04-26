@@ -4790,6 +4790,21 @@ app.get("/providers/map", auth, requireRole(Role.STAFF), async (req, res) => {
       hospital_er: ["hospital", "er", "emergency"],
       other: [],
     };
+    const categorizeProvider = (provider: { name?: string | null; specialty?: string | null; specialtiesJson?: unknown }): string => {
+      const sourceText = [
+        provider.specialty,
+        provider.name,
+        Array.isArray(provider.specialtiesJson) ? provider.specialtiesJson.join(" ") : null,
+      ]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .join(" ")
+        .toLowerCase();
+      for (const [key, terms] of Object.entries(categoryTerms)) {
+        if (key === "other") continue;
+        if (terms.some((term) => sourceText.includes(term))) return key;
+      }
+      return "other";
+    };
 
     const baseWhere: Prisma.ProviderWhereInput = {
       firmId,
@@ -4824,6 +4839,7 @@ app.get("/providers/map", auth, requireRole(Role.STAFF), async (req, res) => {
         city: true,
         state: true,
         specialty: true,
+        specialtiesJson: true,
         phone: true,
         email: true,
         lat: true,
@@ -4836,8 +4852,11 @@ app.get("/providers/map", auth, requireRole(Role.STAFF), async (req, res) => {
         (p) => p.lat != null && p.lng != null && haversineKm(centerLat, centerLng, p.lat, p.lng) <= radiusKm
       );
     }
+    if (category === "other") {
+      providers = providers.filter((provider) => categorizeProvider(provider) === "other");
+    }
 
-    const needsLocation = includeNeedsLocation
+    let needsLocation = includeNeedsLocation
       ? await prisma.provider.findMany({
           where: {
             ...baseWhere,
@@ -4852,6 +4871,7 @@ app.get("/providers/map", auth, requireRole(Role.STAFF), async (req, res) => {
             city: true,
             state: true,
             specialty: true,
+            specialtiesJson: true,
             phone: true,
             email: true,
             lat: true,
@@ -4859,11 +4879,110 @@ app.get("/providers/map", auth, requireRole(Role.STAFF), async (req, res) => {
           },
         })
       : [];
+    if (category === "other") {
+      needsLocation = needsLocation.filter((provider) => categorizeProvider(provider) === "other");
+    }
+
+    const allProviderIds = [...providers, ...needsLocation].map((provider) => provider.id);
+    const allProviderNames = [...providers, ...needsLocation].map((provider) => provider.name).filter(Boolean);
+    const [caseLinks, recordsRequests] =
+      allProviderIds.length > 0
+        ? await Promise.all([
+            prisma.caseProvider.findMany({
+              where: { firmId, providerId: { in: allProviderIds } },
+              orderBy: { createdAt: "desc" },
+              take: 300,
+              select: {
+                providerId: true,
+                relationship: true,
+                case: {
+                  select: {
+                    id: true,
+                    title: true,
+                    caseNumber: true,
+                    clientName: true,
+                    status: true,
+                  },
+                },
+              },
+            }),
+            prisma.recordsRequest.findMany({
+              where: {
+                firmId,
+                OR: [{ providerId: { in: allProviderIds } }, { providerName: { in: allProviderNames } }],
+              },
+              orderBy: { createdAt: "desc" },
+              take: 300,
+              select: {
+                id: true,
+                providerId: true,
+                providerName: true,
+                status: true,
+                sentAt: true,
+                dueAt: true,
+                createdAt: true,
+              },
+            }),
+          ])
+        : [[], []];
+    const linksByProvider = new Map<string, typeof caseLinks>();
+    for (const link of caseLinks) {
+      const current = linksByProvider.get(link.providerId) ?? [];
+      current.push(link);
+      linksByProvider.set(link.providerId, current);
+    }
+    const requestsByProvider = new Map<string, typeof recordsRequests>();
+    const requestsByName = new Map<string, typeof recordsRequests>();
+    for (const request of recordsRequests) {
+      if (request.providerId) {
+        const current = requestsByProvider.get(request.providerId) ?? [];
+        current.push(request);
+        requestsByProvider.set(request.providerId, current);
+      }
+      const normalizedName = request.providerName.trim().toLowerCase();
+      if (normalizedName) {
+        const current = requestsByName.get(normalizedName) ?? [];
+        current.push(request);
+        requestsByName.set(normalizedName, current);
+      }
+    }
+    const serializeProviderForMap = (provider: (typeof providers)[number]) => {
+      const linkedCases = (linksByProvider.get(provider.id) ?? []).slice(0, 8).map((link) => ({
+        id: link.case.id,
+        title: link.case.title,
+        caseNumber: link.case.caseNumber,
+        clientName: link.case.clientName,
+        status: link.case.status,
+        relationship: link.relationship,
+      }));
+      const requestHistory = [
+        ...(requestsByProvider.get(provider.id) ?? []),
+        ...(requestsByName.get(provider.name.trim().toLowerCase()) ?? []),
+      ]
+        .filter((request, index, list) => list.findIndex((candidate) => candidate.id === request.id) === index)
+        .slice(0, 8)
+        .map((request) => ({
+          id: request.id,
+          status: request.status,
+          sentAt: request.sentAt?.toISOString() ?? null,
+          dueAt: request.dueAt?.toISOString() ?? null,
+          createdAt: request.createdAt.toISOString(),
+        }));
+      return {
+        ...provider,
+        type: categorizeProvider(provider),
+        linkedCases,
+        linkedCaseCount: linkedCases.length,
+        recordsRequestHistory: requestHistory,
+        recordsRequestCount: requestHistory.length,
+        locationAvailable: provider.lat != null && provider.lng != null,
+      };
+    };
 
     res.json({
       ok: true,
-      items: providers,
-      needsLocation,
+      items: providers.map(serializeProviderForMap),
+      needsLocation: needsLocation.map(serializeProviderForMap),
       categories: Object.keys(categoryTerms),
     });
   } catch (err) {
@@ -7839,7 +7958,7 @@ app.post("/cases/:id/qa", auth, requireRole(Role.STAFF), async (req, res) => {
   }
 });
 
-app.post("/assistant/chat", auth, requireRole(Role.STAFF), async (req, res) => {
+async function handleAssistantChatRequest(req: Request, res: Response) {
   try {
     const firmId = (req as any).firmId as string;
     const question = typeof req.body?.question === "string" ? req.body.question.trim() : "";
@@ -7871,6 +7990,7 @@ app.post("/assistant/chat", auth, requireRole(Role.STAFF), async (req, res) => {
       caseCount,
       demandCount,
       recordsRequestCount,
+      pendingRecordsRequestCount,
       mailboxCount,
       clioIntegration,
       recentActivity,
@@ -7885,6 +8005,14 @@ app.post("/assistant/chat", auth, requireRole(Role.STAFF), async (req, res) => {
       prisma.legalCase.count({ where: { firmId } }),
       prisma.demandPackage.count({ where: { firmId } }),
       prisma.recordsRequest.count({ where: { firmId } }),
+      prisma.recordsRequest.count({
+        where: {
+          firmId,
+          status: {
+            notIn: ["COMPLETED", "completed", "CANCELLED", "cancelled"],
+          },
+        },
+      }),
       prisma.mailboxConnection.count({ where: { firmId, active: true } }),
       prisma.firmIntegration.findFirst({
         where: { firmId, provider: IntegrationProvider.CLIO },
@@ -7917,7 +8045,14 @@ app.post("/assistant/chat", auth, requireRole(Role.STAFF), async (req, res) => {
       `${firm.name} is on the ${firm.plan} plan with status ${firm.status}.`,
     ];
 
-    if (/(document|review|upload|ingest|ocr|classification)/.test(normalizedQuestion)) {
+    if (/(missing.*document|document.*missing|missing.*record|record.*missing|needs review|review queue)/.test(normalizedQuestion)) {
+      answerParts.push(
+        `${needsReviewCount} document${needsReviewCount === 1 ? "" : "s"} currently need review or routing attention, and ${pendingRecordsRequestCount} records request${pendingRecordsRequestCount === 1 ? "" : "s"} are still open.`
+      );
+      answerParts.push(
+        "For case-level missing-record analysis, open the case and ask the case assistant so the answer stays grounded in that case's documents, providers, chronology, bills, and records requests."
+      );
+    } else if (/(document|review|upload|ingest|ocr|classification)/.test(normalizedQuestion)) {
       answerParts.push(
         `${documentCount} document${documentCount === 1 ? "" : "s"} were created this month, and ${needsReviewCount} document${needsReviewCount === 1 ? "" : "s"} currently need routing or review attention.`
       );
@@ -7959,6 +8094,16 @@ app.post("/assistant/chat", auth, requireRole(Role.STAFF), async (req, res) => {
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
+}
+
+app.post("/assistant/chat", auth, requireRole(Role.STAFF), handleAssistantChatRequest);
+app.post("/ai/chat", auth, requireRole(Role.STAFF), handleAssistantChatRequest);
+app.post("/cases/:id/chat", auth, requireRole(Role.STAFF), async (req, res) => {
+  req.body = {
+    ...(req.body ?? {}),
+    caseId: String(req.params.id ?? ""),
+  };
+  return handleAssistantChatRequest(req, res);
 });
 
 app.post("/cases/:id/demand-packages/:packageId/approve", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
