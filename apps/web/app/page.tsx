@@ -1,181 +1,272 @@
 import Link from "next/link";
+import PublicMarketingNav from "./components/PublicMarketingNav";
 
-const workflowCards = [
+export const metadata = {
+  title: "Onyx Intel - Legal document automation",
+  description:
+    "Onyx Intel turns emails, PDFs, medical records, bills, and case files into organized cases, chronologies, records requests, and review-ready demands.",
+};
+
+const pipelineSteps = [
+  "Email/PDF",
+  "OCR",
+  "AI routing",
+  "Case",
+  "Chronology",
+  "Demand",
+  "Clio",
+];
+
+const roleCards = [
   {
-    title: "Ingest",
-    body: "Upload or receive PDFs by Gmail OAuth, then start OCR and classification with firm-scoped routing.",
+    title: "Firm admins",
+    body: "See firm health, usage, team activity, integrations, feature access, and blocked items that need attention.",
   },
   {
-    title: "Review",
-    body: "See why a document was routed, resolve low-confidence matches, and keep work in the review queue when needed.",
+    title: "Attorneys",
+    body: "Review case context, chronology, missing records, bills versus treatment, and demand drafts before anything goes out.",
   },
   {
-    title: "Draft",
-    body: "Build demand PDFs from records, bills, chronology, missing records, and developer-controlled templates.",
+    title: "Assistants and paralegals",
+    body: "Work from assigned cases, review queues, records requests, demand tasks, provider lookup, and case-aware AI support.",
   },
 ];
 
-const planCards = [
-  ["Essential", "Small firm launch plan with controlled AI drafting and document limits."],
-  ["Growth", "Adds Clio/Gmail access, providers, exports, and a larger seat pool."],
-  ["Premium", "Full workflow access with migration, traffic, demand audit, and higher limits."],
+const workflows = [
+  "Email PDF ingestion",
+  "Document review",
+  "AI case routing",
+  "Chronology generation",
+  "Missing records",
+  "Bills vs treatment",
+  "Records requests",
+  "Demand drafting",
+  "Clio note writeback",
+];
+
+const trustCards = [
+  {
+    title: "Firm-scoped access",
+    body: "Documents, cases, AI answers, and integration data stay scoped to the active firm and authorized users.",
+  },
+  {
+    title: "Human review",
+    body: "Uncertain routing decisions and demand drafts stay review-ready. Onyx Intel does not auto-send legal work product.",
+  },
+  {
+    title: "Audit trail",
+    body: "Routing reasons, confidence, records requests, document previews, and writeback steps are designed to be traceable.",
+  },
+];
+
+const inboxRows = [
+  { name: "ER report - Jordan Alvarez.pdf", tag: "Medical", status: "Routed" },
+  { name: "MRI lumbar findings.pdf", tag: "Imaging", status: "Case match" },
+  { name: "Billing ledger.pdf", tag: "Billing", status: "Review" },
 ];
 
 export default function Home() {
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background:
-          "radial-gradient(circle at 12% 8%, rgba(201,162,39,0.22), transparent 28%), radial-gradient(circle at 86% 14%, rgba(35,68,101,0.18), transparent 30%), linear-gradient(135deg, #fbf7ef 0%, #f2eadc 44%, #e9ddc8 100%)",
-        color: "#17202a",
-      }}
-    >
-      <section style={{ maxWidth: 1180, margin: "0 auto", padding: "2rem 1.2rem 4rem" }}>
-        <nav style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem", marginBottom: "4rem" }}>
-          <Link href="/" style={{ display: "inline-flex", alignItems: "center", gap: "0.7rem", textDecoration: "none", color: "#17202a" }}>
-            <span
-              style={{
-                display: "grid",
-                placeItems: "center",
-                width: "2.6rem",
-                height: "2.6rem",
-                borderRadius: "0.95rem",
-                background: "linear-gradient(135deg, #17202a, #2e3d4d)",
-                color: "#f6d77b",
-                fontWeight: 900,
-                letterSpacing: "0.08em",
-                boxShadow: "0 18px 42px rgba(23,32,42,0.22)",
-              }}
-            >
-              OI
-            </span>
-            <span style={{ fontWeight: 850, fontSize: "1.05rem", letterSpacing: "-0.03em" }}>Onyx Intel</span>
-          </Link>
-          <div style={{ display: "flex", gap: "0.65rem", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <Link href="/login" style={{ color: "#17202a", fontWeight: 700, textDecoration: "none" }}>
-              Log in
-            </Link>
-            <Link
-              href="/dashboard"
-              style={{
-                background: "#17202a",
-                color: "#fff",
-                borderRadius: 999,
-                padding: "0.78rem 1rem",
-                textDecoration: "none",
-                fontWeight: 800,
-                boxShadow: "0 16px 34px rgba(23,32,42,0.24)",
-              }}
-            >
-              Open dashboard
-            </Link>
-          </div>
-        </nav>
+    <main className="min-h-screen bg-white text-[#0a0a0a]">
+      <PublicMarketingNav />
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))", gap: "2rem", alignItems: "center" }}>
-          <div>
-            <p style={{ margin: "0 0 1rem", textTransform: "uppercase", letterSpacing: "0.16em", fontSize: "0.75rem", fontWeight: 900, color: "#7b641e" }}>
-              Legal workflow intelligence
+      <section className="relative overflow-hidden border-b border-[#e5e7eb]">
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(circle_at_30%_20%,rgba(37,99,235,0.12),transparent_32%),linear-gradient(180deg,#eff6ff_0%,rgba(255,255,255,0)_72%)]" />
+        <div className="relative mx-auto grid max-w-7xl gap-12 px-5 py-20 lg:grid-cols-[1.02fr_0.98fr] lg:px-8 lg:py-28">
+          <div className="flex flex-col justify-center">
+            <p className="mb-5 text-xs font-black uppercase tracking-[0.22em] text-[#2563eb]">
+              Legal document automation
             </p>
-            <h1 style={{ margin: 0, fontSize: "clamp(3rem, 8vw, 6.4rem)", lineHeight: 0.9, letterSpacing: "-0.08em", fontWeight: 900 }}>
-              Documents into demands, without the maze.
+            <h1 className="max-w-4xl text-5xl font-black leading-[0.92] tracking-[-0.075em] text-[#0a0a0a] sm:text-6xl lg:text-7xl">
+              All legal documents. One intelligent workflow.
             </h1>
-            <p style={{ margin: "1.35rem 0 0", maxWidth: 640, fontSize: "1.08rem", lineHeight: 1.7, color: "#46515d" }}>
-              Onyx Intel gives injury firms one controlled lane for Gmail ingestion, OCR, AI routing, chronology, records requests, Clio writeback, and review-ready demand PDFs.
+            <p className="mt-7 max-w-2xl text-lg leading-8 text-[#525252]">
+              Onyx Intel turns emails, PDFs, medical records, bills, and case files into organized cases,
+              chronologies, records requests, and review-ready demands.
             </p>
-            <div style={{ display: "flex", gap: "0.8rem", flexWrap: "wrap", marginTop: "1.6rem" }}>
+            <div className="mt-9 flex flex-wrap gap-3">
               <Link
-                href="/login"
-                style={{
-                  background: "#c9a227",
-                  color: "#17202a",
-                  borderRadius: 999,
-                  padding: "0.9rem 1.15rem",
-                  fontWeight: 900,
-                  textDecoration: "none",
-                }}
+                href="/support/report"
+                className="rounded-full bg-[#0a0a0a] px-6 py-3 text-sm font-black text-white shadow-sm transition hover:bg-[#2563eb]"
               >
-                Start working
+                Book a Demo
               </Link>
               <Link
-                href="/dashboard/settings/billing"
-                style={{
-                  border: "1px solid rgba(23,32,42,0.22)",
-                  color: "#17202a",
-                  borderRadius: 999,
-                  padding: "0.9rem 1.15rem",
-                  fontWeight: 800,
-                  textDecoration: "none",
-                  background: "rgba(255,255,255,0.45)",
-                }}
+                href="/compare"
+                className="rounded-full border border-[#d1d5db] bg-white px-6 py-3 text-sm font-black text-[#111111] transition hover:border-[#2563eb] hover:text-[#2563eb]"
               >
-                View plans
+                See the comparison
               </Link>
             </div>
           </div>
 
-          <div
-            style={{
-              borderRadius: "2rem",
-              background: "rgba(255,255,255,0.58)",
-              border: "1px solid rgba(23,32,42,0.12)",
-              boxShadow: "0 30px 80px rgba(23,32,42,0.16)",
-              padding: "1.2rem",
-              backdropFilter: "blur(16px)",
-            }}
-          >
-            <div style={{ borderRadius: "1.45rem", background: "#17202a", color: "#fff", padding: "1.35rem" }}>
-              <p style={{ margin: 0, color: "#f6d77b", fontSize: "0.78rem", fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase" }}>
-                Live firm controls
-              </p>
-              <h2 style={{ margin: "0.6rem 0 0", fontSize: "1.8rem", letterSpacing: "-0.04em" }}>
-                Role-aware access, plan limits, and feature flags.
-              </h2>
-              <div style={{ display: "grid", gap: "0.7rem", marginTop: "1.1rem" }}>
-                {["Firm admin onboarding", "Seat and demand limits", "Floating AI assistant", "Document preview"].map((item) => (
-                  <div key={item} style={{ display: "flex", justifyContent: "space-between", gap: "1rem", borderTop: "1px solid rgba(255,255,255,0.12)", paddingTop: "0.7rem" }}>
-                    <span>{item}</span>
-                    <strong style={{ color: "#f6d77b" }}>Controlled</strong>
+          <div className="relative">
+            <div className="absolute -right-8 top-8 hidden h-32 w-32 rounded-full border border-[#bfdbfe] bg-[#eff6ff] lg:block" />
+            <div className="relative rounded-[2rem] border border-[#e5e7eb] bg-white p-4 shadow-[0_28px_80px_rgba(15,23,42,0.10)]">
+              <div className="rounded-[1.5rem] border border-[#e5e7eb] bg-[#fafafa] p-4">
+                <div className="flex items-center justify-between gap-4 border-b border-[#e5e7eb] pb-4">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.18em] text-[#6b7280]">Document inbox</p>
+                    <h2 className="mt-1 text-xl font-black tracking-[-0.04em]">Today&apos;s legal intake</h2>
                   </div>
-                ))}
+                  <span className="rounded-full bg-[#dbeafe] px-3 py-1 text-xs font-black text-[#1d4ed8]">
+                    Live routing
+                  </span>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  {inboxRows.map((row) => (
+                    <div key={row.name} className="rounded-2xl border border-[#e5e7eb] bg-white p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-black text-[#111111]">{row.name}</p>
+                          <p className="mt-1 text-xs font-semibold text-[#6b7280]">{row.tag}</p>
+                        </div>
+                        <span className="rounded-full border border-[#bfdbfe] bg-[#eff6ff] px-2.5 py-1 text-xs font-bold text-[#2563eb]">
+                          {row.status}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4 grid gap-3 rounded-2xl border border-[#bfdbfe] bg-[#eff6ff] p-4 md:grid-cols-2">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.16em] text-[#2563eb]">AI routing decision</p>
+                    <p className="mt-2 text-sm font-bold text-[#111111]">Matched to Jordan Alvarez QA Collision</p>
+                    <p className="mt-1 text-sm leading-6 text-[#525252]">
+                      Confidence 87%. Client name, provider, and treatment date overlap the case timeline.
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-white p-4 shadow-sm">
+                    <p className="text-xs font-black uppercase tracking-[0.16em] text-[#6b7280]">
+                      Review-ready demand
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-[#525252]">
+                      Chronology, bills, missing records, and template controls stay visible before export.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="absolute -bottom-6 left-6 right-6 rounded-2xl border border-[#e5e7eb] bg-white p-4 shadow-[0_18px_50px_rgba(15,23,42,0.12)]">
+                <p className="text-xs font-black uppercase tracking-[0.16em] text-[#6b7280]">AI assistant</p>
+                <p className="mt-1 text-sm font-semibold text-[#111111]">
+                  Ask: What records are missing before this demand is reviewed?
+                </p>
               </div>
             </div>
           </div>
         </div>
+      </section>
 
-        <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: "1rem", marginTop: "4rem" }}>
-          {workflowCards.map((card) => (
-            <article key={card.title} style={{ padding: "1.2rem", borderRadius: "1.35rem", background: "rgba(255,255,255,0.58)", border: "1px solid rgba(23,32,42,0.1)" }}>
-              <h2 style={{ margin: 0, fontSize: "1.15rem" }}>{card.title}</h2>
-              <p style={{ margin: "0.55rem 0 0", color: "#46515d", lineHeight: 1.65 }}>{card.body}</p>
-            </article>
-          ))}
-        </section>
-
-        <section style={{ marginTop: "4rem" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap", alignItems: "end", marginBottom: "1rem" }}>
-            <div>
-              <p style={{ margin: 0, color: "#7b641e", fontWeight: 900, letterSpacing: "0.12em", textTransform: "uppercase", fontSize: "0.75rem" }}>
-                Plans
-              </p>
-              <h2 style={{ margin: "0.35rem 0 0", fontSize: "2rem", letterSpacing: "-0.05em" }}>
-                Access grows with the firm.
-              </h2>
+      <section id="workflows" className="mx-auto max-w-7xl px-5 py-20 lg:px-8">
+        <div className="max-w-3xl">
+          <p className="text-xs font-black uppercase tracking-[0.22em] text-[#2563eb]">How it works</p>
+          <h2 className="mt-4 text-4xl font-black tracking-[-0.055em] text-[#0a0a0a] sm:text-5xl">
+            From inbound PDF to attorney review, every step stays traceable.
+          </h2>
+        </div>
+        <div className="mt-10 grid gap-3 md:grid-cols-7">
+          {pipelineSteps.map((step, index) => (
+            <div key={step} className="rounded-3xl border border-[#e5e7eb] bg-[#f8fafc] p-5">
+              <span className="text-xs font-black text-[#2563eb]">0{index + 1}</span>
+              <p className="mt-3 text-sm font-black text-[#111111]">{step}</p>
             </div>
-            <p style={{ margin: 0, color: "#46515d", maxWidth: 480, lineHeight: 1.6 }}>
-              Developer controls can enable or disable features per firm, while paid tiers keep seats, documents, AI workflows, and integrations bounded.
+          ))}
+        </div>
+      </section>
+
+      <section id="product" className="border-y border-[#e5e7eb] bg-[#fafafa]">
+        <div className="mx-auto grid max-w-7xl gap-12 px-5 py-20 lg:grid-cols-[0.85fr_1.15fr] lg:px-8">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.22em] text-[#2563eb]">Built for legal teams</p>
+            <h2 className="mt-4 text-4xl font-black tracking-[-0.055em] text-[#0a0a0a]">
+              Less tab-hopping. More case progress.
+            </h2>
+            <p className="mt-5 text-base leading-7 text-[#525252]">
+              Onyx Intel is a focused document-to-demand automation layer for firms that need intake,
+              review, drafting, and writeback to feel like one workflow.
             </p>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: "1rem" }}>
-            {planCards.map(([title, body]) => (
-              <article key={title} style={{ padding: "1.2rem", borderRadius: "1.35rem", background: "#fffaf0", border: "1px solid rgba(201,162,39,0.24)" }}>
-                <h3 style={{ margin: 0, fontSize: "1.1rem" }}>{title}</h3>
-                <p style={{ margin: "0.55rem 0 0", color: "#46515d", lineHeight: 1.6 }}>{body}</p>
+          <div className="grid gap-4 md:grid-cols-3">
+            {roleCards.map((card) => (
+              <article key={card.title} className="rounded-3xl border border-[#e5e7eb] bg-white p-6 shadow-sm">
+                <h3 className="text-lg font-black tracking-[-0.035em]">{card.title}</h3>
+                <p className="mt-3 text-sm leading-6 text-[#525252]">{card.body}</p>
               </article>
             ))}
           </div>
-        </section>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-7xl px-5 py-20 lg:px-8">
+        <div className="flex flex-wrap items-end justify-between gap-6">
+          <div className="max-w-3xl">
+            <p className="text-xs font-black uppercase tracking-[0.22em] text-[#2563eb]">Core workflows</p>
+            <h2 className="mt-4 text-4xl font-black tracking-[-0.055em] text-[#0a0a0a]">
+              The legal operations layer between documents and demands.
+            </h2>
+          </div>
+          <Link href="/compare" className="text-sm font-black text-[#2563eb] hover:underline">
+            Compare Onyx Intel
+          </Link>
+        </div>
+        <div className="mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {workflows.map((workflow) => (
+            <div key={workflow} className="flex items-center gap-3 rounded-2xl border border-[#e5e7eb] bg-white p-4">
+              <span className="h-2.5 w-2.5 rounded-full bg-[#2563eb]" />
+              <span className="text-sm font-bold text-[#111111]">{workflow}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section id="security" className="border-y border-[#e5e7eb] bg-[#f8fafc]">
+        <div className="mx-auto max-w-7xl px-5 py-20 lg:px-8">
+          <div className="max-w-3xl">
+            <p className="text-xs font-black uppercase tracking-[0.22em] text-[#2563eb]">Trust and control</p>
+            <h2 className="mt-4 text-4xl font-black tracking-[-0.055em] text-[#0a0a0a]">
+              Firm-controlled AI workflows, not black-box automation.
+            </h2>
+          </div>
+          <div className="mt-10 grid gap-4 md:grid-cols-3">
+            {trustCards.map((card) => (
+              <article key={card.title} className="rounded-3xl border border-[#e5e7eb] bg-white p-6 shadow-sm">
+                <h3 className="text-lg font-black tracking-[-0.035em]">{card.title}</h3>
+                <p className="mt-3 text-sm leading-6 text-[#525252]">{card.body}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section id="about" className="mx-auto grid max-w-7xl gap-8 px-5 py-20 lg:grid-cols-[1fr_0.8fr] lg:px-8">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.22em] text-[#2563eb]">Resources/About</p>
+          <h2 className="mt-4 text-4xl font-black tracking-[-0.055em] text-[#0a0a0a]">
+            Designed as a focused automation layer for legal document teams.
+          </h2>
+          <p className="mt-5 text-base leading-7 text-[#525252]">
+            Established legal platforms often emphasize broad practice management. Onyx Intel is focused on
+            the document-to-demand lane: email PDFs, AI routing, chronology, records requests, demand drafts,
+            and Clio writeback with developer-controlled firm access.
+          </p>
+        </div>
+        <div className="rounded-[2rem] border border-[#e5e7eb] bg-[#fafafa] p-8">
+          <h3 className="text-2xl font-black tracking-[-0.04em]">See how a document becomes a demand.</h3>
+          <p className="mt-3 text-sm leading-6 text-[#525252]">
+            Walk through ingestion, routing confidence, case context, chronology, and a review-ready demand draft.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Link href="/support/report" className="rounded-full bg-[#0a0a0a] px-5 py-3 text-sm font-black text-white">
+              Book a Demo
+            </Link>
+            <Link href="/login" className="rounded-full border border-[#d1d5db] bg-white px-5 py-3 text-sm font-black text-[#111111]">
+              Login
+            </Link>
+          </div>
+        </div>
       </section>
     </main>
   );
