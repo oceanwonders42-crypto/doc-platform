@@ -125,7 +125,7 @@ export default function DemoRequestForm() {
       <div className="mb-6">
         <p className="text-xs font-black uppercase tracking-[0.22em] text-[#2563eb]">Demo request</p>
         <h2 className="mt-3 text-3xl font-black tracking-[-0.055em] text-[#0a0a0a]">Tell us about your workflow.</h2>
-        <p className="mt-3 text-sm leading-6 text-[#525252]">No credit card. No public pricing. Just a focused walkthrough.</p>
+        <p className="mt-3 text-sm leading-6 text-[#525252]">No credit card. Just a focused walkthrough tailored to your firm.</p>
       </div>
 
       {error ? (

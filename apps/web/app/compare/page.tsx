@@ -85,7 +85,7 @@ const proofPoints = [
   "Case-aware, not just file-aware",
   "Review fallback for uncertain routing",
   "Demand templates controlled by firm/developer settings",
-  "No public pricing or unsupported competitor claims",
+  "Factual claims with no unsupported competitor comparisons",
 ];
 
 export default function ComparePage() {
