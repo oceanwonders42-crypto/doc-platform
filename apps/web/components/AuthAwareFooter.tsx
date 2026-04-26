@@ -4,7 +4,9 @@ import { usePathname } from "next/navigation";
 
 export function AuthAwareFooter() {
   const pathname = usePathname() ?? "";
-  if (pathname === "/" || pathname === "/login") return null;
+  if (pathname === "/" || pathname === "/compare" || pathname === "/demo" || pathname === "/security" || pathname === "/login") {
+    return null;
+  }
   return (
     <footer
       className="onyx-header"

@@ -37,7 +37,7 @@ export default function CaseDashboardFeaturePage() {
             </li>
           ))}
         </ul>
-        <Link href="/login" className="btn-primary mt-10 inline-block">
+        <Link href="/demo" className="btn-primary mt-10 inline-block">
           Book a demo
         </Link>
       </div>

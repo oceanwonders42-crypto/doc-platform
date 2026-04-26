@@ -1101,6 +1101,144 @@ app.post("/team/invite/accept", async (req, res) => {
   }
 });
 
+const DEMO_FIRM_SIZES = new Set(["Solo", "2-5", "6-15", "16-50", "51+"]);
+const DEMO_ROLES = new Set([
+  "Firm owner/admin",
+  "Attorney",
+  "Paralegal/assistant",
+  "Operations",
+  "Other",
+]);
+const DEMO_IMPROVEMENTS = new Set([
+  "Email PDF ingestion",
+  "Document review/OCR",
+  "Case routing",
+  "Chronologies",
+  "Missing records",
+  "Bills vs treatment",
+  "Demand drafting",
+  "Clio writeback",
+  "All of the above",
+]);
+
+function cleanDemoString(value: unknown, maxLength: number): string {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function cleanOptionalDemoString(value: unknown, maxLength: number): string | null {
+  const cleaned = cleanDemoString(value, maxLength);
+  return cleaned ? cleaned : null;
+}
+
+function isValidWorkEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function getPublicRequestIp(req: Request): string | null {
+  const forwardedFor = req.headers["x-forwarded-for"];
+  const firstForwarded =
+    typeof forwardedFor === "string"
+      ? forwardedFor.split(",")[0]?.trim()
+      : Array.isArray(forwardedFor)
+        ? forwardedFor[0]?.split(",")[0]?.trim()
+        : "";
+  return firstForwarded || req.ip || null;
+}
+
+async function handleDemoRequest(req: Request, res: Response) {
+  try {
+    const body = (req.body ?? {}) as {
+      fullName?: unknown;
+      workEmail?: unknown;
+      firmName?: unknown;
+      firmSize?: unknown;
+      role?: unknown;
+      improvements?: unknown;
+      message?: unknown;
+      pageUrl?: unknown;
+    };
+
+    const fullName = cleanDemoString(body.fullName, 160);
+    const workEmail = cleanDemoString(body.workEmail, 240).toLowerCase();
+    const firmName = cleanDemoString(body.firmName, 180);
+    const firmSize = cleanDemoString(body.firmSize, 32);
+    const role = cleanDemoString(body.role, 80);
+    const improvements = Array.isArray(body.improvements)
+      ? body.improvements.map((item) => cleanDemoString(item, 80)).filter((item) => DEMO_IMPROVEMENTS.has(item))
+      : [];
+    const message = cleanOptionalDemoString(body.message, 3000);
+    const pageUrl = cleanOptionalDemoString(body.pageUrl, 1000);
+    const userAgent = cleanOptionalDemoString(req.headers["user-agent"], 500);
+
+    const fieldErrors: Record<string, string> = {};
+    if (fullName.length < 2) fieldErrors.fullName = "Enter your full name.";
+    if (!isValidWorkEmail(workEmail)) fieldErrors.workEmail = "Enter a valid work email.";
+    if (firmName.length < 2) fieldErrors.firmName = "Enter your firm name.";
+    if (!DEMO_FIRM_SIZES.has(firmSize)) fieldErrors.firmSize = "Select a firm size.";
+    if (!DEMO_ROLES.has(role)) fieldErrors.role = "Select your role.";
+    if (improvements.length === 0) fieldErrors.improvements = "Select at least one workflow.";
+
+    if (Object.keys(fieldErrors).length > 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "Please check the highlighted fields.",
+        code: "VALIDATION_ERROR",
+        fieldErrors,
+      });
+    }
+
+    const request = await prisma.demoRequest.create({
+      data: {
+        fullName,
+        workEmail,
+        firmName,
+        firmSize,
+        role,
+        improvements,
+        message,
+        pageUrl,
+        userAgent,
+        ipAddress: getPublicRequestIp(req),
+      },
+      select: {
+        id: true,
+        createdAt: true,
+      },
+    });
+
+    logInfo("demo_request_created", {
+      demoRequestId: request.id,
+      firmSize,
+      role,
+      improvementCount: improvements.length,
+    });
+
+    return res.status(201).json({
+      ok: true,
+      requestId: request.id,
+      createdAt: request.createdAt.toISOString(),
+      message: "Thanks - we'll reach out to schedule your walkthrough.",
+    });
+  } catch (e: any) {
+    return res.status(500).json({
+      ok: false,
+      error: "Unable to save demo request right now. Please try again.",
+    });
+  }
+}
+
+app.post(["/demo/request", "/api/demo/request"], handleDemoRequest);
+app.all(["/demo/request", "/api/demo/request"], (_req, res) => {
+  return res.status(405).json({
+    ok: false,
+    error: "Method not allowed. Submit demo requests with POST.",
+    code: "METHOD_NOT_ALLOWED",
+  });
+});
+
 app.use("/cases", casesRouter);
 app.use("/clio", clioRouter);
 app.use("/api/clio", clioRouter);

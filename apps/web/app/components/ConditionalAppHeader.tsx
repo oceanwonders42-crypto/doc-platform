@@ -8,6 +8,7 @@ export default function ConditionalAppHeader() {
   if (
     pathname === "/" ||
     pathname === "/compare" ||
+    pathname === "/demo" ||
     pathname === "/security" ||
     pathname === "/login" ||
     pathname.startsWith("/dashboard") ||

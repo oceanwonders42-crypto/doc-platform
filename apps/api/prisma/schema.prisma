@@ -920,6 +920,28 @@ model AppBugReport {
   @@index([createdAt])
 }
 
+model DemoRequest {
+  id           String   @id @default(cuid())
+  fullName     String
+  workEmail    String
+  firmName     String
+  firmSize     String
+  role         String
+  improvements String[] @default([])
+  message      String?  @db.Text
+  source       String   @default("public_demo_form")
+  pageUrl      String?
+  userAgent    String?
+  ipAddress    String?
+  status       String   @default("NEW")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([workEmail])
+  @@index([status])
+  @@index([createdAt])
+}
+
 model MedicalBillLineItem {
   id                   String    @id @default(cuid())
   firmId               String
