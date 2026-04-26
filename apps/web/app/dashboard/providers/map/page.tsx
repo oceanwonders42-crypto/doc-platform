@@ -7,7 +7,6 @@ export default function ProvidersMapPage() {
         padding: 24,
         maxWidth: 1200,
         margin: "0 auto",
-        fontFamily: "system-ui, -apple-system",
       }}
     >
       <ProvidersMapClient />

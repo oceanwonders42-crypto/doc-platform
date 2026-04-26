@@ -9,21 +9,34 @@ import {
 
 type FirmFindUnique = typeof prisma.firm.findUnique;
 type MockFirmRecord = Awaited<ReturnType<FirmFindUnique>>;
+type FeatureOverrideFindFirst = typeof prisma.firmFeatureOverride.findFirst;
+type MockFeatureOverrideRecord = Awaited<ReturnType<FeatureOverrideFindFirst>>;
 
 function stubFindUnique(result: MockFirmRecord): FirmFindUnique {
   return ((..._args: Parameters<FirmFindUnique>) =>
     Promise.resolve(result) as ReturnType<FirmFindUnique>) as unknown as FirmFindUnique;
 }
 
+function stubOverrideFindFirst(result: MockFeatureOverrideRecord): FeatureOverrideFindFirst {
+  return ((..._args: Parameters<FeatureOverrideFindFirst>) =>
+    Promise.resolve(result) as ReturnType<FeatureOverrideFindFirst>) as unknown as FeatureOverrideFindFirst;
+}
+
 async function main() {
   const firmDelegate = prisma.firm as {
     findUnique: FirmFindUnique;
   };
+  const overrideDelegate = prisma.firmFeatureOverride as {
+    findFirst: FeatureOverrideFindFirst;
+  };
   const originalFindUnique = firmDelegate.findUnique.bind(prisma.firm);
+  const originalOverrideFindFirst = overrideDelegate.findFirst.bind(prisma.firmFeatureOverride);
   const originalNodeEnv = process.env.NODE_ENV;
   const originalEmailAutomationFlag = process.env[EMAIL_AUTOMATION_ENV_NAME];
 
   try {
+    overrideDelegate.findFirst = stubOverrideFindFirst(null);
+
     delete process.env[EMAIL_AUTOMATION_ENV_NAME];
     assert.equal(
       isEmailAutomationEnabled(),
@@ -56,6 +69,21 @@ async function main() {
     assert.equal(await hasFeature("firm-with-flags", "insurance_extraction"), true);
     assert.equal(await hasFeature("firm-with-flags", "court_extraction"), false);
 
+    overrideDelegate.findFirst = stubOverrideFindFirst({ enabled: false } as never);
+    assert.equal(
+      await hasFeature("firm-with-flags", "insurance_extraction"),
+      false,
+      "active firm_feature_overrides must disable legacy JSON flags"
+    );
+
+    overrideDelegate.findFirst = stubOverrideFindFirst({ enabled: true } as never);
+    assert.equal(
+      await hasFeature("firm-with-flags", "court_extraction"),
+      true,
+      "active firm_feature_overrides must enable flags missing from legacy JSON"
+    );
+
+    overrideDelegate.findFirst = stubOverrideFindFirst(null);
     firmDelegate.findUnique = stubFindUnique({ features: { malformed: true } } as never);
     assert.equal(await hasFeature("firm-malformed", "duplicates_detection"), true);
 
@@ -66,6 +94,7 @@ async function main() {
     console.log("feature flag tests passed");
   } finally {
     firmDelegate.findUnique = originalFindUnique;
+    overrideDelegate.findFirst = originalOverrideFindFirst;
 
     if (originalNodeEnv === undefined) {
       delete process.env.NODE_ENV;

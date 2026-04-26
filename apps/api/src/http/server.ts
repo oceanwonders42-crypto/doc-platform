@@ -104,7 +104,7 @@ import {
 } from "./routes/quickbooks";
 import recordsRequestsRouter from "./routes/recordsRequests";
 import trafficRouter from "./routes/traffic";
-import { DemandReviewStatus, DocumentStatus, IntegrationStatus, Prisma, Role } from "@prisma/client";
+import { DemandReviewStatus, DocumentStatus, IntegrationProvider, IntegrationStatus, Prisma, Role } from "@prisma/client";
 import { generateClioContactsCsv, generateClioMattersCsv } from "../exports/clioExport";
 import { importClioMappingsFromCsv } from "../services/clioMappingsImport";
 import { logSystemError } from "../services/errorLog";
@@ -216,6 +216,19 @@ type CaseAccessContext = {
   userId: string | null;
   apiKeyId: string | null;
 };
+
+const DASHBOARD_FEATURE_KEYS = [
+  "exports_enabled",
+  "migration_batch_enabled",
+  "traffic_enabled",
+  "providers_enabled",
+  "providers_map_enabled",
+  "case_qa_enabled",
+  "missing_records_enabled",
+  "bills_vs_treatment_enabled",
+  "demand_drafts_enabled",
+  "demand_audit_enabled",
+] as const;
 
 async function getDashboardFeatureFlagsForFirm(firmId: string) {
   const [
@@ -1185,16 +1198,33 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
     });
     if (!firm) return res.status(404).json({ ok: false, error: "Firm not found" });
 
-    const usageRow = await prisma.usageMonthly.findUnique({
-      where: { firmId_yearMonth: { firmId, yearMonth: ym } },
-      select: { yearMonth: true, pagesProcessed: true, docsProcessed: true, updatedAt: true },
-    });
-
-    const [docCount] = await prisma.document.groupBy({
-      by: ["firmId"],
-      where: { firmId },
-      _count: { id: true },
-    });
+    const [usageRow, docCountRows, featureOverrides] = await Promise.all([
+      prisma.usageMonthly.findUnique({
+        where: { firmId_yearMonth: { firmId, yearMonth: ym } },
+        select: { yearMonth: true, pagesProcessed: true, docsProcessed: true, updatedAt: true },
+      }),
+      prisma.document.groupBy({
+        by: ["firmId"],
+        where: { firmId },
+        _count: { id: true },
+      }),
+      prisma.firmFeatureOverride.findMany({
+        where: { firmId, isActive: true },
+        orderBy: [{ featureKey: "asc" }, { updatedAt: "desc" }],
+        select: {
+          id: true,
+          featureKey: true,
+          enabled: true,
+          startsAt: true,
+          endsAt: true,
+          reason: true,
+          createdBy: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+    ]);
+    const docCount = docCountRows[0];
 
     res.json({
       ok: true,
@@ -1228,6 +1258,17 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
         docsProcessed: usageRow?.docsProcessed ?? 0,
         updatedAt: usageRow?.updatedAt?.toISOString() ?? null,
       },
+      featureOverrides: featureOverrides.map((override) => ({
+        id: override.id,
+        featureKey: override.featureKey,
+        enabled: override.enabled,
+        startsAt: override.startsAt?.toISOString() ?? null,
+        endsAt: override.endsAt?.toISOString() ?? null,
+        reason: override.reason,
+        createdBy: override.createdBy,
+        createdAt: override.createdAt.toISOString(),
+        updatedAt: override.updatedAt.toISOString(),
+      })),
     });
   } catch (e) {
     console.error("[admin/firms/:firmId]", e);
@@ -1239,7 +1280,12 @@ app.get("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (r
 app.patch("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   try {
     const firmId = String(req.params.firmId ?? "");
-    const body = (req.body ?? {}) as { plan?: string; pageLimitMonthly?: number; status?: string };
+    const body = (req.body ?? {}) as {
+      plan?: string;
+      pageLimitMonthly?: number;
+      status?: string;
+      featureOverrides?: Record<string, unknown>;
+    };
 
     const data: { plan?: string; pageLimitMonthly?: number; status?: string } = {};
     if (typeof body.plan === "string" && body.plan.trim()) {
@@ -1250,14 +1296,47 @@ app.patch("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async 
     if (typeof body.pageLimitMonthly === "number" && body.pageLimitMonthly >= 0) data.pageLimitMonthly = body.pageLimitMonthly;
     if (typeof body.status === "string" && body.status.trim()) data.status = body.status.trim();
 
-    if (Object.keys(data).length === 0) {
+    const allowedFeatureKeys = new Set<string>(DASHBOARD_FEATURE_KEYS);
+    const requestedFeatureOverrides = Object.entries(body.featureOverrides ?? {})
+      .filter(([featureKey, enabled]) => allowedFeatureKeys.has(featureKey) && typeof enabled === "boolean")
+      .map(([featureKey, enabled]) => ({ featureKey, enabled: Boolean(enabled) }));
+
+    if (Object.keys(data).length === 0 && requestedFeatureOverrides.length === 0) {
       return res.status(400).json({ ok: false, error: "No valid fields to update" });
     }
 
-    const firm = await prisma.firm.update({
-      where: { id: firmId },
-      data,
-      select: { id: true, name: true, plan: true, pageLimitMonthly: true, status: true },
+    const actor = String((req as any).userId ?? (req as any).apiKeyId ?? "platform_admin");
+    const firm = await prisma.$transaction(async (tx) => {
+      const nextFirm =
+        Object.keys(data).length > 0
+          ? await tx.firm.update({
+              where: { id: firmId },
+              data,
+              select: { id: true, name: true, plan: true, pageLimitMonthly: true, status: true },
+            })
+          : await tx.firm.findUnique({
+              where: { id: firmId },
+              select: { id: true, name: true, plan: true, pageLimitMonthly: true, status: true },
+            });
+      if (!nextFirm) throw new Error("Firm not found");
+
+      for (const override of requestedFeatureOverrides) {
+        await tx.firmFeatureOverride.updateMany({
+          where: { firmId, featureKey: override.featureKey, isActive: true },
+          data: { isActive: false },
+        });
+        await tx.firmFeatureOverride.create({
+          data: {
+            firmId,
+            featureKey: override.featureKey,
+            enabled: override.enabled,
+            reason: "platform_admin_feature_control",
+            createdBy: actor,
+          },
+        });
+      }
+
+      return nextFirm;
     });
     res.json({ ok: true, firm });
   } catch (e: any) {
@@ -1267,7 +1346,138 @@ app.patch("/admin/firms/:firmId", auth, requireRole(Role.PLATFORM_ADMIN), async 
   }
 });
 
-// POST /firms — create firm (PLATFORM_ADMIN_API_KEY)
+// Admin demand template controls.
+app.get("/admin/demand-templates", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const firmIdRaw = Array.isArray(req.query.firmId) ? req.query.firmId[0] : req.query.firmId;
+    const includeInactiveRaw = Array.isArray(req.query.includeInactive)
+      ? req.query.includeInactive[0]
+      : req.query.includeInactive;
+    const firmId = typeof firmIdRaw === "string" && firmIdRaw.trim() ? firmIdRaw.trim() : null;
+    const includeInactive = includeInactiveRaw === "true" || includeInactiveRaw === "1";
+
+    const templates = await prisma.demandTemplate.findMany({
+      where: {
+        ...(firmId ? { OR: [{ firmId }, { firmId: null }] } : {}),
+        ...(includeInactive ? {} : { isActive: true }),
+      },
+      orderBy: [{ firmId: "asc" }, { name: "asc" }, { version: "desc" }],
+      include: { firm: { select: { id: true, name: true } } },
+    });
+
+    res.json({
+      ok: true,
+      items: templates.map((template) => ({
+        id: template.id,
+        firmId: template.firmId,
+        firmName: template.firm?.name ?? null,
+        name: template.name,
+        caseType: template.caseType,
+        demandType: template.demandType,
+        version: template.version,
+        isActive: template.isActive,
+        requiredSections: template.requiredSections,
+        structureJson: template.structureJson,
+        examplesText: template.examplesText,
+        createdByUserId: template.createdByUserId,
+        createdAt: template.createdAt.toISOString(),
+        updatedAt: template.updatedAt.toISOString(),
+      })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/admin/demand-templates", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as {
+      firmId?: string | null;
+      name?: string;
+      caseType?: string | null;
+      demandType?: string | null;
+      version?: number;
+      isActive?: boolean;
+      requiredSections?: unknown;
+      structureJson?: unknown;
+      examplesText?: string | null;
+    };
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name) return res.status(400).json({ ok: false, error: "name is required" });
+
+    const requiredSections = Array.isArray(body.requiredSections)
+      ? body.requiredSections.map((section) => String(section).trim()).filter(Boolean)
+      : undefined;
+
+    const template = await prisma.demandTemplate.create({
+      data: {
+        firmId: typeof body.firmId === "string" && body.firmId.trim() ? body.firmId.trim() : null,
+        name,
+        caseType: typeof body.caseType === "string" && body.caseType.trim() ? body.caseType.trim() : null,
+        demandType: typeof body.demandType === "string" && body.demandType.trim() ? body.demandType.trim() : null,
+        version: typeof body.version === "number" && body.version > 0 ? Math.floor(body.version) : 1,
+        isActive: body.isActive !== false,
+        requiredSections,
+        structureJson: body.structureJson as Prisma.InputJsonValue | undefined,
+        examplesText: typeof body.examplesText === "string" && body.examplesText.trim() ? body.examplesText.trim() : null,
+        createdByUserId: String((req as any).userId ?? (req as any).apiKeyId ?? "platform_admin"),
+      },
+    });
+
+    res.json({ ok: true, item: template });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.patch("/admin/demand-templates/:templateId", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
+  try {
+    const templateId = String(req.params.templateId ?? "");
+    const body = (req.body ?? {}) as {
+      firmId?: string | null;
+      name?: string;
+      caseType?: string | null;
+      demandType?: string | null;
+      version?: number;
+      isActive?: boolean;
+      requiredSections?: unknown;
+      structureJson?: unknown;
+      examplesText?: string | null;
+    };
+    const data: Prisma.DemandTemplateUpdateInput = {};
+    if (typeof body.name === "string" && body.name.trim()) data.name = body.name.trim();
+    if ("firmId" in body) {
+      data.firm =
+        typeof body.firmId === "string" && body.firmId.trim()
+          ? { connect: { id: body.firmId.trim() } }
+          : { disconnect: true };
+    }
+    if ("caseType" in body) data.caseType = typeof body.caseType === "string" && body.caseType.trim() ? body.caseType.trim() : null;
+    if ("demandType" in body) data.demandType = typeof body.demandType === "string" && body.demandType.trim() ? body.demandType.trim() : null;
+    if (typeof body.version === "number" && body.version > 0) data.version = Math.floor(body.version);
+    if (typeof body.isActive === "boolean") data.isActive = body.isActive;
+    if (Array.isArray(body.requiredSections)) {
+      data.requiredSections = body.requiredSections.map((section) => String(section).trim()).filter(Boolean);
+    }
+    if ("structureJson" in body) data.structureJson = body.structureJson as Prisma.InputJsonValue;
+    if ("examplesText" in body) data.examplesText = typeof body.examplesText === "string" && body.examplesText.trim() ? body.examplesText.trim() : null;
+
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ ok: false, error: "No valid fields to update" });
+    }
+
+    const template = await prisma.demandTemplate.update({
+      where: { id: templateId },
+      data,
+    });
+    res.json({ ok: true, item: template });
+  } catch (e: any) {
+    if (e?.code === "P2025") return res.status(404).json({ ok: false, error: "Template not found" });
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// POST /firms - create firm (PLATFORM_ADMIN_API_KEY)
 app.post("/firms", auth, requireRole(Role.PLATFORM_ADMIN), async (req, res) => {
   try {
     const { name, plan } = (req.body ?? {}) as { name?: string; plan?: string };
@@ -4546,28 +4756,66 @@ app.get("/providers/search", auth, requireRole(Role.STAFF), async (req, res) => 
 app.get("/providers/map", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
+    const allowed = await hasFeature(firmId, "providers_map_enabled");
+    if (!allowed) {
+      return res.status(403).json({ ok: false, error: "Provider map is not enabled for this firm." });
+    }
     const specialtyRaw = Array.isArray(req.query.specialty) ? req.query.specialty[0] : req.query.specialty;
     const cityRaw = Array.isArray(req.query.city) ? req.query.city[0] : req.query.city;
+    const stateRaw = Array.isArray(req.query.state) ? req.query.state[0] : req.query.state;
+    const categoryRaw = Array.isArray(req.query.category) ? req.query.category[0] : req.query.category;
+    const includeNeedsLocationRaw = Array.isArray(req.query.includeNeedsLocation)
+      ? req.query.includeNeedsLocation[0]
+      : req.query.includeNeedsLocation;
     const radiusRaw = Array.isArray(req.query.radius) ? req.query.radius[0] : req.query.radius;
     const latRaw = Array.isArray(req.query.lat) ? req.query.lat[0] : req.query.lat;
     const lngRaw = Array.isArray(req.query.lng) ? req.query.lng[0] : req.query.lng;
 
     const specialty = typeof specialtyRaw === "string" && specialtyRaw.trim() ? specialtyRaw.trim() : null;
     const city = typeof cityRaw === "string" && cityRaw.trim() ? cityRaw.trim() : null;
+    const state = typeof stateRaw === "string" && stateRaw.trim() ? stateRaw.trim().toUpperCase() : null;
+    const category = typeof categoryRaw === "string" && categoryRaw.trim() ? categoryRaw.trim().toLowerCase() : null;
+    const includeNeedsLocation = includeNeedsLocationRaw === "true" || includeNeedsLocationRaw === "1";
     const radiusKm = radiusRaw != null ? Math.max(0, Number(radiusRaw)) : null;
     const centerLat = latRaw != null ? Number(latRaw) : null;
     const centerLng = lngRaw != null ? Number(lngRaw) : null;
 
-    const where: { firmId: string; lat?: { not: null }; lng?: { not: null }; city?: string; specialty?: string } = {
+    const categoryTerms: Record<string, string[]> = {
+      chiropractor: ["chiro", "chiropractor"],
+      orthopedic: ["ortho", "orthopedic"],
+      imaging: ["imaging", "mri", "radiology"],
+      pain_management: ["pain", "management"],
+      physical_therapy: ["physical therapy", "pt", "therapy"],
+      neurologist: ["neuro", "neurologist"],
+      hospital_er: ["hospital", "er", "emergency"],
+      other: [],
+    };
+
+    const baseWhere: Prisma.ProviderWhereInput = {
       firmId,
+    };
+    if (city) baseWhere.city = { contains: city, mode: "insensitive" };
+    if (state) baseWhere.state = state;
+
+    const specialtyTerms = specialty
+      ? [specialty]
+      : category && category !== "other"
+        ? categoryTerms[category] ?? []
+        : [];
+    if (specialtyTerms.length > 0) {
+      baseWhere.OR = specialtyTerms.map((term) => ({
+        specialty: { contains: term, mode: "insensitive" },
+      }));
+    }
+
+    const locatedWhere: Prisma.ProviderWhereInput = {
+      ...baseWhere,
       lat: { not: null },
       lng: { not: null },
     };
-    if (city) where.city = city;
-    if (specialty) where.specialty = specialty;
 
     let providers = await prisma.provider.findMany({
-      where,
+      where: locatedWhere,
       orderBy: { name: "asc" },
       select: {
         id: true,
@@ -4589,7 +4837,35 @@ app.get("/providers/map", auth, requireRole(Role.STAFF), async (req, res) => {
       );
     }
 
-    res.json({ ok: true, items: providers });
+    const needsLocation = includeNeedsLocation
+      ? await prisma.provider.findMany({
+          where: {
+            ...baseWhere,
+            AND: [{ OR: [{ lat: null }, { lng: null }] }],
+          },
+          orderBy: { name: "asc" },
+          take: 25,
+          select: {
+            id: true,
+            name: true,
+            address: true,
+            city: true,
+            state: true,
+            specialty: true,
+            phone: true,
+            email: true,
+            lat: true,
+            lng: true,
+          },
+        })
+      : [];
+
+    res.json({
+      ok: true,
+      items: providers,
+      needsLocation,
+      categories: Object.keys(categoryTerms),
+    });
   } catch (err) {
     console.error("Failed to list providers for map", err);
     res.status(500).json({ ok: false, error: "Failed to list providers for map" });
@@ -4599,6 +4875,13 @@ app.get("/providers/map", auth, requireRole(Role.STAFF), async (req, res) => {
 app.get("/providers", auth, requireRole(Role.STAFF), async (req, res) => {
   try {
     const firmId = (req as any).firmId as string;
+    const [providersAllowed, mapAllowed] = await Promise.all([
+      hasFeature(firmId, "providers_enabled"),
+      hasFeature(firmId, "providers_map_enabled"),
+    ]);
+    if (!providersAllowed && !mapAllowed) {
+      return res.status(403).json({ ok: false, error: "Provider access is not enabled for this firm." });
+    }
     const qRaw = Array.isArray(req.query.q) ? req.query.q[0] : req.query.q;
     const cityRaw = Array.isArray(req.query.city) ? req.query.city[0] : req.query.city;
     const stateRaw = Array.isArray(req.query.state) ? req.query.state[0] : req.query.state;
@@ -7531,6 +7814,128 @@ app.post("/cases/:id/qa", auth, requireRole(Role.STAFF), async (req, res) => {
 
     const result = await answerCaseQuestion(caseId, firmId, question);
     res.json({ ok: true, item: result });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/assistant/chat", auth, requireRole(Role.STAFF), async (req, res) => {
+  try {
+    const firmId = (req as any).firmId as string;
+    const question = typeof req.body?.question === "string" ? req.body.question.trim() : "";
+    const caseId = typeof req.body?.caseId === "string" && req.body.caseId.trim() ? req.body.caseId.trim() : null;
+    if (!question) {
+      return res.status(400).json({ ok: false, error: "question is required" });
+    }
+
+    if (caseId) {
+      const accessContext = await ensureVisibleCase(req, res, caseId);
+      if (!accessContext) return;
+      const allowed = await hasFeature(firmId, "case_qa_enabled");
+      if (!allowed) {
+        return res.status(403).json({
+          ok: false,
+          error: "Case Q&A is not enabled for this firm.",
+        });
+      }
+      const result = await answerCaseQuestion(caseId, firmId, question);
+      return res.json({ ok: true, item: { ...result, scope: "case" } });
+    }
+
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const [
+      firm,
+      documentCount,
+      needsReviewCount,
+      caseCount,
+      demandCount,
+      recordsRequestCount,
+      mailboxCount,
+      clioIntegration,
+      recentActivity,
+      featureFlags,
+    ] = await Promise.all([
+      prisma.firm.findUnique({
+        where: { id: firmId },
+        select: { id: true, name: true, plan: true, status: true },
+      }),
+      prisma.document.count({ where: { firmId, createdAt: { gte: monthStart } } }),
+      prisma.document.count({ where: { firmId, OR: [{ status: "NEEDS_REVIEW" }, { routedCaseId: null }] } }),
+      prisma.legalCase.count({ where: { firmId } }),
+      prisma.demandPackage.count({ where: { firmId } }),
+      prisma.recordsRequest.count({ where: { firmId } }),
+      prisma.mailboxConnection.count({ where: { firmId, active: true } }),
+      prisma.firmIntegration.findFirst({
+        where: { firmId, provider: IntegrationProvider.CLIO },
+        orderBy: { updatedAt: "desc" },
+        select: { status: true, updatedAt: true },
+      }),
+      prisma.activityFeedItem.findMany({
+        where: { firmId },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+        select: { title: true, type: true, caseId: true, createdAt: true },
+      }),
+      getDashboardFeatureFlagsForFirm(firmId),
+    ]);
+
+    if (!firm) {
+      return res.status(404).json({ ok: false, error: "Firm not found" });
+    }
+
+    const normalizedQuestion = question.toLowerCase();
+    const enabledFeatures = Object.entries(featureFlags)
+      .filter(([, enabled]) => enabled)
+      .map(([featureKey]) => featureKey.replace(/_/g, " "));
+    const activitySummary =
+      recentActivity.length > 0
+        ? recentActivity.map((item) => item.title || item.type).join("; ")
+        : "No recent activity recorded.";
+    const clioConnected = clioIntegration?.status === IntegrationStatus.CONNECTED;
+    const answerParts: string[] = [
+      `${firm.name} is on the ${firm.plan} plan with status ${firm.status}.`,
+    ];
+
+    if (/(document|review|upload|ingest|ocr|classification)/.test(normalizedQuestion)) {
+      answerParts.push(
+        `${documentCount} document${documentCount === 1 ? "" : "s"} were created this month, and ${needsReviewCount} document${needsReviewCount === 1 ? "" : "s"} currently need routing or review attention.`
+      );
+    } else if (/(case|demand|records request|request)/.test(normalizedQuestion)) {
+      answerParts.push(
+        `The firm has ${caseCount} case${caseCount === 1 ? "" : "s"}, ${demandCount} demand draft${demandCount === 1 ? "" : "s"}, and ${recordsRequestCount} records request${recordsRequestCount === 1 ? "" : "s"} on file.`
+      );
+    } else if (/(integration|gmail|email|clio)/.test(normalizedQuestion)) {
+      answerParts.push(
+        `Gmail mailbox status: ${mailboxCount > 0 ? "connected" : "not connected"}. Clio status: ${clioConnected ? "connected" : "not connected"}.`
+      );
+    } else if (/(feature|access|enabled|tier|plan)/.test(normalizedQuestion)) {
+      answerParts.push(
+        enabledFeatures.length > 0
+          ? `Enabled feature flags: ${enabledFeatures.join(", ")}.`
+          : "No optional firm feature flags are currently enabled."
+      );
+    } else {
+      answerParts.push(
+        `Current workspace: ${caseCount} cases, ${needsReviewCount} review item${needsReviewCount === 1 ? "" : "s"}, ${demandCount} demand draft${demandCount === 1 ? "" : "s"}, and ${mailboxCount > 0 ? "Gmail connected" : "Gmail not connected"}.`
+      );
+      answerParts.push(`Recent activity: ${activitySummary}`);
+    }
+
+    res.json({
+      ok: true,
+      item: {
+        scope: "firm",
+        generatedAt: new Date().toISOString(),
+        grounded: true,
+        answer: answerParts.join(" "),
+        warnings: [],
+        sources: [
+          { kind: "analysis", label: "Firm-scoped dashboard metrics" },
+          { kind: "analysis", label: "Firm feature flags and integration status" },
+        ],
+      },
+    });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }

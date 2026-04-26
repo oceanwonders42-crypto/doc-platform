@@ -36,12 +36,20 @@ type UsageRow = {
   updatedAt: string | null;
 };
 
+type FeatureOverrideRow = {
+  id: string;
+  featureKey: string;
+  enabled: boolean;
+  updatedAt: string;
+};
+
 type AdminFirmResponse = {
   ok: boolean;
   firm: FirmDetail;
   users: UserRow[];
   apiKeys: ApiKeyRow[];
   usage: UsageRow;
+  featureOverrides?: FeatureOverrideRow[];
   error?: string;
 };
 
@@ -82,6 +90,9 @@ export default async function AdminFirmDetailPage({
   if (!data || !data.ok) notFound();
 
   const { firm, users, apiKeys, usage } = data;
+  const featureOverrideMap = Object.fromEntries(
+    (data.featureOverrides ?? []).map((override) => [override.featureKey, override.enabled])
+  );
 
   return (
     <main style={{ padding: 24, maxWidth: 900, margin: "0 auto", fontFamily: "system-ui, -apple-system" }}>
@@ -127,7 +138,13 @@ export default async function AdminFirmDetailPage({
             <div style={{ fontSize: 14 }}>{formatDate(firm.createdAt)}</div>
           </div>
         </div>
-        <UpdateFirmForm firmId={firm.id} initialPlan={firm.plan} initialPageLimit={firm.pageLimitMonthly} initialStatus={firm.status} />
+        <UpdateFirmForm
+          firmId={firm.id}
+          initialPlan={firm.plan}
+          initialPageLimit={firm.pageLimitMonthly}
+          initialStatus={firm.status}
+          initialFeatureOverrides={featureOverrideMap}
+        />
       </section>
 
       <section style={{ marginBottom: 32 }}>

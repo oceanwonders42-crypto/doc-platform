@@ -24,6 +24,9 @@ export type DemandPackagePdfInput = {
   futureCareText?: string | null;
   settlementText?: string | null;
   appendixDocuments?: { name: string }[];
+  templateName?: string | null;
+  templateVersion?: number | null;
+  requiredSections?: string[];
 };
 
 function wrapLines(
@@ -105,6 +108,15 @@ export async function buildDemandPackagePdf(input: DemandPackagePdfInput): Promi
     day: "numeric",
   });
   drawLine(`Generated: ${dateStr}`, { fontSize: FONT_SIZE });
+  if (input.templateName) {
+    drawLine(
+      `Template: ${input.templateName}${input.templateVersion ? ` v${input.templateVersion}` : ""}`,
+      { fontSize: FONT_SIZE }
+    );
+  }
+  if (input.requiredSections && input.requiredSections.length > 0) {
+    drawLine(`Required sections: ${input.requiredSections.join(", ")}`, { fontSize: FONT_SIZE });
+  }
   y -= 40;
   drawLine("Demand Package", { fontSize: SECTION_TITLE_SIZE });
   drawLine("Confidential — Attorney Work Product");

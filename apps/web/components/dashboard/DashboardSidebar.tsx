@@ -3,12 +3,8 @@
 import { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  useDashboardAuth,
-  canAccessBilling,
-  canAccessTeam,
-  isStaffOrAbove,
-} from "@/contexts/DashboardAuthContext";
+import { useDashboardAuth } from "@/contexts/DashboardAuthContext";
+import { getDashboardNav, type DashboardNavItem } from "@/lib/dashboardAccess";
 
 const IconFolder = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -30,14 +26,6 @@ const IconEye = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
     <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
     <circle cx="12" cy="12" r="3" />
-  </svg>
-);
-
-const IconDownload = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-    <path d="m7 10 5 5 5-5" />
-    <path d="M12 15V3" />
   </svg>
 );
 
@@ -92,26 +80,8 @@ type NavItem = {
   href: string;
   label: string;
   icon: ReactNode;
-  teamOnly?: boolean;
-  billingOnly?: boolean;
-  staffOnly?: boolean;
   platformAdminOnly?: boolean;
 };
-
-const PRIMARY_ITEMS: NavItem[] = [
-  { href: "/dashboard/documents", label: "Documents", icon: <IconFile /> },
-  { href: "/dashboard/review", label: "Review", icon: <IconEye />, staffOnly: true },
-  { href: "/dashboard/cases", label: "Cases", icon: <IconFolder /> },
-  { href: "/dashboard/exports", label: "Exports", icon: <IconDownload />, staffOnly: true },
-];
-
-const SECONDARY_ITEMS: NavItem[] = [
-  { href: "/dashboard/records-requests", label: "Records Requests", icon: <IconClipboard /> },
-  { href: "/dashboard/migration", label: "Migration", icon: <IconArchive />, staffOnly: true },
-  { href: "/dashboard/team", label: "Team", icon: <IconUsers />, teamOnly: true },
-  { href: "/dashboard/settings", label: "Settings", icon: <IconSettings /> },
-  { href: "/dashboard/billing", label: "Billing", icon: <IconDollar />, billingOnly: true },
-];
 
 const ADMIN_ITEM: NavItem = {
   href: "/admin/quality",
@@ -119,6 +89,40 @@ const ADMIN_ITEM: NavItem = {
   icon: <IconChart />,
   platformAdminOnly: true,
 };
+
+function iconForItem(item: DashboardNavItem): ReactNode {
+  switch (item.id) {
+    case "dashboard":
+      return <IconChart />;
+    case "audit":
+      return <IconEye />;
+    case "usage":
+      return <IconDollar />;
+    case "team":
+      return <IconUsers />;
+    case "firmSettings":
+      return <IconSettings />;
+    case "cases":
+      return <IconFolder />;
+    case "demands":
+      return <IconFile />;
+    case "recordsRequests":
+      return <IconClipboard />;
+    case "providers":
+    case "providerMap":
+      return <IconArchive />;
+    default:
+      return <IconFile />;
+  }
+}
+
+function toNavItem(item: DashboardNavItem): NavItem {
+  return {
+    href: item.href,
+    label: item.label,
+    icon: iconForItem(item),
+  };
+}
 
 function renderSection(
   title: string,
@@ -192,18 +196,10 @@ function renderSection(
 
 export function DashboardSidebar() {
   const pathname = usePathname() ?? "";
-  const { role, isPlatformAdmin } = useDashboardAuth();
-
-  const canShow = (item: NavItem) => {
-    if (item.teamOnly && !canAccessTeam(role)) return false;
-    if (item.billingOnly && !canAccessBilling(role)) return false;
-    if (item.staffOnly && !isStaffOrAbove(role)) return false;
-    if (item.platformAdminOnly && !isPlatformAdmin) return false;
-    return true;
-  };
-
-  const primaryItems = PRIMARY_ITEMS.filter(canShow);
-  const secondaryItems = SECONDARY_ITEMS.filter(canShow);
+  const { role, featureFlags, isPlatformAdmin, dashboardRole } = useDashboardAuth();
+  const nav = getDashboardNav(role, featureFlags);
+  const primaryItems = nav.primary.map(toNavItem);
+  const secondaryItems = nav.secondary.map(toNavItem);
   const adminItems = isPlatformAdmin ? [ADMIN_ITEM] : [];
 
   return (
@@ -272,7 +268,9 @@ export function DashboardSidebar() {
                 color: "var(--onyx-sidebar-muted)",
               }}
             >
-              Legal workflow operations
+              {dashboardRole === "FIRM_ADMIN" || dashboardRole === "PLATFORM_ADMIN"
+                ? "Firm control center"
+                : "Legal workflow operations"}
             </span>
           </span>
         </Link>
@@ -312,7 +310,9 @@ export function DashboardSidebar() {
               color: "#f3d57a",
             }}
           >
-            Operator lane
+            {dashboardRole === "FIRM_ADMIN" || dashboardRole === "PLATFORM_ADMIN"
+              ? "Admin lane"
+              : "Operator lane"}
           </p>
           <p
             style={{
@@ -322,7 +322,9 @@ export function DashboardSidebar() {
               color: "var(--onyx-sidebar-muted)",
             }}
           >
-            Intake, review, case work, and exports stay visible in one honest workflow.
+            {dashboardRole === "FIRM_ADMIN" || dashboardRole === "PLATFORM_ADMIN"
+              ? "Business health, feature access, team, settings, and integrations stay in one controlled view."
+              : "Cases, demands, records requests, and provider tools stay visible only when your role and firm access allow them."}
           </p>
         </div>
       </div>

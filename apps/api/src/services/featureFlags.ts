@@ -3,11 +3,25 @@
  * Firms can have features stored in Firm.features as a JSON array of strings.
  */
 import { prisma } from "../db/prisma";
+import { normalizePlanSlug, type CanonicalPlanSlug } from "./billingPlans";
 
 const BOOLEAN_FALSE_VALUES = new Set(["0", "false", "off", "no"]);
 const BOOLEAN_TRUE_VALUES = new Set(["1", "true", "on", "yes"]);
 
 export const EMAIL_AUTOMATION_ENV_NAME = "EMAIL_AUTOMATION_ENABLED";
+
+const FEATURE_PLAN_ALLOWLIST: Record<string, CanonicalPlanSlug[]> = {
+  case_qa_enabled: ["essential", "growth", "premium"],
+  missing_records_enabled: ["essential", "growth", "premium"],
+  bills_vs_treatment_enabled: ["essential", "growth", "premium"],
+  demand_drafts_enabled: ["essential", "growth", "premium"],
+  demand_audit_enabled: ["essential", "growth", "premium"],
+  providers_map_enabled: ["essential", "growth", "premium", "paperless_transition"],
+  providers_enabled: ["growth", "premium", "paperless_transition"],
+  exports_enabled: ["growth", "premium", "paperless_transition"],
+  migration_batch_enabled: ["premium", "paperless_transition"],
+  traffic_enabled: ["premium"],
+};
 
 function readBooleanEnvFlag(envName: string, defaultValue: boolean): boolean {
   const rawValue = process.env[envName];
@@ -20,11 +34,36 @@ function readBooleanEnvFlag(envName: string, defaultValue: boolean): boolean {
 }
 
 export async function hasFeature(firmId: string, feature: string): Promise<boolean> {
-  const firm = await prisma.firm.findUnique({
-    where: { id: firmId },
-    select: { features: true },
-  });
-  return hasStoredFeatureValue(firm?.features, feature);
+  const now = new Date();
+  const [firm, override] = await Promise.all([
+    prisma.firm.findUnique({
+      where: { id: firmId },
+      select: { features: true, plan: true },
+    }),
+    prisma.firmFeatureOverride.findFirst({
+      where: {
+        firmId,
+        featureKey: feature,
+        isActive: true,
+        AND: [
+          { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
+          { OR: [{ endsAt: null }, { endsAt: { gt: now } }] },
+        ],
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      select: { enabled: true },
+    }),
+  ]);
+  const planAllowsFeature = isFeatureAllowedForPlan(firm?.plan, feature);
+  if (override) return override.enabled && planAllowsFeature;
+
+  return planAllowsFeature && hasStoredFeatureValue(firm?.features, feature);
+}
+
+export function isFeatureAllowedForPlan(plan: string | null | undefined, feature: string): boolean {
+  const allowedPlans = FEATURE_PLAN_ALLOWLIST[feature];
+  if (!allowedPlans) return true;
+  return allowedPlans.includes(normalizePlanSlug(plan));
 }
 
 export function hasStoredFeatureValue(features: unknown, feature: string): boolean {

@@ -166,6 +166,15 @@ function formatDateTime(value: string | null | undefined): string {
   return date.toLocaleString();
 }
 
+function formatPercent(value: number | null | undefined): string {
+  return value != null ? `${Math.round(value * 100)}%` : "-";
+}
+
+function normalizeSignalList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item)).filter(Boolean);
+}
+
 export default function DocumentDetailPage() {
   const params = useParams();
   const id = typeof params?.id === "string" ? params.id : "";
@@ -776,16 +785,67 @@ export default function DocumentDetailPage() {
         )}
 
         {recognition && (
+          <DashboardCard title="Why this document was routed here">
+            <div style={{ display: "grid", gap: "0.65rem" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+                <span className={doc.routedCaseId ? "onyx-badge onyx-badge-success" : "onyx-badge onyx-badge-warning"}>
+                  {doc.routedCaseId ? "Attached to case" : "Review fallback"}
+                </span>
+                <span className="onyx-badge onyx-badge-neutral">
+                  Match confidence {formatPercent(recognition.matchConfidence)}
+                </span>
+                <span className="onyx-badge onyx-badge-neutral">
+                  Classification confidence {formatPercent(recognition.confidence)}
+                </span>
+              </div>
+              <p style={{ margin: 0, fontSize: "0.9rem", color: "var(--onyx-text-secondary)", lineHeight: 1.55 }}>
+                {recognition.matchReason ||
+                  recognition.unmatchedReason ||
+                  "The router did not record a detailed case-match reason for this document."}
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.65rem" }}>
+                <div className="onyx-card" style={{ padding: "0.75rem" }}>
+                  <p style={{ margin: "0 0 0.2rem", fontSize: "0.72rem", color: "var(--onyx-text-muted)" }}>Client</p>
+                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{recognition.clientName ?? "-"}</p>
+                </div>
+                <div className="onyx-card" style={{ padding: "0.75rem" }}>
+                  <p style={{ margin: "0 0 0.2rem", fontSize: "0.72rem", color: "var(--onyx-text-muted)" }}>Date of loss</p>
+                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{recognition.incidentDate ?? "-"}</p>
+                </div>
+                <div className="onyx-card" style={{ padding: "0.75rem" }}>
+                  <p style={{ margin: "0 0 0.2rem", fontSize: "0.72rem", color: "var(--onyx-text-muted)" }}>Provider</p>
+                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{recognition.providerName ?? recognition.facilityName ?? "-"}</p>
+                </div>
+                <div className="onyx-card" style={{ padding: "0.75rem" }}>
+                  <p style={{ margin: "0 0 0.2rem", fontSize: "0.72rem", color: "var(--onyx-text-muted)" }}>Claim or case number</p>
+                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{recognition.caseNumber ?? "-"}</p>
+                </div>
+              </div>
+              {normalizeSignalList(recognition.classificationSignals).length > 0 ? (
+                <p style={{ margin: 0, fontSize: "0.82rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
+                  Signals: {normalizeSignalList(recognition.classificationSignals).join(", ")}
+                </p>
+              ) : null}
+              {!doc.routedCaseId ? (
+                <p style={{ margin: 0, fontSize: "0.82rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
+                  This document stayed in review because the router did not have enough confidence to attach it automatically.
+                </p>
+              ) : null}
+            </div>
+          </DashboardCard>
+        )}
+
+        {recognition && (
           <DashboardCard title="Classification & routing">
             <p style={{ margin: 0, fontSize: "0.875rem" }}><strong>Doc type:</strong> {recognition.docType ?? "-"}</p>
-            <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Confidence:</strong> {recognition.confidence != null ? `${Math.round(recognition.confidence * 100)}%` : "-"}</p>
+            <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Confidence:</strong> {formatPercent(recognition.confidence)}</p>
             {recognition.classificationReason && <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>{recognition.classificationReason}</p>}
             {Array.isArray(recognition.classificationSignals) && recognition.classificationSignals.length > 0 && (
               <p style={{ margin: "0.25rem 0 0", fontSize: "0.8125rem", color: "var(--onyx-text-muted)" }}>Signals: {recognition.classificationSignals.join(", ")}</p>
             )}
             <p style={{ margin: "0.5rem 0 0", fontSize: "0.875rem" }}><strong>Provider:</strong> {recognition.providerName ?? "-"}</p>
             <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem" }}><strong>Facility:</strong> {recognition.facilityName ?? "-"}</p>
-            <p style={{ margin: "0.5rem 0 0", fontSize: "0.875rem" }}><strong>Match confidence:</strong> {recognition.matchConfidence != null ? `${Math.round(recognition.matchConfidence * 100)}%` : "-"}</p>
+            <p style={{ margin: "0.5rem 0 0", fontSize: "0.875rem" }}><strong>Match confidence:</strong> {formatPercent(recognition.matchConfidence)}</p>
             {(recognition.matchReason || recognition.unmatchedReason) && (
               <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "var(--onyx-text-muted)" }}>{recognition.matchReason ?? recognition.unmatchedReason}</p>
             )}

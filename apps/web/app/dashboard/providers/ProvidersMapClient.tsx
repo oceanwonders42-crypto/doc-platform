@@ -2,18 +2,24 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { getApiBase, getAuthHeader, getFetchOptions, parseJsonResponse } from "@/lib/api";
 
 type MapProvider = {
   id: string;
   name: string;
-  address: string;
-  city: string;
-  state: string;
+  address: string | null;
+  city: string | null;
+  state: string | null;
   specialty?: string | null;
   phone?: string | null;
   email?: string | null;
   lat: number | null;
   lng: number | null;
+};
+
+type ProviderCategory = {
+  key: string;
+  label: string;
 };
 
 declare global {
@@ -33,38 +39,79 @@ declare global {
   }
 }
 
+const CATEGORIES: ProviderCategory[] = [
+  { key: "", label: "All categories" },
+  { key: "chiropractor", label: "Chiropractor" },
+  { key: "orthopedic", label: "Orthopedic" },
+  { key: "imaging", label: "Imaging / MRI" },
+  { key: "pain_management", label: "Pain management" },
+  { key: "physical_therapy", label: "Physical therapy" },
+  { key: "neurologist", label: "Neurologist" },
+  { key: "hospital_er", label: "Hospital / ER" },
+  { key: "other", label: "Other" },
+];
+
+const STATES = ["", "FL", "GA", "AL", "SC", "NC", "TX", "CA", "NY", "NJ", "PA"];
+
+function escapeHtml(value: string | null | undefined): string {
+  const div = document.createElement("div");
+  div.textContent = value ?? "";
+  return div.innerHTML;
+}
+
+function providerLocation(provider: MapProvider): string {
+  return [provider.address, provider.city, provider.state].filter(Boolean).join(", ") || "Needs location";
+}
+
 export default function ProvidersMapClient() {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<unknown>(null);
   const [items, setItems] = useState<MapProvider[]>([]);
+  const [needsLocation, setNeedsLocation] = useState<MapProvider[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState<MapProvider | null>(null);
   const [loading, setLoading] = useState(true);
-  const [specialty, setSpecialty] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [stateFilter, setStateFilter] = useState("FL");
+  const [category, setCategory] = useState("");
   const [city, setCity] = useState("");
-  const [radius, setRadius] = useState("");
-  const [centerLat, setCenterLat] = useState("");
-  const [centerLng, setCenterLng] = useState("");
 
   const loadProviders = async () => {
     setLoading(true);
+    setError(null);
     const params = new URLSearchParams();
-    if (specialty.trim()) params.set("specialty", specialty.trim());
+    if (stateFilter.trim()) params.set("state", stateFilter.trim());
+    if (category.trim()) params.set("category", category.trim());
     if (city.trim()) params.set("city", city.trim());
-    if (radius.trim()) params.set("radius", radius.trim());
-    if (centerLat.trim()) params.set("lat", centerLat.trim());
-    if (centerLng.trim()) params.set("lng", centerLng.trim());
+    params.set("includeNeedsLocation", "true");
+
     try {
-      const res = await fetch(`/api/providers/search?${params}`);
-      const data = await res.json();
-      setItems(Array.isArray(data?.items) ? data.items : []);
-    } catch {
+      const response = await fetch(`${getApiBase()}/providers/map?${params.toString()}`, {
+        headers: getAuthHeader(),
+        ...getFetchOptions(),
+      });
+      const data = (await parseJsonResponse(response)) as {
+        ok?: boolean;
+        items?: MapProvider[];
+        needsLocation?: MapProvider[];
+        error?: string;
+      };
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.error ?? "Failed to load providers.");
+      }
+      setItems(Array.isArray(data.items) ? data.items : []);
+      setNeedsLocation(Array.isArray(data.needsLocation) ? data.needsLocation : []);
+      setSelectedProvider(null);
+    } catch (requestError) {
       setItems([]);
+      setNeedsLocation([]);
+      setError(requestError instanceof Error ? requestError.message : "Failed to load providers.");
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadProviders();
+    void loadProviders();
   }, []);
 
   useEffect(() => {
@@ -81,60 +128,64 @@ export default function ProvidersMapClient() {
         mapRef.current = null;
       }
 
-      const valid = items.filter((p) => p.lat != null && p.lng != null) as (MapProvider & { lat: number; lng: number })[];
-      const center: [number, number] = valid.length > 0 ? [valid[0].lat, valid[0].lng] : [39.5, -98.5];
-      const map = L.map(containerRef.current, { center, zoom: valid.length > 0 ? 10 : 4 });
+      const valid = items.filter((provider) => provider.lat != null && provider.lng != null) as (MapProvider & {
+        lat: number;
+        lng: number;
+      })[];
+      const center: [number, number] = valid.length > 0 ? [valid[0].lat, valid[0].lng] : [27.8, -81.7];
+      const map = L.map(containerRef.current, { center, zoom: valid.length > 0 ? 9 : 6 });
       mapRef.current = map;
 
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution: "© OpenStreetMap",
       }).addTo(map);
 
-      valid.forEach((p) => {
-        const marker = L.marker([p.lat, p.lng]).addTo(map);
+      valid.forEach((provider) => {
+        const marker = L.marker([provider.lat, provider.lng]).addTo(map);
         marker.bindPopup(
-          `<div style="min-width:180px"><strong><a href="/providers/${p.id}">${escapeHtml(p.name)}</a></strong><br/>${escapeHtml(p.address)}<br/>${escapeHtml(p.city)}, ${escapeHtml(p.state)}${p.specialty ? `<br/><em>${escapeHtml(p.specialty)}</em>` : ""}</div>`
+          `<div style="min-width:190px"><strong><a href="/dashboard/providers/${provider.id}">${escapeHtml(provider.name)}</a></strong><br/>${escapeHtml(providerLocation(provider))}${provider.specialty ? `<br/><em>${escapeHtml(provider.specialty)}</em>` : ""}</div>`
         );
       });
 
       if (valid.length > 1) {
-        const lats = valid.map((p) => p.lat);
-        const lngs = valid.map((p) => p.lng);
+        const lats = valid.map((provider) => provider.lat);
+        const lngs = valid.map((provider) => provider.lng);
         const bounds: [[number, number], [number, number]] = [
           [Math.min(...lats), Math.min(...lngs)],
           [Math.max(...lats), Math.max(...lngs)],
         ];
         try {
-          map.fitBounds?.(bounds, { padding: [20, 20] });
+          map.fitBounds?.(bounds, { padding: [24, 24] });
         } catch {}
       }
     };
-
-    function escapeHtml(s: string) {
-      const div = document.createElement("div");
-      div.textContent = s;
-      return div.innerHTML;
-    }
 
     if (window.L) {
       loadLeaflet();
       return;
     }
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-    link.integrity = "sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=";
-    link.crossOrigin = "";
-    document.head.appendChild(link);
-    const script = document.createElement("script");
-    script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-    script.integrity = "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
-    script.crossOrigin = "";
-    script.onload = loadLeaflet;
-    document.body.appendChild(script);
+
+    const existingStylesheet = document.querySelector('link[data-onyx-leaflet="true"]');
+    const existingScript = document.querySelector('script[data-onyx-leaflet="true"]');
+    const link = existingStylesheet ?? document.createElement("link");
+    if (!existingStylesheet) {
+      link.setAttribute("data-onyx-leaflet", "true");
+      (link as HTMLLinkElement).rel = "stylesheet";
+      (link as HTMLLinkElement).href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      document.head.appendChild(link);
+    }
+
+    const script = existingScript ?? document.createElement("script");
+    if (!existingScript) {
+      script.setAttribute("data-onyx-leaflet", "true");
+      (script as HTMLScriptElement).src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+      (script as HTMLScriptElement).onload = loadLeaflet;
+      document.body.appendChild(script);
+    } else {
+      script.addEventListener("load", loadLeaflet, { once: true });
+    }
+
     return () => {
-      script.remove();
-      link.remove();
       if (mapRef.current) {
         try {
           (mapRef.current as { remove?: () => void }).remove?.();
@@ -145,95 +196,148 @@ export default function ProvidersMapClient() {
   }, [items]);
 
   return (
-    <div style={{ fontFamily: "system-ui, -apple-system" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
-        <Link href="/dashboard" style={{ color: "#111", textDecoration: "underline", fontSize: 14 }}>
-          ← Dashboard
+    <div style={{ display: "grid", gap: "1rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h1 style={{ fontSize: 26, fontWeight: 750, margin: 0 }}>Providers Map by State</h1>
+          <p style={{ color: "var(--onyx-text-muted)", fontSize: 14, margin: "0.35rem 0 0", lineHeight: 1.5 }}>
+            Real provider pins only. Providers without coordinates are listed as needing location instead of being faked.
+          </p>
+        </div>
+        <Link href="/dashboard/providers" className="onyx-link">
+          Provider directory
         </Link>
-        <Link href="/providers" style={{ color: "#111", textDecoration: "underline", fontSize: 14 }}>
-          Provider list
-        </Link>
-      </div>
-
-      <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>Provider map</h1>
-      <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
-        Treatment providers by location. Add lat/lng on provider profiles to show them here.
-      </p>
-
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
-        <input
-          type="text"
-          placeholder="City"
-          value={city}
-          onChange={(e) => setCity(e.target.value)}
-          style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 14, width: 120 }}
-        />
-        <input
-          type="text"
-          placeholder="Specialty"
-          value={specialty}
-          onChange={(e) => setSpecialty(e.target.value)}
-          style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 14, width: 140 }}
-        />
-        <input
-          type="number"
-          placeholder="Radius (km)"
-          value={radius}
-          onChange={(e) => setRadius(e.target.value)}
-          style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 14, width: 100 }}
-        />
-        <input
-          type="text"
-          placeholder="Center lat"
-          value={centerLat}
-          onChange={(e) => setCenterLat(e.target.value)}
-          style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 14, width: 90 }}
-        />
-        <input
-          type="text"
-          placeholder="Center lng"
-          value={centerLng}
-          onChange={(e) => setCenterLng(e.target.value)}
-          style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 14, width: 90 }}
-        />
-        <button
-          type="button"
-          onClick={loadProviders}
-          disabled={loading}
-          style={{
-            padding: "8px 14px",
-            borderRadius: 6,
-            border: "1px solid #111",
-            background: "#111",
-            color: "#fff",
-            fontSize: 14,
-            cursor: loading ? "not-allowed" : "pointer",
-          }}
-        >
-          {loading ? "Loading…" : "Apply filters"}
-        </button>
-      </div>
-
-      <div style={{ marginBottom: 8, fontSize: 13, color: "#666" }}>
-        {items.length} provider{items.length !== 1 ? "s" : ""} with location
       </div>
 
       <div
-        ref={containerRef}
-        style={{
-          height: 480,
-          width: "100%",
-          maxWidth: 1000,
-          borderRadius: 12,
-          border: "1px solid #e5e5e5",
-          background: "#f5f5f5",
-        }}
-      />
-      {items.length === 0 && !loading && (
-        <p style={{ marginTop: 12, color: "#666", fontSize: 14 }}>
-          No providers with coordinates yet. Edit a provider and set lat/lng to show them on the map.
-        </p>
-      )}
+        className="onyx-card"
+        style={{ padding: "1rem", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}
+      >
+        <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+          State
+          <select className="onyx-input" value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
+            {STATES.map((state) => (
+              <option key={state || "all"} value={state}>
+                {state || "All states"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+          Provider type
+          <select className="onyx-input" value={category} onChange={(event) => setCategory(event.target.value)}>
+            {CATEGORIES.map((item) => (
+              <option key={item.key || "all"} value={item.key}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+          City
+          <input
+            type="text"
+            className="onyx-input"
+            placeholder="Optional"
+            value={city}
+            onChange={(event) => setCity(event.target.value)}
+          />
+        </label>
+        <div style={{ display: "flex", alignItems: "end" }}>
+          <button type="button" onClick={loadProviders} disabled={loading} className="onyx-btn-primary">
+            {loading ? "Loading..." : "Apply filters"}
+          </button>
+        </div>
+      </div>
+
+      {error ? <p style={{ color: "var(--onyx-error)", margin: 0, fontSize: 14 }}>{error}</p> : null}
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.4fr) minmax(260px, 0.6fr)", gap: "1rem" }}>
+        <div
+          ref={containerRef}
+          style={{
+            height: 520,
+            width: "100%",
+            borderRadius: "var(--onyx-radius-lg)",
+            border: "1px solid var(--onyx-border-subtle)",
+            background: "#eef1ec",
+            overflow: "hidden",
+          }}
+        />
+
+        <aside style={{ display: "grid", gap: "1rem", alignContent: "start" }}>
+          <div className="onyx-card" style={{ padding: "1rem" }}>
+            <p style={{ margin: 0, fontSize: 13, color: "var(--onyx-text-muted)" }}>Visible pins</p>
+            <p style={{ margin: "0.2rem 0 0", fontSize: 28, fontWeight: 750 }}>{items.length}</p>
+            <p style={{ margin: "0.2rem 0 0", fontSize: 13, color: "var(--onyx-text-muted)" }}>
+              {needsLocation.length} provider{needsLocation.length === 1 ? "" : "s"} need coordinates.
+            </p>
+          </div>
+
+          {selectedProvider ? (
+            <div className="onyx-card" style={{ padding: "1rem" }}>
+              <h2 style={{ margin: 0, fontSize: 16 }}>{selectedProvider.name}</h2>
+              <p style={{ margin: "0.4rem 0 0", fontSize: 13, color: "var(--onyx-text-muted)" }}>
+                {providerLocation(selectedProvider)}
+              </p>
+              {selectedProvider.specialty ? (
+                <p style={{ margin: "0.4rem 0 0", fontSize: 13 }}>{selectedProvider.specialty}</p>
+              ) : null}
+              <Link href={`/dashboard/providers/${selectedProvider.id}`} className="onyx-link" style={{ display: "inline-block", marginTop: "0.6rem" }}>
+                Open provider
+              </Link>
+            </div>
+          ) : null}
+
+          <div className="onyx-card" style={{ padding: "1rem" }}>
+            <h2 style={{ margin: "0 0 0.65rem", fontSize: 16 }}>Provider list</h2>
+            {items.length === 0 && !loading ? (
+              <p style={{ margin: 0, fontSize: 13, color: "var(--onyx-text-muted)" }}>
+                No providers with coordinates match these filters.
+              </p>
+            ) : (
+              <div style={{ display: "grid", gap: "0.5rem", maxHeight: 230, overflow: "auto" }}>
+                {items.map((provider) => (
+                  <button
+                    key={provider.id}
+                    type="button"
+                    onClick={() => setSelectedProvider(provider)}
+                    style={{
+                      textAlign: "left",
+                      border: "1px solid var(--onyx-border-subtle)",
+                      borderRadius: 10,
+                      background: "var(--onyx-background-surface)",
+                      padding: "0.65rem",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <strong>{provider.name}</strong>
+                    <span style={{ display: "block", fontSize: 12, color: "var(--onyx-text-muted)" }}>
+                      {providerLocation(provider)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {needsLocation.length > 0 ? (
+            <div className="onyx-card" style={{ padding: "1rem" }}>
+              <h2 style={{ margin: "0 0 0.65rem", fontSize: 16 }}>Needs location</h2>
+              <div style={{ display: "grid", gap: "0.45rem", maxHeight: 180, overflow: "auto" }}>
+                {needsLocation.map((provider) => (
+                  <Link key={provider.id} href={`/dashboard/providers/${provider.id}`} className="onyx-link">
+                    {provider.name}
+                    <span style={{ display: "block", fontSize: 12, color: "var(--onyx-text-muted)" }}>
+                      {provider.city || provider.state ? [provider.city, provider.state].filter(Boolean).join(", ") : "No city/state stored"}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </aside>
+      </div>
     </div>
   );
 }

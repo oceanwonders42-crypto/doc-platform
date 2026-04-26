@@ -12,6 +12,7 @@ import { logSystemError } from "./errorLog";
 import { createNotification } from "./notifications";
 import { getDemandMonthlyCap } from "./planPolicy";
 import { putObject } from "./storage";
+import { resolveDemandTemplate } from "./demandTemplates";
 import { getMonthlyDemandUsage, recordGeneratedDemandOutput } from "./usageMetering";
 
 type DemandPackageGenerationResult =
@@ -144,7 +145,7 @@ export async function generateDemandPackage(
     });
 
     const caseId = pkg.caseId;
-    const [legalCase, timelineEvents, financial, summary, caseDocs, aiSections] =
+    const [legalCase, timelineEvents, financial, summary, caseDocs, aiSections, demandTemplate] =
       await Promise.all([
         prisma.legalCase.findFirst({
           where: { id: caseId, firmId },
@@ -173,6 +174,7 @@ export async function generateDemandPackage(
           select: { id: true, originalName: true },
         }),
         buildAiDemandSections({ caseId, firmId }),
+        resolveDemandTemplate({ firmId, demandType: "demand_package" }),
       ]);
 
     const aiWarnings = collectAiWarnings([
@@ -311,6 +313,21 @@ export async function generateDemandPackage(
         },
       });
     }
+    await prisma.demandPackageSectionSource.create({
+      data: {
+        firmId,
+        demandPackageId: packageId,
+        sectionKey: "template",
+        sourceType: "demand_template",
+        sourceMeta: {
+          templateId: demandTemplate.id,
+          templateName: demandTemplate.name,
+          templateVersion: demandTemplate.version,
+          scope: demandTemplate.scope,
+          requiredSections: demandTemplate.requiredSections,
+        },
+      },
+    });
 
     const aiSectionSourceEntries = [
       {
@@ -362,6 +379,9 @@ export async function generateDemandPackage(
       damagesText: damagesDraft,
       futureCareText: futureCareDraft,
       settlementText: settlementDraft,
+      templateName: demandTemplate.name,
+      templateVersion: demandTemplate.version,
+      requiredSections: demandTemplate.requiredSections,
       appendixDocuments: caseDocs.map((doc) => ({
         name: doc.originalName || doc.id,
       })),
@@ -423,6 +443,12 @@ export async function generateDemandPackage(
         documentId: doc.id,
         title: pkg.title,
         status: "pending_dev_review",
+        demandTemplate: {
+          id: demandTemplate.id,
+          name: demandTemplate.name,
+          version: demandTemplate.version,
+          scope: demandTemplate.scope,
+        },
         aiWarnings,
         aiSectionsUsed: aiSectionSourceEntries
           .filter(

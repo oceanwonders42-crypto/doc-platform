@@ -111,6 +111,7 @@ model Firm {
   reviewQueueEvents           ReviewQueueEvent[]
   demandPackageSectionSources DemandPackageSectionSource[]
   featureOverrides            FirmFeatureOverride[]
+  demandTemplates             DemandTemplate[]
 }
 
 model FirmFeatureOverride {
@@ -954,6 +955,28 @@ model DemandPackage {
   sectionSources DemandPackageSectionSource[]
 
   @@index([firmId, caseId])
+}
+
+model DemandTemplate {
+  id               String   @id @default(cuid())
+  firmId           String?
+  name             String
+  caseType         String?
+  demandType       String?
+  version          Int      @default(1)
+  isActive         Boolean  @default(true)
+  requiredSections String[] @default(["facts_liability", "injuries", "treatment_chronology", "bills", "missing_records", "damages", "demand_amount", "exhibits"])
+  structureJson    Json?
+  examplesText     String?  @db.Text
+  createdByUserId  String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  firm Firm? @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@index([firmId, isActive])
+  @@index([caseType, demandType, isActive])
+  @@map("demand_templates")
 }
 
 enum DemandReviewStatus {
