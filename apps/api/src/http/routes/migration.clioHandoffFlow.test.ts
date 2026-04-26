@@ -100,6 +100,7 @@ async function main() {
   const suffix = Date.now();
   const firmId = `migration-clio-flow-firm-${suffix}`;
   const actorUserId = `migration-clio-flow-user-${suffix}`;
+  const actorEmail = `migration-clio-flow-${suffix}@example.com`;
   const caseId = `migration-clio-flow-case-${suffix}`;
   const contactId = `migration-clio-flow-contact-${suffix}`;
   const idempotencyKey = `migration-clio-flow-${suffix}`;
@@ -121,7 +122,7 @@ async function main() {
     data: {
       id: actorUserId,
       firmId,
-      email: "migration-clio-flow@example.com",
+      email: actorEmail,
       role: Role.STAFF,
       passwordHash: "test-hash",
     },
@@ -157,7 +158,7 @@ async function main() {
     userId: actorUserId,
     firmId,
     role: Role.STAFF,
-    email: "migration-clio-flow@example.com",
+    email: actorEmail,
   });
 
   const { baseUrl, server } = await startTestServer(app);
