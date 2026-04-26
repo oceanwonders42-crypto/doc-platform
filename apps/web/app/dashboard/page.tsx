@@ -71,6 +71,27 @@ const FEATURE_LABELS: Record<keyof DashboardFeatureFlags, string> = {
   demand_audit_enabled: "Demand Audit",
 };
 
+const FEATURE_DESCRIPTIONS: Record<keyof DashboardFeatureFlags, string> = {
+  exports_enabled: "Clio/export handoff surfaces",
+  migration_batch_enabled: "Legacy batch migration controls",
+  traffic_enabled: "Traffic and intake monitoring",
+  providers_enabled: "Provider directory management",
+  providers_map_enabled: "Map-based provider lookup",
+  case_qa_enabled: "Case-grounded Q&A",
+  missing_records_enabled: "Missing-records analysis",
+  bills_vs_treatment_enabled: "Billing/treatment comparison",
+  demand_drafts_enabled: "Review-ready demand drafts",
+  demand_audit_enabled: "Admin demand review lane",
+};
+
+type RolePriority = {
+  eyebrow: string;
+  headline: string;
+  body: string;
+  nextActionHref: string;
+  nextActionLabel: string;
+};
+
 function formatRelativeTime(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
@@ -129,15 +150,109 @@ function metricCard(label: string, value: string | number, detail: string, href?
   );
 }
 
-function featurePill(label: string, enabled: boolean) {
+function getRolePriority({
+  dashboardRole,
+  featureFlags,
+  blockedItems,
+  needsReviewDocs,
+  clioConnected,
+  mailboxConnected,
+}: {
+  dashboardRole: string;
+  featureFlags: DashboardFeatureFlags;
+  blockedItems: number;
+  needsReviewDocs: number;
+  clioConnected: boolean;
+  mailboxConnected: boolean;
+}): RolePriority {
+  if (dashboardRole === "PLATFORM_ADMIN") {
+    return {
+      eyebrow: "Developer console",
+      headline: "Control access without cluttering operator workspaces.",
+      body:
+        "Review feature flags, plan access, failed jobs, demand audit, and integration health from one safe admin lane.",
+      nextActionHref: "/admin/firms",
+      nextActionLabel: "Open firm controls",
+    };
+  }
+
+  if (dashboardRole === "FIRM_ADMIN") {
+    const needsIntegration = !clioConnected || !mailboxConnected;
+    return {
+      eyebrow: "Firm admin",
+      headline: needsIntegration
+        ? "One integration needs attention before the firm is fully operational."
+        : "Your firm is connected and ready for supervised legal production.",
+      body:
+        "Track usage, demand audit readiness, feature access, team activity, and blocked work without seeing operator-only case tools.",
+      nextActionHref: needsIntegration ? "/dashboard/settings/clio" : "/dashboard/usage",
+      nextActionLabel: needsIntegration ? "Review integrations" : "Review usage",
+    };
+  }
+
+  if (needsReviewDocs > 0 || blockedItems > 0) {
+    return {
+      eyebrow: "Operator queue",
+      headline: "Start with review before drafting or exporting.",
+      body:
+        "Uncertain documents stay in the review lane so case work remains grounded and auditable.",
+      nextActionHref: "/dashboard/review",
+      nextActionLabel: "Open review queue",
+    };
+  }
+
+  if (featureFlags.demand_drafts_enabled) {
+    return {
+      eyebrow: "Operator queue",
+      headline: "Case work is clear enough to move into demand review.",
+      body:
+        "Open assigned cases, check missing-record and billing alerts, then create review-only demand drafts when ready.",
+      nextActionHref: "/dashboard/cases",
+      nextActionLabel: "Open cases",
+    };
+  }
+
+  return {
+    eyebrow: "Operator queue",
+    headline: "Work from cases, records requests, and provider lookup.",
+    body:
+      "Advanced AI drafting is hidden until it is enabled for this firm and role.",
+    nextActionHref: "/dashboard/cases",
+    nextActionLabel: "Open cases",
+  };
+}
+
+function featureVisibilityGrid(features: DashboardFeatureFlags) {
+  const entries = Object.entries(FEATURE_LABELS) as Array<[keyof DashboardFeatureFlags, string]>;
   return (
-    <span
-      key={label}
-      className={`onyx-badge ${enabled ? "onyx-badge-success" : "onyx-badge-neutral"}`}
-      title={enabled ? "Enabled for this firm" : "Not enabled for this firm"}
-    >
-      {label}: {enabled ? "on" : "off"}
-    </span>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.7rem" }}>
+      {entries.map(([key, label]) => {
+        const enabled = features[key];
+        return (
+          <div
+            key={key}
+            style={{
+              border: "1px solid var(--onyx-border-subtle)",
+              borderRadius: "var(--onyx-radius-md)",
+              padding: "0.85rem",
+              background: enabled ? "rgba(31, 120, 78, 0.08)" : "rgba(15, 23, 42, 0.035)",
+              display: "grid",
+              gap: "0.35rem",
+            }}
+          >
+            <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.6rem" }}>
+              <strong style={{ fontSize: "0.9rem" }}>{label}</strong>
+              <span className={`onyx-badge ${enabled ? "onyx-badge-success" : "onyx-badge-neutral"}`}>
+                {enabled ? "Visible" : "Hidden"}
+              </span>
+            </span>
+            <span style={{ color: "var(--onyx-text-muted)", fontSize: "0.8rem", lineHeight: 1.45 }}>
+              {FEATURE_DESCRIPTIONS[key]}
+            </span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -272,6 +387,14 @@ export default function DashboardHomePage() {
   const roleLabel = formatDashboardRoleLabel(role);
   const activeCaseCount = cases.length;
   const blockedItems = (summary?.unmatchedDocs ?? 0) + (summary?.needsReviewDocs ?? 0);
+  const rolePriority = getRolePriority({
+    dashboardRole,
+    featureFlags,
+    blockedItems,
+    needsReviewDocs: summary?.needsReviewDocs ?? 0,
+    clioConnected: clioStatus.connected,
+    mailboxConnected: mailboxStatus.connected,
+  });
 
   const headerDescription =
     dashboardRole === "FIRM_ADMIN" || dashboardRole === "PLATFORM_ADMIN"
@@ -297,6 +420,69 @@ export default function DashboardHomePage() {
           style={{ marginBottom: "1rem" }}
         />
       ) : null}
+
+      <section
+        style={{
+          marginBottom: "1.25rem",
+          borderRadius: "calc(var(--onyx-radius-lg) + 8px)",
+          padding: "1.4rem",
+          background:
+            "linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.92) 58%, rgba(201, 162, 39, 0.24))",
+          color: "#fff",
+          boxShadow: "var(--onyx-shadow)",
+          overflow: "hidden",
+          position: "relative",
+        }}
+      >
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            right: "-4rem",
+            top: "-5rem",
+            width: "14rem",
+            height: "14rem",
+            borderRadius: "999px",
+            background: "radial-gradient(circle, rgba(243, 213, 122, 0.32), transparent 68%)",
+          }}
+        />
+        <div style={{ position: "relative", display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: "1rem", alignItems: "center" }}>
+          <div>
+            <p
+              style={{
+                margin: 0,
+                color: "#f3d57a",
+                fontSize: "0.72rem",
+                fontWeight: 800,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+              }}
+            >
+              {rolePriority.eyebrow}
+            </p>
+            <h2
+              style={{
+                margin: "0.35rem 0 0",
+                maxWidth: "48rem",
+                fontFamily: "var(--onyx-font-display)",
+                fontSize: "clamp(1.7rem, 4vw, 3rem)",
+                lineHeight: 1,
+                letterSpacing: "-0.055em",
+              }}
+            >
+              {rolePriority.headline}
+            </h2>
+            <p style={{ margin: "0.75rem 0 0", maxWidth: "48rem", color: "rgba(255,255,255,0.76)", lineHeight: 1.65 }}>
+              {rolePriority.body}
+            </p>
+          </div>
+          <Link href={rolePriority.nextActionHref} style={{ textDecoration: "none" }}>
+            <button type="button" className="onyx-btn-primary">
+              {rolePriority.nextActionLabel}
+            </button>
+          </Link>
+        </div>
+      </section>
 
       <DashboardCard
         title={firm?.name ? `${firm.name} at a glance` : "Your workspace at a glance"}
@@ -338,11 +524,7 @@ export default function DashboardHomePage() {
                 Plan: <strong>{firm?.plan ?? "unknown"}</strong>. Feature access is controlled by tier plus developer overrides,
                 and unavailable features stay hidden from operators.
               </p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
-                {Object.entries(FEATURE_LABELS).map(([key, label]) =>
-                  featurePill(label, featureFlags[key as keyof DashboardFeatureFlags])
-                )}
-              </div>
+              {featureVisibilityGrid(featureFlags)}
               <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
                 <Link href="/dashboard/usage" style={{ textDecoration: "none" }}>
                   <button type="button" className="onyx-btn-secondary">Usage and costs</button>
@@ -366,13 +548,32 @@ export default function DashboardHomePage() {
           </DashboardCard>
 
           {isPlatformAdmin ? (
-            <DashboardCard title="Developer controls">
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.75rem" }}>
-                <Link href="/admin/firms" className="onyx-link">Firm access controls</Link>
-                <Link href="/admin/quality" className="onyx-link">Demand audit queue</Link>
-                <Link href="/admin/errors" className="onyx-link">Recent AI errors</Link>
-                <Link href="/admin/jobs" className="onyx-link">Failed jobs</Link>
-                <Link href="/admin/demand-templates" className="onyx-link">Demand templates</Link>
+          <DashboardCard title="Developer controls">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "0.75rem" }}>
+                {[
+                  ["/admin/firms", "Firm access controls", "Plan, status, and feature overrides"],
+                  ["/admin/quality", "Demand audit queue", "Review release quality"],
+                  ["/admin/errors", "Recent AI errors", "Spot failures before users do"],
+                  ["/admin/jobs", "Failed jobs", "Retry safe background work"],
+                  ["/admin/demand-templates", "Demand templates", "Manage drafting structure"],
+                ].map(([href, label, detail]) => (
+                  <Link
+                    key={href}
+                    href={href}
+                    className="onyx-link"
+                    style={{
+                      textDecoration: "none",
+                      border: "1px solid var(--onyx-border-subtle)",
+                      borderRadius: "var(--onyx-radius-md)",
+                      padding: "0.85rem",
+                      display: "grid",
+                      gap: "0.25rem",
+                    }}
+                  >
+                    <strong>{label}</strong>
+                    <span style={{ color: "var(--onyx-text-muted)", fontSize: "0.8rem" }}>{detail}</span>
+                  </Link>
+                ))}
               </div>
             </DashboardCard>
           ) : null}

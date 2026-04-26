@@ -146,7 +146,9 @@ function renderSection(
       </p>
       <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
         {items.map((item) => {
-          const isActive = pathname.startsWith(item.href);
+          const isActive =
+            pathname === item.href ||
+            (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
           return (
             <li key={item.href}>
               <Link
@@ -325,6 +327,18 @@ export function DashboardSidebar() {
             {dashboardRole === "FIRM_ADMIN" || dashboardRole === "PLATFORM_ADMIN"
               ? "Business health, feature access, team, settings, and integrations stay in one controlled view."
               : "Cases, demands, records requests, and provider tools stay visible only when your role and firm access allow them."}
+          </p>
+          <p
+            style={{
+              margin: "0.6rem 0 0",
+              paddingTop: "0.6rem",
+              borderTop: "1px solid rgba(255, 255, 255, 0.08)",
+              fontSize: "0.74rem",
+              lineHeight: 1.5,
+              color: "var(--onyx-sidebar-muted)",
+            }}
+          >
+            Exports, migration batch, and traffic tools stay hidden unless the firm flag and role both permit access.
           </p>
         </div>
       </div>
