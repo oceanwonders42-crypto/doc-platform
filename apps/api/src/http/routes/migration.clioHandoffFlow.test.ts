@@ -117,6 +117,16 @@ async function main() {
     },
   });
 
+  await prisma.user.create({
+    data: {
+      id: actorUserId,
+      firmId,
+      email: "migration-clio-flow@example.com",
+      role: Role.STAFF,
+      passwordHash: "test-hash",
+    },
+  });
+
   await prisma.contact.create({
     data: {
       id: contactId,
