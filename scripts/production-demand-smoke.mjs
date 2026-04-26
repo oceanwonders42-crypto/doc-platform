@@ -501,24 +501,26 @@ async function main() {
     cleanup: "not_run",
   };
   let createdIds = null;
+  let reviewerUserId = null;
 
   try {
     const { candidate: staffCandidate, token: staffToken } = await findDemandEnabledCandidate(prisma, jwtSecret, options.localApiUrl);
-    const reviewerCandidate =
-      (await prisma.user.findFirst({
-        where: { role: Role.PLATFORM_ADMIN },
-        select: { id: true, email: true },
-        orderBy: [{ createdAt: "asc" }],
-      })) ?? {
-        id: staffCandidate.id,
-        email: staffCandidate.email ?? "",
-      };
+    const reviewerCandidate = await prisma.user.create({
+      data: {
+        firmId: staffCandidate.firmId,
+        role: Role.PLATFORM_ADMIN,
+        email: `production-smoke-reviewer-${Date.now()}@onyxintel.invalid`,
+        passwordHash: "production-smoke-reviewer",
+      },
+      select: { id: true, email: true, firmId: true, role: true },
+    });
+    reviewerUserId = reviewerCandidate.id;
 
     const reviewerToken = buildToken(
       {
         userId: reviewerCandidate.id,
-        firmId: staffCandidate.firmId,
-        role: Role.PLATFORM_ADMIN,
+        firmId: reviewerCandidate.firmId,
+        role: reviewerCandidate.role,
         email: reviewerCandidate.email ?? "",
       },
       jwtSecret
@@ -710,6 +712,9 @@ async function main() {
   } finally {
     try {
       await cleanupFixtures(prisma, createdIds);
+      if (reviewerUserId) {
+        await prisma.user.deleteMany({ where: { id: reviewerUserId } });
+      }
       result.cleanup = "ok";
     } catch (cleanupError) {
       result.cleanup = `failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
