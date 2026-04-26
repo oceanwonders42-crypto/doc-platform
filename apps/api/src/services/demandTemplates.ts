@@ -78,10 +78,15 @@ export async function resolveDemandTemplate(input: {
   const matchingTemplate = candidates
     .filter(
       (template) =>
+        template.isActive &&
         matchesTemplateValue(template.caseType, input.caseType) &&
         matchesTemplateValue(template.demandType, input.demandType)
     )
-    .sort((left, right) => templateSpecificityScore(right) - templateSpecificityScore(left))[0];
+    .sort((left, right) => {
+      const specificityDelta = templateSpecificityScore(right) - templateSpecificityScore(left);
+      if (specificityDelta !== 0) return specificityDelta;
+      return right.version - left.version;
+    })[0];
 
   if (!matchingTemplate) return DEFAULT_DEMAND_TEMPLATE;
 

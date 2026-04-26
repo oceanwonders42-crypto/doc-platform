@@ -147,7 +147,7 @@ import {
 } from "../services/export";
 import { buildVisibleCaseWhere } from "../services/caseVisibility";
 import { syncClioCaseAssignmentsIfStale } from "../services/clioCaseAssignments";
-import { buildRoutingExplanation } from "../services/documentRoutingDecision";
+import { buildRoutingExplanation, buildStructuredRoutingDecision } from "../services/documentRoutingDecision";
 import { logActivity } from "../services/activityFeed";
 import {
   loadRoutingFeedbackContext,
@@ -6101,6 +6101,13 @@ app.post("/documents/:id/rematch", auth, requireRole(Role.STAFF), async (req, re
     const routingExplanation = buildRoutingExplanation(routingScore, {
       minConfidence: minAutoRouteConfidence,
     });
+    const structuredRoutingDecision = buildStructuredRoutingDecision(routingScore, routingExplanation);
+    const routingReason =
+      structuredRoutingDecision.reasoning[0] ??
+      routingScore.candidates[0]?.reason ??
+      routingExplanation.reviewReasons[0] ??
+      routingScore.signals.baseMatchReason ??
+      null;
 
     await pgPool.query(
       `update document_recognition set match_confidence = $1, match_reason = $2, suggested_case_id = $4, updated_at = now() where document_id = $3`,
@@ -6131,6 +6138,10 @@ app.post("/documents/:id/rematch", auth, requireRole(Role.STAFF), async (req, re
       data: {
         ...(updateData as { status?: "UPLOADED" | "NEEDS_REVIEW"; routedCaseId?: string | null }),
         ...(updateData.status === "NEEDS_REVIEW" ? { reviewState: "IN_REVIEW" as const } : {}),
+        routingConfidence: routingScore.confidence,
+        routingReason,
+        routingSourceFields: JSON.parse(JSON.stringify(structuredRoutingDecision.source_fields)) as Prisma.InputJsonValue,
+        routingDecision: JSON.parse(JSON.stringify(structuredRoutingDecision)) as Prisma.InputJsonValue,
       },
     });
 
@@ -6151,6 +6162,7 @@ app.post("/documents/:id/rematch", auth, requireRole(Role.STAFF), async (req, re
         topSignals: routingExplanation.topSignals,
         candidateSummaries: routingExplanation.candidateSummaries,
         reviewReasons: routingExplanation.reviewReasons,
+        routingDecision: structuredRoutingDecision,
       },
     });
 
@@ -6597,6 +6609,10 @@ app.get("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
         reviewState: true,
         routedCaseId: true,
         routingStatus: true,
+        routingConfidence: true,
+        routingReason: true,
+        routingSourceFields: true,
+        routingDecision: true,
         mimeType: true,
         confidence: true,
         extractedFields: true,
@@ -6634,6 +6650,10 @@ app.get("/documents/:id", auth, requireRole(Role.STAFF), async (req, res) => {
       reviewState: getEffectiveDocumentReviewState(doc),
       routedCaseId: doc.routedCaseId ?? null,
       routingStatus: doc.routingStatus ?? null,
+      routingConfidence: doc.routingConfidence ?? null,
+      routingReason: doc.routingReason ?? null,
+      routingSourceFields: doc.routingSourceFields ?? null,
+      routingDecision: doc.routingDecision ?? null,
       mimeType: doc.mimeType ?? null,
       confidence: doc.confidence,
       extractedFields: doc.extractedFields,
@@ -8966,6 +8986,10 @@ app.get("/documents/:id/recognition", auth, requireRole(Role.STAFF), async (req,
         reviewState: true,
         routedCaseId: true,
         routingStatus: true,
+        routingConfidence: true,
+        routingReason: true,
+        routingSourceFields: true,
+        routingDecision: true,
         mimeType: true,
         confidence: true,
         extractedFields: true,
@@ -9004,6 +9028,10 @@ app.get("/documents/:id/recognition", auth, requireRole(Role.STAFF), async (req,
         reviewState: getEffectiveDocumentReviewState(doc),
         routedCaseId: doc.routedCaseId ?? null,
         routingStatus: doc.routingStatus ?? null,
+        routingConfidence: doc.routingConfidence ?? null,
+        routingReason: doc.routingReason ?? null,
+        routingSourceFields: doc.routingSourceFields ?? null,
+        routingDecision: doc.routingDecision ?? null,
         mimeType: doc.mimeType ?? null,
         confidence: doc.confidence,
         extractedFields: doc.extractedFields,

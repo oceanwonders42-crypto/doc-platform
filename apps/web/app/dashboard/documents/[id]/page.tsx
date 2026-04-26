@@ -21,6 +21,10 @@ type Doc = {
   confidence?: number | null;
   routedCaseId: string | null;
   routingStatus: string | null;
+  routingConfidence?: number | null;
+  routingReason?: string | null;
+  routingSourceFields?: Record<string, unknown> | null;
+  routingDecision?: RoutingDecision | null;
   createdAt?: string;
   processedAt?: string | null;
   ingestedAt?: string | null;
@@ -31,6 +35,20 @@ type Doc = {
   errors?: string | null;
   pipelineStage?: string | null;
   metaJson?: Record<string, unknown> | null;
+};
+
+type RoutingDecision = {
+  document_type?: string | null;
+  client_name?: string | null;
+  date_of_loss?: string | null;
+  provider?: string | null;
+  claim_number?: string | null;
+  matched_case_id?: string | null;
+  confidence_score?: number | null;
+  reasoning?: string[];
+  review_required?: boolean;
+  source_fields?: Record<string, unknown>;
+  candidate_summaries?: string[];
 };
 
 type CaseItem = { id: string; title: string | null; caseNumber: string | null; clientName: string | null };
@@ -626,6 +644,19 @@ export default function DocumentDetailPage() {
     (recognition != null && (recognition.matchConfidence ?? 1) < 0.8) ||
     (recognition != null && (recognition.confidence ?? 1) < 0.7);
   const lowConfidence = (recognition?.confidence != null && recognition.confidence < 0.7) || (recognition?.matchConfidence != null && recognition.matchConfidence < 0.8);
+  const routingDecision = doc.routingDecision ?? null;
+  const routingConfidence = doc.routingConfidence ?? routingDecision?.confidence_score ?? recognition?.matchConfidence ?? null;
+  const routingReason = doc.routingReason ?? routingDecision?.reasoning?.[0] ?? recognition?.matchReason ?? recognition?.unmatchedReason ?? null;
+  const routingReasons = [
+    ...(routingDecision?.reasoning ?? []),
+    ...(routingDecision?.candidate_summaries ?? []),
+  ].filter((reason, index, list) => typeof reason === "string" && reason.trim().length > 0 && list.indexOf(reason) === index);
+  const routingFields = routingDecision?.source_fields ?? doc.routingSourceFields ?? {};
+  const routedCaseLabel = doc.routedCaseId
+    ? "Routed to attached case"
+    : recognition?.suggestedCaseId || routingDecision?.matched_case_id
+      ? "Needs review - suggested case"
+      : "Needs review - low confidence";
   const pageDescriptionParts = [formatStatusLabel(doc.status), `${doc.pageCount ?? 0} pages`];
   if (doc.reviewState) pageDescriptionParts.push(formatStatusLabel(doc.reviewState));
   if (needsReview) pageDescriptionParts.push("Needs review");
@@ -784,46 +815,54 @@ export default function DocumentDetailPage() {
           </div>
         )}
 
-        {recognition && (
-          <DashboardCard title="Why this document was routed here">
+        {(recognition || routingDecision) && (
+          <DashboardCard title="Routing Decision">
             <div style={{ display: "grid", gap: "0.65rem" }}>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
                 <span className={doc.routedCaseId ? "onyx-badge onyx-badge-success" : "onyx-badge onyx-badge-warning"}>
-                  {doc.routedCaseId ? "Attached to case" : "Review fallback"}
+                  {routedCaseLabel}
                 </span>
                 <span className="onyx-badge onyx-badge-neutral">
-                  Match confidence {formatPercent(recognition.matchConfidence)}
+                  Confidence {formatPercent(routingConfidence)}
                 </span>
-                <span className="onyx-badge onyx-badge-neutral">
-                  Classification confidence {formatPercent(recognition.confidence)}
-                </span>
+                {recognition?.confidence != null && (
+                  <span className="onyx-badge onyx-badge-neutral">
+                    Classification {formatPercent(recognition.confidence)}
+                  </span>
+                )}
               </div>
               <p style={{ margin: 0, fontSize: "0.9rem", color: "var(--onyx-text-secondary)", lineHeight: 1.55 }}>
-                {recognition.matchReason ||
-                  recognition.unmatchedReason ||
+                {routingReason ||
                   "The router did not record a detailed case-match reason for this document."}
               </p>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.65rem" }}>
                 <div className="onyx-card" style={{ padding: "0.75rem" }}>
                   <p style={{ margin: "0 0 0.2rem", fontSize: "0.72rem", color: "var(--onyx-text-muted)" }}>Client</p>
-                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{recognition.clientName ?? "-"}</p>
+                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{routingDecision?.client_name ?? recognition?.clientName ?? String(routingFields.client_name ?? "-")}</p>
                 </div>
                 <div className="onyx-card" style={{ padding: "0.75rem" }}>
                   <p style={{ margin: "0 0 0.2rem", fontSize: "0.72rem", color: "var(--onyx-text-muted)" }}>Date of loss</p>
-                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{recognition.incidentDate ?? "-"}</p>
+                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{routingDecision?.date_of_loss ?? recognition?.incidentDate ?? String(routingFields.date_of_loss ?? "-")}</p>
                 </div>
                 <div className="onyx-card" style={{ padding: "0.75rem" }}>
                   <p style={{ margin: "0 0 0.2rem", fontSize: "0.72rem", color: "var(--onyx-text-muted)" }}>Provider</p>
-                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{recognition.providerName ?? recognition.facilityName ?? "-"}</p>
+                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{routingDecision?.provider ?? recognition?.providerName ?? recognition?.facilityName ?? String(routingFields.provider ?? "-")}</p>
                 </div>
                 <div className="onyx-card" style={{ padding: "0.75rem" }}>
                   <p style={{ margin: "0 0 0.2rem", fontSize: "0.72rem", color: "var(--onyx-text-muted)" }}>Claim or case number</p>
-                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{recognition.caseNumber ?? "-"}</p>
+                  <p style={{ margin: 0, fontSize: "0.9rem", fontWeight: 600 }}>{routingDecision?.claim_number ?? recognition?.caseNumber ?? String(routingFields.claim_number ?? routingFields.case_number ?? "-")}</p>
                 </div>
               </div>
-              {normalizeSignalList(recognition.classificationSignals).length > 0 ? (
+              {routingReasons.length > 0 ? (
+                <ul style={{ margin: 0, paddingLeft: "1.1rem", color: "var(--onyx-text-muted)", fontSize: "0.85rem", lineHeight: 1.55 }}>
+                  {routingReasons.slice(0, 5).map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              ) : null}
+              {normalizeSignalList(recognition?.classificationSignals).length > 0 ? (
                 <p style={{ margin: 0, fontSize: "0.82rem", color: "var(--onyx-text-muted)", lineHeight: 1.5 }}>
-                  Signals: {normalizeSignalList(recognition.classificationSignals).join(", ")}
+                  Signals: {normalizeSignalList(recognition?.classificationSignals).join(", ")}
                 </p>
               ) : null}
               {!doc.routedCaseId ? (

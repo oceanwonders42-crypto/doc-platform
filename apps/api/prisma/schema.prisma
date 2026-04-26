@@ -391,6 +391,10 @@ model Document {
   routedSystem    String?
   routedCaseId    String?
   routingStatus   String?
+  routingConfidence   Float?  @map("routing_confidence")
+  routingReason       String? @db.Text @map("routing_reason")
+  routingSourceFields Json?   @map("routing_source_fields")
+  routingDecision     Json?   @map("routing_decision")
 
   createdAt   DateTime  @default(now())
   processedAt DateTime?

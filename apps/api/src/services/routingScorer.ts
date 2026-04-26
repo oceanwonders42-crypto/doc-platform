@@ -17,7 +17,9 @@ export type DocumentForRouting = {
 
 export type ExtractedForRouting = {
   caseNumber?: string | null;
+  claimNumber?: string | null;
   clientName?: string | null;
+  incidentDate?: string | null;
   docType?: string | null;
   providerName?: string | null;
   documentClientName?: string | null;
@@ -62,6 +64,8 @@ export type RoutingScoreResult = {
     baseMatchReason: string | null;
     providerName?: string | null;
     providerMatchReasons?: string[];
+    claimNumber?: string | null;
+    dateOfLoss?: string | null;
     documentClientName?: string | null;
     emailClientName?: string | null;
   };
@@ -100,6 +104,17 @@ function firstNonEmpty(...values: Array<string | null | undefined>): string | nu
   return null;
 }
 
+function parseDateValue(value: string | Date | null | undefined): Date | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function daysBetween(left: Date, right: Date): number {
+  const millisPerDay = 24 * 60 * 60 * 1000;
+  return Math.abs(left.getTime() - right.getTime()) / millisPerDay;
+}
+
 /** Simple filename pattern: supports * wildcard or includes substring. */
 function fileNameMatches(pattern: string | null, fileName: string | null): boolean {
   if (!pattern || !fileName) return false;
@@ -135,6 +150,8 @@ export async function scoreDocumentRouting(
     baseMatchReason: null,
     providerName: extracted.providerName ?? null,
     providerMatchReasons: [],
+    claimNumber: extracted.claimNumber ?? null,
+    dateOfLoss: extracted.incidentDate ?? null,
     documentClientName: extracted.documentClientName ?? null,
     emailClientName: extracted.emailClientName ?? null,
   };
@@ -145,7 +162,7 @@ export async function scoreDocumentRouting(
   // 1) Base case match (deterministic)
   const baseSignals: MatchSignals = {
     documentId,
-    caseNumber: extracted.caseNumber,
+    caseNumber: firstNonEmpty(extracted.caseNumber, extracted.claimNumber),
     clientName: extracted.clientName,
   };
   const baseMatch = await matchDocumentToCase(firmId, baseSignals, routedCaseId);
@@ -321,6 +338,54 @@ export async function scoreDocumentRouting(
     }
   }
 
+  // 5) Date overlap: date of loss or service date should agree with the case incident date or timeline.
+  const documentDate = parseDateValue(extracted.incidentDate ?? null);
+  if (documentDate) {
+    const casesWithIncidentDate = await prisma.legalCase.findMany({
+      where: { firmId, incidentDate: { not: null } },
+      select: { id: true, caseNumber: true, title: true, incidentDate: true },
+      take: 500,
+    });
+    for (const legalCase of casesWithIncidentDate) {
+      const incidentDate = parseDateValue(legalCase.incidentDate);
+      if (!incidentDate) continue;
+      const gapDays = daysBetween(documentDate, incidentDate);
+      if (gapDays > 45) continue;
+      const existing = candidates.find((c) => c.caseId === legalCase.id);
+      const reason = gapDays <= 2 ? "Date of loss matches case incident date" : "Date falls near case incident date";
+      const boost = gapDays <= 2 ? 0.18 : 0.08;
+      if (existing) {
+        existing.confidence = Math.min(0.98, existing.confidence + boost);
+        existing.reason = Array.from(new Set([...existing.reason.split("; "), reason])).join("; ");
+      } else {
+        candidates.push({
+          caseId: legalCase.id,
+          caseNumber: legalCase.caseNumber,
+          caseTitle: legalCase.title,
+          confidence: gapDays <= 2 ? 0.55 : 0.42,
+          reason,
+          source: "case_match",
+        });
+      }
+    }
+
+    const nearbyTimelineEvents = await prisma.caseTimelineEvent.findMany({
+      where: { firmId, eventDate: { not: null } },
+      select: { caseId: true, eventDate: true },
+      orderBy: { createdAt: "desc" },
+      take: 500,
+    });
+    for (const event of nearbyTimelineEvents) {
+      const eventDate = parseDateValue(event.eventDate);
+      if (!eventDate || daysBetween(documentDate, eventDate) > 30) continue;
+      const existing = candidates.find((c) => c.caseId === event.caseId);
+      if (!existing) continue;
+      existing.confidence = Math.min(0.98, existing.confidence + 0.06);
+      existing.reason = Array.from(new Set([...existing.reason.split("; "), "Date overlaps case timeline"])).join("; ");
+      break;
+    }
+  }
+
   // Pick best candidate
   candidates.sort((a, b) => b.confidence - a.confidence);
   const best = candidates[0] ?? null;
@@ -348,6 +413,7 @@ export async function getExtractedForRouting(documentId: string): Promise<Extrac
     firm_id: string;
     case_number: string | null;
     client_name: string | null;
+    incident_date: string | null;
     doc_type: string | null;
     provider_name: string | null;
     extracted_fields: unknown;
@@ -357,6 +423,7 @@ export async function getExtractedForRouting(documentId: string): Promise<Extrac
       d."firmId" as firm_id,
       dr.case_number,
       dr.client_name,
+      dr.incident_date,
       dr.doc_type,
       dr.provider_name,
       d."extractedFields" as extracted_fields
@@ -372,14 +439,29 @@ export async function getExtractedForRouting(documentId: string): Promise<Extrac
   const storedSignals = await getStoredMatchSignalsForDocument(r.firm_id, documentId).catch(() => null);
   const extractedFields = asRecord(r.extracted_fields);
   const medicalRecord = asRecord(extractedFields?.medicalRecord);
+  const insuranceFields = asRecord(extractedFields?.insurance);
 
   return {
     caseNumber: firstNonEmpty(r.case_number, storedSignals?.documentCaseNumber),
+    claimNumber: firstNonEmpty(
+      readString(extractedFields?.claimNumber),
+      readString(extractedFields?.claim_number),
+      readString(extractedFields?.policyNumber),
+      readString(insuranceFields?.claimNumber),
+      storedSignals?.documentCaseNumber
+    ),
     clientName: firstNonEmpty(
       r.client_name,
       storedSignals?.documentClientName,
       storedSignals?.emailClientName,
       ...(storedSignals?.courtPartyNames ?? [])
+    ),
+    incidentDate: firstNonEmpty(
+      r.incident_date,
+      readString(extractedFields?.incidentDate),
+      readString(extractedFields?.dateOfLoss),
+      readString(extractedFields?.lossDate),
+      readString(medicalRecord?.incidentDate)
     ),
     docType: firstNonEmpty(r.doc_type, readString(extractedFields?.docType)),
     providerName: firstNonEmpty(

@@ -12,7 +12,7 @@ import { logSystemError } from "./errorLog";
 import { createNotification } from "./notifications";
 import { getDemandMonthlyCap } from "./planPolicy";
 import { putObject } from "./storage";
-import { resolveDemandTemplate } from "./demandTemplates";
+import { resolveDemandTemplate, type DemandTemplateSelection } from "./demandTemplates";
 import { getMonthlyDemandUsage, recordGeneratedDemandOutput } from "./usageMetering";
 
 type DemandPackageGenerationResult =
@@ -51,9 +51,50 @@ function isUsableGeneratedNarrative(text: string | null | undefined): boolean {
   return trimmed.length > 0 && !trimmed.startsWith("[Error");
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function getDemandTemplateTone(template: DemandTemplateSelection, fallback: "neutral" | "assertive"): "neutral" | "assertive" | "aggressive" {
+  const structure = asRecord(template.structureJson);
+  const rawTone = typeof structure?.tone === "string" ? structure.tone.trim().toLowerCase() : "";
+  if (rawTone === "neutral" || rawTone === "assertive" || rawTone === "aggressive") return rawTone;
+  return fallback;
+}
+
+function buildDemandTemplateInstructionNotes(template: DemandTemplateSelection): string {
+  const structure = asRecord(template.structureJson);
+  const lines = [
+    `Demand template: ${template.name} v${template.version} (${template.scope}).`,
+    `Required sections: ${template.requiredSections.join(", ")}.`,
+  ];
+  if (structure) {
+    const fields = [
+      "liability_section",
+      "injuries_section",
+      "chronology_style",
+      "billing_explanation_style",
+      "tone",
+      "closing_format",
+    ];
+    for (const field of fields) {
+      const value = structure[field];
+      if (typeof value === "string" && value.trim()) {
+        lines.push(`${field.replace(/_/g, " ")}: ${value.trim()}`);
+      }
+    }
+  }
+  if (template.examplesText?.trim()) {
+    lines.push(`Template examples/style guidance:\n${template.examplesText.trim().slice(0, 4000)}`);
+  }
+  return lines.join("\n");
+}
+
 async function buildAiDemandSections(input: {
   caseId: string;
   firmId: string;
+  template: DemandTemplateSelection;
 }): Promise<{
   summary: NarrativeResult | null;
   liability: NarrativeResult | null;
@@ -68,31 +109,38 @@ async function buildAiDemandSections(input: {
       settlement: null,
     };
   }
+  const templateNotes = buildDemandTemplateInstructionNotes(input.template);
+  const neutralTone = getDemandTemplateTone(input.template, "neutral");
+  const assertiveTone = getDemandTemplateTone(input.template, "assertive");
 
   const [summary, liability, treatment, settlement] = await Promise.all([
     generateNarrative({
       caseId: input.caseId,
       firmId: input.firmId,
       type: "injury_summary",
-      tone: "neutral",
+      tone: neutralTone,
+      notes: templateNotes,
     }),
     generateNarrative({
       caseId: input.caseId,
       firmId: input.firmId,
       type: "liability",
-      tone: "assertive",
+      tone: assertiveTone,
+      notes: templateNotes,
     }),
     generateNarrative({
       caseId: input.caseId,
       firmId: input.firmId,
       type: "treatment_summary",
-      tone: "neutral",
+      tone: neutralTone,
+      notes: templateNotes,
     }),
     generateNarrative({
       caseId: input.caseId,
       firmId: input.firmId,
       type: "demand_rationale",
-      tone: "assertive",
+      tone: assertiveTone,
+      notes: templateNotes,
     }),
   ]);
 
@@ -145,7 +193,8 @@ export async function generateDemandPackage(
     });
 
     const caseId = pkg.caseId;
-    const [legalCase, timelineEvents, financial, summary, caseDocs, aiSections, demandTemplate] =
+    const demandTemplate = await resolveDemandTemplate({ firmId, demandType: "demand_package" });
+    const [legalCase, timelineEvents, financial, summary, caseDocs, aiSections] =
       await Promise.all([
         prisma.legalCase.findFirst({
           where: { id: caseId, firmId },
@@ -173,8 +222,7 @@ export async function generateDemandPackage(
           where: { firmId, routedCaseId: caseId },
           select: { id: true, originalName: true },
         }),
-        buildAiDemandSections({ caseId, firmId }),
-        resolveDemandTemplate({ firmId, demandType: "demand_package" }),
+        buildAiDemandSections({ caseId, firmId, template: demandTemplate }),
       ]);
 
     const aiWarnings = collectAiWarnings([

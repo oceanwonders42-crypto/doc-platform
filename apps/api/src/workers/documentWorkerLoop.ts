@@ -63,10 +63,14 @@ import {
   serializeJsonbParam,
   upsertTaskCacheEntry,
 } from "../services/documentRecognitionCache";
-import { buildRoutingExplanation } from "../services/documentRoutingDecision";
+import { buildRoutingExplanation, buildStructuredRoutingDecision } from "../services/documentRoutingDecision";
 
 async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function toPrismaJson(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
 const OCR_REQUEUE_DELAY_MS = 50;
@@ -1321,7 +1325,9 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
     },
     {
       caseNumber,
+      claimNumber: extractedForRouting?.claimNumber ?? null,
       clientName,
+      incidentDate: extractedForRouting?.incidentDate ?? null,
       docType: extractedForRouting?.docType ?? null,
       providerName: extractedForRouting?.providerName ?? null,
       documentClientName: extractedForRouting?.documentClientName ?? null,
@@ -1339,6 +1345,13 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
   const routingExplanation = buildRoutingExplanation(routingScore, {
     minConfidence: minAutoRouteConfidence,
   });
+  const structuredRoutingDecision = buildStructuredRoutingDecision(routingScore, routingExplanation);
+  const routingReason =
+    structuredRoutingDecision.reasoning[0] ??
+    routingScore.candidates[0]?.reason ??
+    routingScore.signals.baseMatchReason ??
+    routingExplanation.reviewReasons[0] ??
+    null;
   let matchConfidence = routingScore.confidence;
   let matchedCaseId = routingScore.chosenCaseId;
   let suggestedCaseId = routingExplanation.suggestedCaseId;
@@ -1378,11 +1391,25 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
       matchedCaseId = newCase.id;
       suggestedCaseId = newCase.id;
       matchConfidence = 1;
+      const autoCreateDecision = {
+        ...structuredRoutingDecision,
+        matched_case_id: newCase.id,
+        confidence_score: 1,
+        review_required: false,
+        reasoning: [
+          "Case auto-created from extracted client name",
+          ...structuredRoutingDecision.reasoning,
+        ],
+      };
       const routed = await routeDocument(firmId, documentId, newCase.id, {
         actor: "system",
         action: "auto_created_case",
         routedSystem: "auto",
         routingStatus: "routed",
+        routingConfidence: 1,
+        routingReason: "Case auto-created from extracted client name",
+        routingSourceFields: autoCreateDecision.source_fields,
+        routingDecision: autoCreateDecision,
         metaJson: {
           reason: "auto_create_from_doc",
           clientName: name,
@@ -1438,6 +1465,10 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
       action: "auto_routed",
       routedSystem: "auto",
       routingStatus: "routed",
+      routingConfidence: matchConfidence,
+      routingReason,
+      routingSourceFields: structuredRoutingDecision.source_fields,
+      routingDecision: structuredRoutingDecision,
       metaJson: {
         matchConfidence,
         caseId: matchedCaseId,
@@ -1474,6 +1505,14 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
           reviewState: "IN_REVIEW",
           routingStatus: "needs_review",
           processingStage: "complete",
+          routingConfidence: matchConfidence,
+          routingReason: routed.error,
+          routingSourceFields: toPrismaJson(structuredRoutingDecision.source_fields),
+          routingDecision: toPrismaJson({
+            ...structuredRoutingDecision,
+            review_required: true,
+            reasoning: [routed.error, ...structuredRoutingDecision.reasoning],
+          }),
         },
       });
       emitWebhookEvent(firmId, "document.processed", {
@@ -1508,6 +1547,10 @@ async function handleCaseMatchJob(documentId: string, firmId: string): Promise<v
         reviewState: "IN_REVIEW",
         routingStatus: suggestedCaseId != null ? "needs_review" : null,
         processingStage: "complete",
+        routingConfidence: matchConfidence,
+        routingReason,
+        routingSourceFields: toPrismaJson(structuredRoutingDecision.source_fields),
+        routingDecision: toPrismaJson(structuredRoutingDecision),
       },
     });
     emitWebhookEvent(firmId, "document.processed", {

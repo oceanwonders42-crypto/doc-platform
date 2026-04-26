@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildRoutingExplanation,
   buildRoutingReviewReasons,
+  buildStructuredRoutingDecision,
   DEFAULT_AUTO_ROUTE_MARGIN,
   getRoutingCandidateSummaries,
   getRoutingConfidenceMargin,
@@ -131,6 +132,23 @@ async function main() {
   assert.equal(explanation.shouldAutoRoute, true);
   assert.equal(explanation.suggestedCaseId, "case-1");
   assert.equal(explanation.candidateSummaries.length, 2);
+  const structured = buildStructuredRoutingDecision(
+    buildResult({
+      signals: {
+        ...result.signals,
+        claimNumber: "CLM-123",
+        dateOfLoss: "2026-04-01",
+      },
+    }),
+    explanation
+  );
+  assert.equal(structured.document_type, "medical_record");
+  assert.equal(structured.client_name, "Casey Client");
+  assert.equal(structured.date_of_loss, "2026-04-01");
+  assert.equal(structured.claim_number, "CLM-123");
+  assert.equal(structured.matched_case_id, "case-1");
+  assert.equal(structured.review_required, false);
+  assert(structured.reasoning.some((reason) => reason.includes("Case number")));
 
   console.log("documentRoutingDecision tests passed");
 }

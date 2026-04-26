@@ -11,6 +11,7 @@ type DemandTemplate = {
   version: number;
   isActive: boolean;
   requiredSections: string[];
+  structureJson: Record<string, unknown> | null;
   examplesText: string | null;
   updatedAt: string;
 };

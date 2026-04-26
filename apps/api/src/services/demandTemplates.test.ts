@@ -77,6 +77,42 @@ async function main() {
     const unmatched = await resolveDemandTemplate({ firmId: "firm-a", caseType: "auto", demandType: "demand_package" });
     assert.equal(unmatched.id, "default-demand-template");
 
+    delegate.findMany = stubFindMany([
+      {
+        id: "inactive-firm",
+        firmId: "firm-a",
+        name: "Inactive Firm Template",
+        caseType: null,
+        demandType: "demand_package",
+        version: 10,
+        isActive: false,
+        requiredSections: ["damages"],
+        structureJson: null,
+        examplesText: null,
+        createdByUserId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: "active-global",
+        firmId: null,
+        name: "Active Global Template",
+        caseType: null,
+        demandType: "demand_package",
+        version: 3,
+        isActive: true,
+        requiredSections: ["facts_liability"],
+        structureJson: null,
+        examplesText: null,
+        createdByUserId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ] as never);
+    const inactiveIgnored = await resolveDemandTemplate({ firmId: "firm-a", demandType: "demand_package" });
+    assert.equal(inactiveIgnored.id, "active-global");
+    assert.equal(inactiveIgnored.scope, "default");
+
     console.log("demand template tests passed");
   } finally {
     delegate.findMany = originalFindMany;

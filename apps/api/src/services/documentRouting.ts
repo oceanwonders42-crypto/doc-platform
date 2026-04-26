@@ -2,6 +2,7 @@
  * Shared document routing logic: update document, audit event, queue follow-up work.
  * Used by POST /documents/:id/route and by the worker for auto-route.
  */
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { enqueuePostRouteSyncJob, enqueueTimelineRebuildJob } from "./queue";
 import { emitWebhookEvent } from "./webhooks";
@@ -24,6 +25,10 @@ export type RouteDocumentOptions = {
   routingStatus?: string | null;
   reviewState?: DocumentReviewStateValue | null;
   status?: "RECEIVED" | "PROCESSING" | "NEEDS_REVIEW" | "UPLOADED" | "FAILED" | "UNMATCHED";
+  routingConfidence?: number | null;
+  routingReason?: string | null;
+  routingSourceFields?: unknown;
+  routingDecision?: unknown;
   metaJson?: unknown;
   timingReporter?: RouteDocumentTimingReporter;
 };
@@ -46,7 +51,16 @@ type RouteDocumentUpdateData = {
   routingStatus?: string | null;
   reviewState?: DocumentReviewStateValue | null;
   status?: RouteDocumentStoredStatus;
+  routingConfidence?: number | null;
+  routingReason?: string | null;
+  routingSourceFields?: Prisma.InputJsonValue;
+  routingDecision?: Prisma.InputJsonValue;
 };
+
+function toJsonSafe(value: unknown): Prisma.InputJsonValue | undefined {
+  if (value == null) return undefined;
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
 
 export function buildRouteDocumentUpdateData(
   doc: RouteDocumentCurrentState,
@@ -60,6 +74,16 @@ export function buildRouteDocumentUpdateData(
   if (routedSystem !== undefined) updateData.routedSystem = routedSystem;
   if (routingStatus !== undefined) updateData.routingStatus = routingStatus;
   if (reviewState !== undefined) updateData.reviewState = reviewState;
+  if (options.routingConfidence !== undefined) updateData.routingConfidence = options.routingConfidence;
+  if (options.routingReason !== undefined) updateData.routingReason = options.routingReason;
+  if (options.routingSourceFields !== undefined) {
+    const json = toJsonSafe(options.routingSourceFields);
+    if (json !== undefined) updateData.routingSourceFields = json;
+  }
+  if (options.routingDecision !== undefined) {
+    const json = toJsonSafe(options.routingDecision);
+    if (json !== undefined) updateData.routingDecision = json;
+  }
   if (status !== undefined) {
     updateData.status = status;
   } else if (

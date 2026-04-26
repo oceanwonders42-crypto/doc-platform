@@ -68,6 +68,7 @@ async function main() {
   await waitForDatabaseReady();
 
   const firmId = randomId("routing-scorer-firm");
+  const otherFirmId = randomId("routing-scorer-other-firm");
   const documentId = randomId("routing-scorer-doc");
   let mailboxId: string | null = null;
   let messageId: string | null = null;
@@ -80,6 +81,12 @@ async function main() {
         name: "Routing Scorer Test Firm",
       },
     });
+    await prisma.firm.create({
+      data: {
+        id: otherFirmId,
+        name: "Routing Scorer Other Firm",
+      },
+    });
 
     const legalCase = await prisma.legalCase.create({
       data: {
@@ -88,6 +95,17 @@ async function main() {
         title: "Morgan Rivera Matter",
         caseNumber: "RR-100",
         clientName: "Morgan Rivera",
+        incidentDate: new Date("2026-03-14T00:00:00.000Z"),
+      },
+    });
+    const otherFirmCase = await prisma.legalCase.create({
+      data: {
+        id: randomId("routing-scorer-other-case"),
+        firmId: otherFirmId,
+        title: "Other Firm Morgan Rivera",
+        caseNumber: "RR-100",
+        clientName: "Morgan Rivera",
+        incidentDate: new Date("2026-03-14T00:00:00.000Z"),
       },
     });
 
@@ -117,6 +135,10 @@ async function main() {
       `,
       [documentId]
     );
+    await pgPool.query(
+      `update document_recognition set incident_date = '2026-03-14' where document_id = $1`,
+      [documentId]
+    );
 
     const emailContext = await insertEmailContext({
       firmId,
@@ -134,6 +156,7 @@ async function main() {
     assert.equal(extracted?.documentClientName, "Morgan Rivera", "Expected document client name to be preserved");
     assert.equal(extracted?.emailClientName, "Morgan Rivera", "Expected email client name to be preserved");
     assert.equal(extracted?.providerName, "Rivera Therapy", "Expected provider to fall back to document extracted fields");
+    assert.equal(extracted?.incidentDate, "2026-03-14", "Expected date of loss/service date to be available for routing");
 
     const routingResult = await scoreDocumentRouting(
       {
@@ -147,6 +170,7 @@ async function main() {
       {
         caseNumber: null,
         clientName: null,
+        incidentDate: extracted?.incidentDate ?? null,
         docType: extracted?.docType ?? null,
         providerName: extracted?.providerName ?? null,
       },
@@ -158,6 +182,11 @@ async function main() {
       legalCase.id,
       "Expected scoreDocumentRouting to recover stored match signals via documentId"
     );
+    assert.notEqual(
+      routingResult.chosenCaseId,
+      otherFirmCase.id,
+      "Expected scoreDocumentRouting to ignore matching cases from other firms"
+    );
     assert(
       routingResult.confidence >= 0.9,
       `Expected routing score confidence >= 0.9, got ${routingResult.confidence}`
@@ -166,6 +195,7 @@ async function main() {
       routingResult.signals.baseMatchReason?.includes("Case number match"),
       `Expected base match reason to mention case number, got "${routingResult.signals.baseMatchReason}"`
     );
+    assert.equal(routingResult.signals.dateOfLoss, "2026-03-14");
 
     console.log("routingScorer.test.ts passed");
   } finally {
@@ -181,9 +211,11 @@ async function main() {
     await pgPool.query(`delete from document_recognition where document_id = $1`, [documentId]).catch(() => undefined);
     await prisma.document.deleteMany({ where: { id: documentId } }).catch(() => undefined);
     await prisma.legalCase.deleteMany({ where: { firmId } }).catch(() => undefined);
+    await prisma.legalCase.deleteMany({ where: { firmId: otherFirmId } }).catch(() => undefined);
     await prisma.routingFeedback.deleteMany({ where: { firmId } }).catch(() => undefined);
     await prisma.routingPattern.deleteMany({ where: { firmId } }).catch(() => undefined);
     await prisma.firm.deleteMany({ where: { id: firmId } }).catch(() => undefined);
+    await prisma.firm.deleteMany({ where: { id: otherFirmId } }).catch(() => undefined);
   }
 }
 
